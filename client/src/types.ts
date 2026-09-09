@@ -101,6 +101,20 @@ export interface FolderConflictInfo {
 	continued: boolean;
 }
 
+// State for the MISSING-FOLDER lock. Set when the server reports that this
+// session's working folder does not exist on this machine (the `folderMissing`
+// flag on session_created, and the `folder_missing` frame that names the path).
+// The transcript still paints -- reading never needed the folder -- but the
+// server built no live agent and refuses every send.
+//
+// Unlike a folder conflict this is HARD: there is no "Continue anyway". It is
+// cured by restoring the folder and RELOADING the session (whether a session has
+// a live agent is a load-time decision). `cwd` is the absolute missing path, so
+// the UI can name exactly what to restore where the composer would be.
+export interface FolderMissingInfo {
+	cwd: string;
+}
+
 export interface WhereverState {
 	connected: boolean;
 	connecting: boolean;
@@ -133,6 +147,11 @@ export interface WhereverState {
 	// when talking to a server old enough not to report it.
 	serverVersion: string | null;
 	folderConflict: FolderConflictInfo | null;
+	// The active session's working folder is gone from this machine (see
+	// FolderMissingInfo). Non-null implies `readOnly`, and no `session_ready` is
+	// coming: the composer is replaced by a notice naming the path. Cleared with
+	// the session it belongs to.
+	folderMissing: FolderMissingInfo | null;
 	isInterrupted: boolean;
 	// A dismissible, non-fatal notice about the active session (e.g. a CLI bridge
 	// took over while this session was mid-turn here, discarding the in-flight

@@ -13,6 +13,7 @@
 		sessionError,
 		sessionNotice,
 		folderConflict,
+		folderMissing,
 		continueFolderConflict,
 		isReadOnly,
 		activeSessionInfo,
@@ -208,6 +209,7 @@
 	let sError = $derived($sessionError);
 	let notice = $derived($sessionNotice);
 	let fConflict = $derived($folderConflict);
+	let fMissing = $derived($folderMissing);
 	let readOnly = $derived($isReadOnly);
 	let sessionInfo = $derived($activeSessionInfo);
 	let appState = $derived($piState);
@@ -790,7 +792,7 @@
 		     Once continued, the conflict banner has no button left, so a read-only
 		     that SURVIVED the continue (a hard sessions.readOnly folder, which the
 		     server refuses to lift) must still explain itself here. -->
-		{#if readOnly && !interrupted && !(fConflict?.active && !fConflict.continued)}
+		{#if readOnly && !interrupted && !fMissing && !(fConflict?.active && !fConflict.continued)}
 			<div
 				class="border border-yellow-500/30 bg-yellow-500/10 px-4 py-2 text-center text-sm text-yellow-400"
 			>
@@ -806,7 +808,31 @@
 		     otherwise. Always mounted so it can be focused inside a tap gesture.
 		     EXCEPTION: a read-only session (e.g. a sessions.readOnly fleet folder)
 		     hides the composer entirely -- it is an observe-only view. -->
-		{#if readOnly && sessionInfo.sessionFile}
+		{#if fMissing}
+			<!-- MISSING FOLDER: this session's working folder does not exist on this
+			     machine (the transcript synced, the clone did not). The conversation
+			     above is fully readable, but the server built no agent and refuses
+			     every send, so the composer is replaced by an explanation NAMING the
+			     absolute path. There is deliberately no dismiss: unlike the folder
+			     conflict this is not a warning, it is the absence of the folder.
+			     Restore actions land in a later change; until then the honest lock is
+			     the whole point. -->
+			<div
+				class="border-t border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-400"
+			>
+				<div class="font-medium">
+					📁 This session's folder is not on this machine
+				</div>
+				<div class="mt-1 font-mono text-xs break-all text-yellow-300">
+					{fMissing.cwd}
+				</div>
+				<div class="mt-1 text-xs text-brand-text-muted">
+					The conversation is readable, but nothing can be run here until the
+					folder is restored. Restore it (e.g. clone the repository back to that
+					path), then reload this session.
+				</div>
+			</div>
+		{:else if readOnly && sessionInfo.sessionFile}
 			<div
 				class="border-t border-brand-border bg-brand-surface px-4 py-3 text-center text-xs text-brand-text-muted"
 			>

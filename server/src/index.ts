@@ -325,6 +325,16 @@ interface WSClient {
   // end with the same answer. Reset whenever a new session load/create starts, so
   // a decision never leaks into a different session.
   conflictContinued?: boolean;
+  // The ABSOLUTE working folder of the session this client loaded, when that
+  // folder does not exist on this machine. Set at the fast-paint step of the
+  // load that discovered it and cleared by the next load/create/leave, so it
+  // always describes the session the client is looking at RIGHT NOW.
+  //
+  // It is what makes FOLDER MISSING a hard read-only reason: no live agent was
+  // built for the folder (a cold load stops before the build), so every send is
+  // refused by path rather than by attachment, and "Continue anyway" -- which
+  // only ever answers a folder CONFLICT -- cannot lift it.
+  folderMissingCwd?: string;
   // Stable identity supplied by the client on connect, carried across
   // reconnects. Used to retire this viewer's own superseded connection so a
   // dropped-and-reconnected client is never mistaken for a second viewer.
@@ -2096,9 +2106,22 @@ function resolveFolderConflictState(
   // sessions.readOnly folder is a hard rule and is never lifted here.
   if (c.conflictObserver && !active) {
     c.conflictObserver = false;
-    if (!pool.isReadOnlyCwd(mine.cwd)) c.readOnly = false;
+    if (!hasHardReadOnly(c, pool, mine.cwd)) c.readOnly = false;
   }
   return { cwd: mine.cwd, active };
+}
+
+// Read-only PRECEDENCE in one place. Of the three reasons a client can be
+// read-only, two are HARD and one is dismissible:
+//   - a configured `sessions.readOnly` folder: a policy rule, never lifted;
+//   - FOLDER MISSING: the working folder does not exist on this machine, so
+//     there is nothing to drive; lifted only by restoring it and RELOADING;
+//   - a folder conflict: two live sessions in one folder, lifted by the user's
+//     "Continue anyway".
+// Every site that LIFTS read-only asks this first, so the dismissible reason can
+// never dismiss a hard one.
+function hasHardReadOnly(client: WSClient, pool: SessionPool, cwd: string): boolean {
+  return pool.isReadOnlyCwd(cwd) || client.folderMissingCwd !== undefined;
 }
 
 // Resolve and report in one step. Every folder_conflict frame goes out through
@@ -2259,6 +2282,9 @@ async function handleWSMessage(
       // session we are leaving. Reset BEFORE the first await, so a continue that
       // races this load is recorded against the load, never wiped by it.
       client.conflictContinued = false;
+      // Same reasoning for the missing-folder lock: it belongs to the session we
+      // are leaving, and must not leak into the one we are opening.
+      client.folderMissingCwd = undefined;
       const meta = await pool.readSessionMeta(msg.sessionFile, INITIAL_HISTORY_LIMIT, msg.model);
       if ('error' in meta) {
         sendWS(client.ws, { type: 'session_error', error: meta.error });
@@ -2274,9 +2300,17 @@ async function handleWSMessage(
       const conflict = pool.detectConflict(meta.sessionFile, meta.cwd);
       const folderConflict = conflict.conflict && !!conflict.otherSessionId;
 
+      // This session's working folder does not exist on this machine (the
+      // transcript synced, the clone did not). The conversation is still
+      // READABLE -- reading never needed the folder -- but the client is locked
+      // and, on the cold path below, no live agent is built at all.
+      const folderMissing = meta.folderMissing;
+      client.folderMissingCwd = folderMissing ? meta.cwd : undefined;
+
       // A session whose cwd matches a sessions.readOnly glob is forced read-only.
-      // A folder conflict also starts the client read-only until they continue.
-      const forcedReadOnly = meta.readOnly || folderConflict;
+      // A missing folder forces it too (hard, see hasHardReadOnly). A folder
+      // conflict also starts the client read-only until they continue.
+      const forcedReadOnly = meta.readOnly || folderMissing || folderConflict;
       client.readOnly = forcedReadOnly;
       client.conflictObserver = folderConflict;
       client.pendingCwd = meta.cwd;
@@ -2293,6 +2327,7 @@ async function handleWSMessage(
         isStreaming: meta.resident ? pool.isStreaming(meta.sessionFile) : false,
         readOnly: forcedReadOnly,
         folderConflict,
+        folderMissing,
         contextUsage: meta.resident ? (pool.getContextUsage(meta.sessionFile) ?? null) : null,
         pending: !meta.resident,
       });
@@ -2303,6 +2338,15 @@ async function handleWSMessage(
         totalCount: meta.history.totalCount,
         offset: meta.history.offset,
       });
+
+      // State the missing folder explicitly, naming the absolute path, so the
+      // client can replace its composer with a notice that says WHICH folder to
+      // restore instead of an unexplained lock. A client that predates the frame
+      // simply ignores it; the server's refusal to accept its sends is what
+      // protects it either way.
+      if (folderMissing) {
+        sendWS(client.ws, { type: 'folder_missing', sessionId: meta.sessionId, cwd: meta.cwd });
+      }
 
       // Already resident (warm): attach immediately, no async build needed.
       if (meta.resident) {
@@ -2323,6 +2367,25 @@ async function handleWSMessage(
         // session file until pi injects it at the next step. Without this the
         // user's queued text is invisible right up to the moment it is delivered.
         sendQueueSnapshot(client, meta.sessionFile, meta.sessionId, pool);
+        break;
+      }
+
+      // Cold + folder missing: do NOT build the live agent. Building one would
+      // SUCCEED (pi's settings/resource loading tolerate a nonexistent cwd) and
+      // hand back an agent whose every tool call is broken -- the silent failure
+      // this state exists to replace. So the load ends here: painted, locked,
+      // explained. Curing it takes a restore plus a RELOAD, because whether a
+      // session has a live agent is a load-time decision.
+      //
+      // Detach from whatever we were attached to before as well: this load never
+      // attaches anywhere, and staying on the previous session would leave a
+      // phantom viewer holding a folder the user has left.
+      // (A RESIDENT session is handled by the branch above and keeps its running
+      // agent: a folder that vanished under a live session is out of scope here,
+      // we only refuse to hand out a fresh write capability.)
+      if (folderMissing) {
+        switchClientSession(client, null, pool, onSessionsUpdated);
+        client.readOnly = true;
         break;
       }
 
@@ -2432,6 +2495,9 @@ async function handleWSMessage(
       pool.addClient(result.tracked.sessionFile, client.id);
       switchClientSession(client, result.tracked.sessionFile, pool, onSessionsUpdated);
       clearConflictState(client);
+      // Creating a session CREATES its folder (mkdir/clone), so this one exists
+      // by construction: clear any missing-folder lock the previous session left.
+      client.folderMissingCwd = undefined;
       client.pendingCwd = result.tracked.cwd;
 
       // Is somebody else still live in this folder? Then two agents would be
@@ -2488,6 +2554,10 @@ async function handleWSMessage(
     }
 
     case 'session_leave': {
+      // The lock belongs to the session being left, so it goes with it. (A
+      // folder-missing load never attaches, so `sessionId` can already be null
+      // here and the flag must be cleared regardless.)
+      client.folderMissingCwd = undefined;
       if (client.sessionId) {
         switchClientSession(client, null, pool, onSessionsUpdated);
         client.readOnly = false;
@@ -2529,7 +2599,7 @@ async function handleWSMessage(
       // load/create, so it can only ever apply to the load in flight, and the
       // sessions.readOnly guard is re-applied at attach with the real cwd.
       client.conflictContinued = true;
-      if (cwd && !pool.isReadOnlyCwd(cwd)) client.readOnly = false;
+      if (cwd && !hasHardReadOnly(client, pool, cwd)) client.readOnly = false;
       // Reply with this client's authoritative conflict state, ALWAYS (including
       // when the lift was refused for a sessions.readOnly folder). Same-socket
       // ordering guarantees this lands after any folder_conflict broadcast that
@@ -2541,6 +2611,20 @@ async function handleWSMessage(
     }
 
     case 'message': {
+      // The session's working folder does not exist on this machine, so no live
+      // agent was built for it and there is nothing to attach to (which would
+      // otherwise make this a SILENT drop on the sessionId check below). Refuse
+      // by path, naming it, so the client can say what to restore.
+      if (client.folderMissingCwd) {
+        sendWS(client.ws, {
+          type: 'session_error',
+          sessionId: msg.sessionId,
+          error:
+            `This session's working folder does not exist on this machine (${client.folderMissingCwd}), ` +
+            'so the message was not delivered. Restore the folder, then reload the session.',
+        });
+        return;
+      }
       if (!client.sessionId) return;
       if (client.readOnly) {
         // Never swallow a send. This is a legitimate refusal for an observe-only
