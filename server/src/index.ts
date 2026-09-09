@@ -6,6 +6,7 @@ import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { SessionPool, getWhereverConfig, getWhereverCertsDir, detectRemoteRepo, type WhereverConfig } from './session-pool.js';
 import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.js';
 import { searchConversations } from './conversation-search.js';
+import { matchRemoteRepoRule, resolveRemoteCandidates } from './remote-candidates.js';
 import type { ClientMessage, ServerMessage, ToolImage } from './protocol.js';
 import { INITIAL_HISTORY_LIMIT, HISTORY_PAGE_SIZE } from './protocol.js';
 import fs from 'node:fs';
@@ -159,20 +160,6 @@ function isWithinHome(p: string): boolean {
   const home = os.homedir();
   const normalized = path.resolve(p);
   return normalized === home || normalized.startsWith(home + path.sep);
-}
-
-// Match a folder path against a remoteRepoRules `pattern`. The path is an
-// absolute, tilde-expanded path (e.g. /home/user/dev/...), so a pattern that
-// starts with a literal `~` (as users naturally write, mirroring commonFolders)
-// would never match. Expand a leading `~` in the pattern to the home dir before
-// building the RegExp so `~/dev/...` matches the resolved path. An invalid
-// regex is treated as a non-match rather than throwing.
-function repoRuleMatches(pattern: string, resolvedPath: string): boolean {
-  try {
-    return new RegExp(expandTilde(pattern)).test(resolvedPath);
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -1033,6 +1020,7 @@ async function main(): Promise<void> {
                           pathname.startsWith('/config') || 
                           pathname.startsWith('/check-path') || 
                           pathname.startsWith('/check-remote-repo') || 
+                          pathname.startsWith('/remote-candidates') || 
                           pathname.startsWith('/autocomplete-path') || 
                           pathname.startsWith('/session/');
 
@@ -1196,14 +1184,12 @@ async function main(): Promise<void> {
       // Check matching remote rules
       let matchingRule = null;
       const config = getWhereverConfig();
-      if (config.remoteRepoRules && Array.isArray(config.remoteRepoRules)) {
-        const rule = config.remoteRepoRules.find(r => repoRuleMatches(r.pattern, resolved));
-        if (rule) {
-          matchingRule = {
-            provider: rule.provider,
-            visibility: rule.visibility || 'private'
-          };
-        }
+      const rule = matchRemoteRepoRule(config.remoteRepoRules, resolved);
+      if (rule) {
+        matchingRule = {
+          provider: rule.provider,
+          visibility: rule.visibility || 'private'
+        };
       }
 
       sendJSON(res, 200, { exists, isGit, resolvedPath: resolved, matchingRule });
@@ -1230,9 +1216,7 @@ async function main(): Promise<void> {
       }
 
       const config = getWhereverConfig();
-      const rule = (config.remoteRepoRules && Array.isArray(config.remoteRepoRules))
-        ? config.remoteRepoRules.find(r => repoRuleMatches(r.pattern, resolved))
-        : undefined;
+      const rule = matchRemoteRepoRule(config.remoteRepoRules, resolved);
 
       if (!rule) {
         sendJSON(res, 200, { exists: false, matched: false });
@@ -1246,6 +1230,42 @@ async function main(): Promise<void> {
         exists: probe.exists,
         sshUrl: probe.exists ? probe.sshUrl : undefined,
       });
+      return;
+    }
+
+    // Restore pre-fill: which repository does this (probably missing) folder
+    // correspond to? Answers an ORDERED, ADVISORY list of SSH candidates --
+    // the provider probe first, then the `<host-token>/<owner>/<repo>` path
+    // convention (see server/src/remote-candidates.ts). Never HTTPS.
+    //
+    // Beside /check-remote-repo and for the same reason: the probe shells out to
+    // a provider CLI, so this is called ON DEMAND (the restore panel opening),
+    // never per keystroke and never on the session-load path.
+    if (pathname === '/remote-candidates' && req.method === 'GET') {
+      const qPath = url.searchParams.get('path');
+      if (!qPath) {
+        sendJSON(res, 400, { error: 'Missing path' });
+        return;
+      }
+      let resolved = qPath;
+      if (qPath.startsWith('~')) {
+        resolved = path.join(os.homedir(), qPath.slice(1));
+      } else if (!path.isAbsolute(qPath)) {
+        resolved = path.join(os.homedir(), qPath);
+      } else {
+        resolved = path.resolve(qPath);
+      }
+
+      // Same scoping as /check-path: an authenticated caller cannot use this to
+      // ask questions about paths outside the home folder.
+      if (!isWithinHome(resolved)) {
+        sendJSON(res, 403, { error: 'Path is outside the home directory' });
+        return;
+      }
+
+      const config = getWhereverConfig();
+      const candidates = resolveRemoteCandidates(resolved, config.remoteRepoRules, detectRemoteRepo);
+      sendJSON(res, 200, { resolvedPath: resolved, candidates });
       return;
     }
 
