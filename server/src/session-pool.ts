@@ -984,6 +984,30 @@ export class SessionPool {
   }
 
   /**
+   * Does this session's working folder still EXIST on this machine?
+   *
+   * Transcripts and the folders they refer to travel separately: a transcript
+   * syncs (syncthing, a backup, a new laptop), the git clone it talks about does
+   * not. pi's `SettingsManager.create()` and `DefaultResourceLoader.reload()`
+   * both SUCCEED against a nonexistent cwd, so a missing folder throws nothing
+   * and only shows up later as every file/bash tool misbehaving. Answering it
+   * here, beside the read-only verdict in the cheap meta read, costs one stat.
+   *
+   * A path that exists but is NOT a directory counts as missing: it cannot be a
+   * cwd either, and the honest lock is strictly better than an agent built on
+   * it. (`stat` follows symlinks, so a link to a real directory exists and a
+   * dangling one does not, which is what a user means by "the folder is there".)
+   */
+  private async folderExists(cwd: string): Promise<boolean> {
+    try {
+      const stat = await fs.promises.stat(resolveSessionCwd(cwd));
+      return stat.isDirectory();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * CHEAP read of a session's metadata + history WITHOUT building a live agent.
    * Opening a session for VIEWING only needs the header (id/cwd/model) and the
    * transcript (a file read); instantiating the agent (createAgentSession ->
@@ -1004,6 +1028,14 @@ export class SessionPool {
         model: string;
         history: { messages: HistoryMessage[]; totalCount: number; offset: number };
         readOnly: boolean;
+        /**
+         * True when `cwd` does not exist on this machine. The THIRD read-only
+         * reason (see folderExists above): reading the conversation never needed
+         * the folder, but no live agent may be built for it and no client may be
+         * given a write capability on it. Reported for a resident session too:
+         * the check lives here so the warm and cold load branches share it.
+         */
+        folderMissing: boolean;
         resident: boolean;
       }
     | { error: string }
@@ -1023,6 +1055,7 @@ export class SessionPool {
         model: residentTracked.model,
         history: await this.getSessionHistoryWindow(resolvedFile, limit),
         readOnly: this.isReadOnlyCwd(residentTracked.cwd),
+        folderMissing: !(await this.folderExists(residentTracked.cwd)),
         resident: true,
       };
     }
@@ -1041,7 +1074,16 @@ export class SessionPool {
       const cwd = normalizePath(read.header.cwd || process.cwd());
       const model = modelStr || read.model;
       const history = { messages: read.messages, totalCount: read.totalCount, offset: read.offset };
-      return { sessionFile: resolvedFile, sessionId, cwd, model, history, readOnly: this.isReadOnlyCwd(cwd), resident: false };
+      return {
+        sessionFile: resolvedFile,
+        sessionId,
+        cwd,
+        model,
+        history,
+        readOnly: this.isReadOnlyCwd(cwd),
+        folderMissing: !(await this.folderExists(cwd)),
+        resident: false,
+      };
     } catch (err) {
       return { error: (err as Error).message };
     }

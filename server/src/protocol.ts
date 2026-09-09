@@ -110,7 +110,7 @@ export type ServerMessage =
   // bash_sudo_cancel carrying the same promptId. `command` is the sudo command
   // line WITHOUT any password, safe to display.
   | { type: 'bash_sudo_prompt'; sessionId: string; promptId: string; command: string }
-  | { type: 'session_created'; sessionId: string; sessionFile: string; cwd: string; model: string; isStreaming?: boolean; readOnly?: boolean; contextUsage?: ContextUsageInfo | null; pending?: boolean; folderConflict?: boolean }
+  | { type: 'session_created'; sessionId: string; sessionFile: string; cwd: string; model: string; isStreaming?: boolean; readOnly?: boolean; contextUsage?: ContextUsageInfo | null; pending?: boolean; folderConflict?: boolean; folderMissing?: boolean }
   // Sent after a `pending` session_created once the live agent has finished
   // building (createAgentSession). Until it arrives, the UI can render the
   // conversation (from message_history) but must keep the composer disabled:
@@ -136,6 +136,20 @@ export type ServerMessage =
   // a hard sessions.readOnly folder keeps it locked. Optional for back-compat
   // with clients that predate it.
   | { type: 'folder_conflict'; cwd: string; active: boolean; readOnly?: boolean }
+  // Server -> client: this session's working folder does NOT exist on this
+  // machine (the transcript synced, the clone did not). `cwd` is the ABSOLUTE
+  // missing path, so the UI can name exactly what to restore. Sent on the load
+  // that discovered it, right after message_history: the conversation still
+  // paints (reading never needed the folder), but no live agent is built and the
+  // client is read-only.
+  //
+  // FOLDER MISSING is the third read-only reason, and it is HARD: unlike a
+  // folder conflict there is no "Continue anyway", and unlike a sessions.readOnly
+  // rule it is curable -- by restoring the folder and RELOADING the session (a
+  // live agent is a load-time decision). Detection is load-time only, so this
+  // frame is only ever sent while missing; there is no "it came back" update.
+  // Later work extends it with remote candidates and any running restore job.
+  | { type: 'folder_missing'; sessionId: string; cwd: string }
   // Server -> client: this connection is being closed because a NEWER connection
   // arrived carrying the same `clientKey`, i.e. the server took it for this
   // viewer's own reconnect. A client that receives this is demonstrably alive, so

@@ -62,6 +62,7 @@ const defaultState: WhereverState = {
 	clientId: null,
 	serverVersion: null,
 	folderConflict: null,
+	folderMissing: null,
 	isInterrupted: false,
 	notice: null,
 	sudoPrompt: null,
@@ -1296,6 +1297,11 @@ export class WhereverClient {
           folderConflict: msg.folderConflict
             ? {cwd: msg.cwd, active: true, continued: false}
             : null,
+          // The session's working folder is gone from this machine: the server
+          // built no agent and refuses every send, so the composer is replaced
+          // by a notice naming the path. Hard (no "Continue anyway"); the
+          // authoritative `folder_missing` frame follows with the same cwd.
+          folderMissing: msg.folderMissing ? {cwd: msg.cwd} : null,
           // pending -> the history is painted now but the live agent is still
           // building; keep the composer disabled (agentPending) until
           // session_ready. A non-pending create (new session, warm reload) is
@@ -1403,6 +1409,7 @@ export class WhereverClient {
               activeModel: null,
               loadingSession: false,
               agentPending: false,
+              folderMissing: null,
               notice: null,
               sudoPrompt: null,
             };
@@ -1424,6 +1431,18 @@ export class WhereverClient {
           // is surfaced. This is the degrade-to-read-only path.
           agentPending: false,
         }));
+        break;
+
+      case 'folder_missing':
+        // The server states, authoritatively, that this session's working folder
+        // does not exist on this machine, and names the absolute path. No
+        // session_ready is coming (no agent was built), so this is also the end
+        // of the load: read-only, with an explanation. Ignore a frame for a
+        // session we already switched away from.
+        this.stateStore.update((s: WhereverState) => {
+          if (s.sessionId && msg.sessionId && s.sessionId !== msg.sessionId) return s;
+          return {...s, readOnly: true, folderMissing: {cwd: msg.cwd}};
+        });
         break;
 
       case 'folder_conflict':
@@ -2240,6 +2259,9 @@ export class WhereverClient {
     this.stateStore.update((s: WhereverState) => ({
       ...s,
       folderConflict: null,
+      // Both folder verdicts belong to the session being left; the load we are
+      // starting re-states its own (the server re-checks on every load).
+      folderMissing: null,
       sessionError: null,
       loadingSession: true,
       agentPending: false,
@@ -2279,6 +2301,7 @@ export class WhereverClient {
       activeModel: null,
       readOnly: false,
       folderConflict: null,
+      folderMissing: null,
       sessionError: null,
       notice: null,
       sudoPrompt: null,
@@ -2322,6 +2345,9 @@ export class WhereverClient {
     this.stateStore.update((s: WhereverState) => ({
       ...s,
       folderConflict: null,
+      // Creating a session creates its folder, so no missing-folder lock can
+      // survive into it.
+      folderMissing: null,
       sessionError: null,
       creatingSession: true,
       loadingSession: false,
@@ -2368,6 +2394,7 @@ export class WhereverClient {
       activeCwd: null,
       activeModel: null,
       readOnly: false,
+      folderMissing: null,
       notice: null,
       sudoPrompt: null,
       creatingSession: false,
@@ -2392,6 +2419,10 @@ export class WhereverClient {
   public continueFolderConflict() {
     const s = get(this.stateStore);
     if (!s.folderConflict || !s.sessionId) return;
+    // "Continue anyway" answers a folder CONFLICT only. A missing folder is a
+    // hard lock (there is nothing to drive, and no agent was built), and the
+    // server refuses to lift it, so do not flash an enabled composer here.
+    if (s.folderMissing) return;
 
     this.send({
       type: 'folder_conflict_continue',

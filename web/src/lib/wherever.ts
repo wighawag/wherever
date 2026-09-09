@@ -981,6 +981,11 @@ export const connectionError = derived(piState, ($s) => $s.error);
 export const currentSession = derived(piState, ($s) => $s.session);
 // Folder-conflict warning-banner state (null when there is no conflict).
 export const folderConflict = derived(piState, ($s) => $s.folderConflict);
+// The active session's working folder does not exist on this machine (null when
+// it does). Non-null means the session is READ-ONLY with no live agent and no
+// dismiss: the composer is replaced by a notice naming `cwd`, and only restoring
+// that folder and reloading brings the session back.
+export const folderMissing = derived(piState, ($s) => $s.folderMissing);
 export const isInterrupted = derived(piState, ($s) => $s.isInterrupted);
 // The mid-stream steer messages still queued on the server (not yet injected).
 // A user bubble whose content appears here is a pending steer the user can

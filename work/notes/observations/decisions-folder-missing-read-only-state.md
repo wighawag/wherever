@@ -1,0 +1,15 @@
+# Decisions taken while building `folder-missing-read-only-state` (2026-09-09)
+
+In-scope choices the task did not specify, recorded here (per CLAIM-PROTOCOL) so a reviewer can ratify or reverse them rather than reverse-engineer them. None of them met the ADR gate (each is cheap to reverse and local), but each is visible to another task or to a user.
+
+1. **A path that EXISTS but is not a directory counts as FOLDER MISSING.** `SessionPool.folderExists()` stats the cwd and requires `isDirectory()`. Alternative considered: pure existence (`stat` succeeds). A file sitting at the session's cwd cannot be a working directory either, so an honest lock beats an agent built on it, and the spec's "folder exists but is the WRONG thing" exclusion is about a wrong REPO, not a non-directory. Touches the later restore tasks: a clone into such a path will fail, and the panel will have to report that git error rather than assume an empty target. Recorded at the choice site (JSDoc on `folderExists` in `server/src/session-pool.ts`).
+
+2. **A cold folder-missing load DETACHES the client from whatever it was attached to** (`switchClientSession(client, null, ...)`), instead of leaving it on the session it came from. Leaving it attached would keep a phantom viewer in the previous folder (which is exactly what raises spurious folder conflicts). Consequence: `history_load_more` resolves through the pool's resident session, so a folder-missing session paints its last window of history but cannot page OLDER history until the folder is restored and the session reloaded. Accepted: paging already needs a resident session, and building one is precisely what this state refuses.
+
+3. **A send is refused BY PATH, not by attachment.** `case 'message'` checks `client.folderMissingCwd` BEFORE the `client.sessionId` guard, because a folder-missing load never attaches and would otherwise fall into the silent `return`. The refusal is a NEW user-visible `session_error` distinct from the read-only one, and it NAMES the absolute missing path. The client surfaces it as a retryable failure, so a Retry re-states the same honest refusal.
+
+4. **Naming: the state is `folder_missing` / `folderMissing`, never `restore*`.** `restore` is reserved for the ACTIONS that cure the state (later tasks), and already has an unrelated meaning in this codebase (re-materialising queued steers and drafts after a reload). Pinned in `CONTEXT.md` so the term is not forked a third time.
+
+5. **The `folder_missing` frame is only ever sent while missing; there is no "it came back" update.** Detection is load-time by the spec's own scope decision, so a live "folder reappeared" signal would imply a watcher this feature deliberately does not have. A folder that reappears just works on the next load.
+
+6. **Read-only precedence lives in one predicate**, `hasHardReadOnly()` in `server/src/index.ts`, asked by every site that LIFTS read-only. Alternative considered: repeating `isReadOnlyCwd(...) || folderMissing` at each site, which is how the two lift sites would drift apart.
