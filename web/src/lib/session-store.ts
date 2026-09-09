@@ -428,6 +428,50 @@ export async function checkRemoteRepo(
 	}
 }
 
+export interface RemoteCandidate {
+	/** An scp-style SSH URL (`git@host:owner/repo.git`). Never HTTPS. */
+	url: string;
+	source: 'probe' | 'path-convention';
+}
+
+export interface RemoteCandidatesResult {
+	resolvedPath: string;
+	candidates: RemoteCandidate[];
+}
+
+/**
+ * Which repository does this (missing) folder probably correspond to?
+ *
+ * Answers an ORDERED, ADVISORY list of SSH candidates -- the provider probe
+ * first, then the `<host-token>/<owner>/<repo>` path convention -- used to
+ * PRE-FILL the restore panel's editable url field so a repository can be
+ * restored from a phone without typing one. Advisory only: the server clones
+ * what it is finally given, not what it guessed, and an empty list is an honest
+ * answer the user pastes over.
+ *
+ * The probe shells out to a provider CLI, so this is called ON DEMAND (the panel
+ * opening), never per keystroke.
+ */
+export async function fetchRemoteCandidates(
+	pathStr: string,
+): Promise<RemoteCandidate[]> {
+	if (!pathStr.trim()) return [];
+	try {
+		const baseUrl = getBaseUrl();
+		const token = getToken();
+		const url = `${baseUrl}/remote-candidates?path=${encodeURIComponent(pathStr)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
+		const res = await fetch(url);
+		if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		const data = (await res.json()) as RemoteCandidatesResult;
+		return Array.isArray(data.candidates) ? data.candidates : [];
+	} catch (err) {
+		// A candidate is a convenience, never a gate: an unreachable endpoint leaves
+		// the field empty and the user pastes a url.
+		console.error('Failed to resolve remote candidates:', err);
+		return [];
+	}
+}
+
 export interface PathAutocompleteResult {
 	completions: string[];
 }

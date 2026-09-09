@@ -7,6 +7,7 @@ import { SessionPool, getWhereverConfig, getWhereverCertsDir, detectRemoteRepo, 
 import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.js';
 import { searchConversations } from './conversation-search.js';
 import { matchRemoteRepoRule, resolveRemoteCandidates } from './remote-candidates.js';
+import { RestoreJobRegistry, type RestoreRequest } from './restore-jobs.js';
 import type { ClientMessage, ServerMessage, ToolImage } from './protocol.js';
 import { INITIAL_HISTORY_LIMIT, HISTORY_PAGE_SIZE } from './protocol.js';
 import fs from 'node:fs';
@@ -2144,6 +2145,96 @@ function hasHardReadOnly(client: WSClient, pool: SessionPool, cwd: string): bool
   return pool.isReadOnlyCwd(cwd) || client.folderMissingCwd !== undefined;
 }
 
+// ---------------------------------------------------------------------------
+// Restore jobs over the WebSocket
+// ---------------------------------------------------------------------------
+
+// The ONE registry of restore jobs for this server process. Jobs are keyed by
+// the resolved absolute TARGET PATH and owned by the server (`docs/adr/0009`),
+// so the registry is deliberately process-wide rather than per-connection: that
+// is exactly what makes a clone survive the socket that started it, be shared by
+// a second device, and never be started twice for one folder. Constructing it is
+// inert (nothing runs until `request()`), so it can live at module scope beside
+// the handlers that drive it.
+const restoreJobs = new RestoreJobRegistry();
+
+// The live broadcast subscription for each observed path, so it can be dropped
+// the moment its job settles. This is the SERVER's single subscription per path,
+// NOT a per-client one: which clients a frame reaches is derived per frame (see
+// clientWatchesRestorePath), so no client bookkeeping exists to leak.
+const restoreObservers = new Map<string, () => void>();
+
+/**
+ * Does this client currently have the restore target on screen?
+ *
+ * The three places a client's folder can be recorded, and why each is needed:
+ *  - its ATTACHED session's cwd: the ordinary case, a live session in the folder;
+ *  - `pendingCwd`: a load painted but not yet attached (a cold load spends
+ *    seconds there);
+ *  - `folderMissingCwd`: a folder-missing load, which deliberately attaches to
+ *    NOTHING and clears `pendingCwd` with it -- so this is the only record of
+ *    the folder such a client is looking at, and it is precisely the client the
+ *    restore panel is rendered for.
+ *
+ * Matching is what SUBSCRIPTION means here: it is evaluated per frame rather
+ * than registered per socket, so a dropped phone leaves nothing behind and a
+ * reconnecting one is matched again for free.
+ */
+function clientWatchesRestorePath(c: WSClient, pool: SessionPool, targetPath: string): boolean {
+  if (c.isCliBridge) return false;
+  const attached = c.sessionId ? pool.getSession(c.sessionId)?.cwd : undefined;
+  for (const candidate of [attached, c.pendingCwd, c.folderMissingCwd]) {
+    if (candidate && path.resolve(candidate) === targetPath) return true;
+  }
+  return false;
+}
+
+function broadcastRestore(
+  clients: Map<string, WSClient>,
+  pool: SessionPool,
+  targetPath: string,
+  msg: ServerMessage,
+): void {
+  for (const c of clients.values()) {
+    if (clientWatchesRestorePath(c, pool, targetPath)) sendWS(c.ws, msg);
+  }
+}
+
+/**
+ * Start relaying one path's restore job to whoever is watching that path.
+ *
+ * Idempotent (a second requester joining a running job must not double-relay),
+ * and self-releasing: the subscription is dropped inside `onSettled`, which the
+ * registry guarantees for every terminal state, so an observer cannot outlive
+ * its job. Subscribe BEFORE requesting the job, because a request can settle
+ * synchronously (a spawn that throws) and a frame emitted before the subscription
+ * exists would simply be lost.
+ */
+function observeRestorePath(
+  targetPath: string,
+  clients: Map<string, WSClient>,
+  pool: SessionPool,
+): void {
+  if (restoreObservers.has(targetPath)) return;
+  const unsubscribe = restoreJobs.subscribe(targetPath, {
+    onProgress: (_progress, job) => {
+      broadcastRestore(clients, pool, targetPath, { type: 'restore_progress', targetPath, job });
+    },
+    onSettled: (job) => {
+      broadcastRestore(clients, pool, targetPath, { type: 'restore_complete', targetPath, job });
+      releaseRestoreObserver(targetPath);
+    },
+  });
+  restoreObservers.set(targetPath, unsubscribe);
+}
+
+function releaseRestoreObserver(targetPath: string): void {
+  const unsubscribe = restoreObservers.get(targetPath);
+  if (!unsubscribe) return;
+  restoreObservers.delete(targetPath);
+  unsubscribe();
+}
+
 // Resolve and report in one step. Every folder_conflict frame goes out through
 // here, so the `readOnly` it carries can never drift from the authority that
 // produced `active`.
@@ -2320,11 +2411,22 @@ async function handleWSMessage(
       const conflict = pool.detectConflict(meta.sessionFile, meta.cwd);
       const folderConflict = conflict.conflict && !!conflict.otherSessionId;
 
-      // This session's working folder does not exist on this machine (the
-      // transcript synced, the clone did not). The conversation is still
-      // READABLE -- reading never needed the folder -- but the client is locked
-      // and, on the cold path below, no live agent is built at all.
-      const folderMissing = meta.folderMissing;
+      // This session's working folder is not usable as a working folder. TWO
+      // things produce that, and they are one state because they have one
+      // remedy and one rendering:
+      //  - it does NOT EXIST (the transcript synced, the clone did not), the
+      //    cheap meta read's `stat`;
+      //  - a RESTORE JOB is materialising it RIGHT NOW. `git clone` creates the
+      //    target directory in its first breath, so the existence check alone
+      //    says "present" for the whole of a multi-minute clone, and a client
+      //    loading in that window (a reconnect, a second device) would be handed
+      //    a live agent pointed at a HALF-CLONED tree. That is the same silent
+      //    breakage this state exists to replace.
+      // The conversation is still READABLE either way -- reading never needed the
+      // folder -- but the client is locked and, on the cold path below, no live
+      // agent is built at all.
+      const restoreInFlight = restoreJobs.get(meta.cwd)?.state === 'running';
+      const folderMissing = meta.folderMissing || restoreInFlight;
       client.folderMissingCwd = folderMissing ? meta.cwd : undefined;
 
       // A session whose cwd matches a sessions.readOnly glob is forced read-only.
@@ -2364,8 +2466,20 @@ async function handleWSMessage(
       // restore instead of an unexplained lock. A client that predates the frame
       // simply ignores it; the server's refusal to accept its sends is what
       // protects it either way.
+      //
+      // Any restore job already running for this folder rides along, so a client
+      // arriving MID-CLONE (a reconnect, a second device, a phone waking up)
+      // repaints the running job from this one frame instead of being offered a
+      // second clone. Live frames follow on their own, because this client now
+      // matches the job path (see clientWatchesRestorePath).
       if (folderMissing) {
-        sendWS(client.ws, { type: 'folder_missing', sessionId: meta.sessionId, cwd: meta.cwd });
+        const job = restoreJobs.get(meta.cwd);
+        sendWS(client.ws, {
+          type: 'folder_missing',
+          sessionId: meta.sessionId,
+          cwd: meta.cwd,
+          ...(job ? { job } : {}),
+        });
       }
 
       // Already resident (warm): attach immediately, no async build needed.
@@ -2630,18 +2744,100 @@ async function handleWSMessage(
       break;
     }
 
+    case 'restore_start': {
+      // RESTORE the working folder at `targetPath`: clone the repository back, or
+      // create the folder. The job is server-owned and path-keyed, so this is a
+      // request to the REGISTRY, not an operation on this socket.
+      const raw = typeof msg.targetPath === 'string' ? msg.targetPath.trim() : '';
+      if (!raw) {
+        sendWS(client.ws, {
+          type: 'restore_rejected',
+          targetPath: '',
+          reason: 'invalid-target',
+          message: 'A target path is required.',
+        });
+        break;
+      }
+      // Resolve the same way the registry does, so the broadcast key, the frames
+      // and the job all name ONE path.
+      const targetPath = path.resolve(expandTilde(raw));
+      // Subscribe first: a request can settle inside the call (a spawn that
+      // throws), and a frame emitted before the subscription exists is lost.
+      observeRestorePath(targetPath, clients, pool);
+      const request: RestoreRequest =
+        msg.action === 'create'
+          ? { kind: 'create', targetPath, gitInit: msg.gitInit === true }
+          : { kind: 'clone', targetPath, url: typeof msg.url === 'string' ? msg.url.trim() : '' };
+      const result = restoreJobs.request(request);
+      if (!result.ok) {
+        // Nothing was spawned or created, so there is no job to observe and no
+        // completion coming. Say why, to the requester only, and let go of the
+        // subscription we optimistically took.
+        if (restoreJobs.get(targetPath)?.state !== 'running') releaseRestoreObserver(targetPath);
+        sendWS(client.ws, {
+          type: 'restore_rejected',
+          targetPath,
+          reason: result.reason,
+          message: result.message,
+        });
+        break;
+      }
+      // `outcome` and `job.url` together are what stop a second device from being
+      // silently answered as though ITS edited url had been accepted.
+      sendWS(client.ws, {
+        type: 'restore_started',
+        targetPath,
+        outcome: result.outcome,
+        job: result.job,
+      });
+      if (result.job.state !== 'running') {
+        // Settled inside request() (a spawn failure), so no observer will ever
+        // report it: state the outcome here instead of leaving the panel spinning.
+        releaseRestoreObserver(targetPath);
+        broadcastRestore(clients, pool, targetPath, {
+          type: 'restore_complete',
+          targetPath,
+          job: result.job,
+        });
+      }
+      break;
+    }
+
+    case 'restore_cancel': {
+      const raw = typeof msg.targetPath === 'string' ? msg.targetPath.trim() : '';
+      if (!raw) break;
+      const targetPath = path.resolve(expandTilde(raw));
+      // The job is path-keyed and server-owned, so any client watching the folder
+      // may cancel it -- including one that did not start it, which is the whole
+      // point when the device that did is the one that went away. The registry
+      // settles the job (authoritatively) and the observer broadcasts the
+      // `cancelled` completion to everyone watching, so nothing is answered here.
+      if (restoreJobs.cancel(targetPath)) break;
+      // Nothing was running: re-state the current (retained) job to the asker so a
+      // stale panel converges instead of waiting for a completion that already
+      // happened.
+      const job = restoreJobs.get(targetPath);
+      if (job) sendWS(client.ws, { type: 'restore_complete', targetPath, job });
+      break;
+    }
+
     case 'message': {
       // The session's working folder does not exist on this machine, so no live
       // agent was built for it and there is nothing to attach to (which would
       // otherwise make this a SILENT drop on the sessionId check below). Refuse
       // by path, naming it, so the client can say what to restore.
       if (client.folderMissingCwd) {
+        // Word it for the state the folder is actually in: a restore already
+        // running is a wait, not a "go and restore it".
+        const restoring = restoreJobs.get(client.folderMissingCwd)?.state === 'running';
         sendWS(client.ws, {
           type: 'session_error',
           sessionId: msg.sessionId,
-          error:
-            `This session's working folder does not exist on this machine (${client.folderMissingCwd}), ` +
-            'so the message was not delivered. Restore the folder, then reload the session.',
+          error: restoring
+            ? `This session's working folder (${client.folderMissingCwd}) is still being restored, ` +
+              'so the message was not delivered. Wait for the restore to finish, then reload the session.'
+            : `This session's working folder does not exist on this machine (${client.folderMissingCwd}), ` +
+              'so the message was not delivered. Restore the folder, then reload the session.',
         });
         return;
       }
