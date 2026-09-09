@@ -1,5 +1,11 @@
 import { writable, get, type Writable } from "sveltore";
-import { type ChatMessage, type WhereverState, skillInvocationIdentity } from "./types.js";
+import {
+  type ChatMessage,
+  type RestoreInfo,
+  type RestoreJobInfo,
+  type WhereverState,
+  skillInvocationIdentity,
+} from "./types.js";
 
 /**
  * Per-send options for a user message.
@@ -63,6 +69,7 @@ const defaultState: WhereverState = {
 	serverVersion: null,
 	folderConflict: null,
 	folderMissing: null,
+	restore: null,
 	isInterrupted: false,
 	notice: null,
 	sudoPrompt: null,
@@ -1302,6 +1309,10 @@ export class WhereverClient {
           // by a notice naming the path. Hard (no "Continue anyway"); the
           // authoritative `folder_missing` frame follows with the same cwd.
           folderMissing: msg.folderMissing ? {cwd: msg.cwd} : null,
+          // The restore panel's state belongs to the folder we are leaving; the
+          // authoritative `folder_missing` frame below re-creates it for this
+          // session (carrying any job already running for its path).
+          restore: null,
           // pending -> the history is painted now but the live agent is still
           // building; keep the composer disabled (agentPending) until
           // session_ready. A non-pending create (new session, warm reload) is
@@ -1410,6 +1421,7 @@ export class WhereverClient {
               loadingSession: false,
               agentPending: false,
               folderMissing: null,
+              restore: null,
               notice: null,
               sudoPrompt: null,
             };
@@ -1435,14 +1447,74 @@ export class WhereverClient {
 
       case 'folder_missing':
         // The server states, authoritatively, that this session's working folder
-        // does not exist on this machine, and names the absolute path. No
-        // session_ready is coming (no agent was built), so this is also the end
-        // of the load: read-only, with an explanation. Ignore a frame for a
-        // session we already switched away from.
+        // is not usable -- it does not exist on this machine, or a restore is
+        // still materialising it -- and names the absolute path. No session_ready
+        // is coming (no agent was built), so this is also the end of the load:
+        // read-only, with an explanation. Ignore a frame for a session we already
+        // switched away from.
+        //
+        // `job` is any restore the server is ALREADY running for that path, so a
+        // reconnect or a second device paints the running clone from this one
+        // frame. With no job the panel simply offers to start one; either way the
+        // restore state exists from here on, so a job another device starts is
+        // painted by the progress frames that follow.
         this.stateStore.update((s: WhereverState) => {
           if (s.sessionId && msg.sessionId && s.sessionId !== msg.sessionId) return s;
-          return {...s, readOnly: true, folderMissing: {cwd: msg.cwd}};
+          return {
+            ...s,
+            readOnly: true,
+            folderMissing: {cwd: msg.cwd},
+            restore: {
+              targetPath: msg.cwd,
+              job: (msg.job as RestoreJobInfo | undefined) ?? null,
+              joined: false,
+              rejection: null,
+            },
+          };
         });
+        break;
+
+      case 'restore_started':
+        // The answer to OUR restore_start. `outcome: 'joined'` means a job was
+        // already running for this path and we coalesced onto it, so `job.url` is
+        // the url really in flight -- which the panel must show when it differs
+        // from the one this client asked for, rather than pretending the edited
+        // url was accepted.
+        this.stateStore.update((s: WhereverState) =>
+          this.withRestore(s, msg.targetPath, (r) => ({
+            ...r,
+            job: msg.job as RestoreJobInfo,
+            joined: msg.outcome === 'joined',
+            rejection: null,
+          })),
+        );
+        break;
+
+      case 'restore_rejected':
+        // Refused before anything was spawned: no job, no completion coming. Keep
+        // whatever job state we had (a rejection answers OUR request, it does not
+        // touch a job someone else is running) and surface the reason.
+        this.stateStore.update((s: WhereverState) =>
+          this.withRestore(s, msg.targetPath, (r) => ({
+            ...r,
+            rejection: {reason: msg.reason, message: msg.message},
+          })),
+        );
+        break;
+
+      case 'restore_progress':
+      case 'restore_complete':
+        // Broadcast frames: the server sends them to every client whose folder
+        // matches the job path, so they arrive whether or not THIS client started
+        // the restore (a second device, or a reconnect mid-clone). Each carries
+        // the whole job snapshot, so one frame is enough to repaint.
+        this.stateStore.update((s: WhereverState) =>
+          this.withRestore(s, msg.targetPath, (r) => ({
+            ...r,
+            job: msg.job as RestoreJobInfo,
+            rejection: null,
+          })),
+        );
         break;
 
       case 'folder_conflict':
@@ -2255,6 +2327,24 @@ export class WhereverClient {
     this.stateStore.update((st: WhereverState) => ({...st, pendingSteering: []}));
   }
 
+  /**
+   * Apply `mutate` to the restore state for `targetPath`, or ignore the frame.
+   *
+   * Restore frames are addressed by PATH (the server's job key) rather than by
+   * session id, because the server derives who gets them from a path match. This
+   * is where a frame for a folder this client is no longer looking at is dropped
+   * -- the one still in flight when the user switched sessions.
+   */
+  private withRestore(
+    s: WhereverState,
+    targetPath: string,
+    mutate: (restore: RestoreInfo) => RestoreInfo,
+  ): WhereverState {
+    const current = s.restore;
+    if (!current || current.targetPath !== targetPath) return s;
+    return {...s, restore: mutate(current)};
+  }
+
   public joinSession(sessionFile: string, cwd?: string, model?: string) {
     this.stateStore.update((s: WhereverState) => ({
       ...s,
@@ -2262,6 +2352,7 @@ export class WhereverClient {
       // Both folder verdicts belong to the session being left; the load we are
       // starting re-states its own (the server re-checks on every load).
       folderMissing: null,
+      restore: null,
       sessionError: null,
       loadingSession: true,
       agentPending: false,
@@ -2302,6 +2393,7 @@ export class WhereverClient {
       readOnly: false,
       folderConflict: null,
       folderMissing: null,
+      restore: null,
       sessionError: null,
       notice: null,
       sudoPrompt: null,
@@ -2348,6 +2440,7 @@ export class WhereverClient {
       // Creating a session creates its folder, so no missing-folder lock can
       // survive into it.
       folderMissing: null,
+      restore: null,
       sessionError: null,
       creatingSession: true,
       loadingSession: false,
@@ -2395,6 +2488,7 @@ export class WhereverClient {
       activeModel: null,
       readOnly: false,
       folderMissing: null,
+      restore: null,
       notice: null,
       sudoPrompt: null,
       creatingSession: false,
@@ -2409,6 +2503,88 @@ export class WhereverClient {
     this.resumeSessionFile = null;
     this.resumeCwd = undefined;
     this.resumeModel = undefined;
+  }
+
+  // --- RESTORE: materialise the active session's missing working folder -----
+  //
+  // "Restore" here means making the missing FOLDER exist again (clone it back,
+  // or create it), never the unrelated re-materialising of queued steers/drafts
+  // after a reload. See CONTEXT.md; the whole family is namespaced `restore*`.
+
+  /**
+   * Ask the server to restore the folder of the folder-missing session this
+   * client is looking at: CLONE `url` into it, or CREATE it.
+   *
+   * The job is server-owned and keyed by that path, so this may well JOIN a job
+   * another device (or this client's previous, dropped socket) already started;
+   * the server's `restore_started` says which, and carries the url really in
+   * flight. Returns false when there is no missing folder to restore, or when a
+   * clone was asked for with no url.
+   */
+  public startRestore(
+    action: 'clone' | 'create',
+    url?: string,
+    gitInit?: boolean,
+  ): boolean {
+    const s = get(this.stateStore);
+    const targetPath = s.restore?.targetPath ?? s.folderMissing?.cwd;
+    if (!targetPath) return false;
+    const trimmedUrl = url?.trim();
+    if (action === 'clone' && !trimmedUrl) return false;
+    // Record what WE asked for before the answer lands, so the panel can compare
+    // it with the url the (possibly joined) job is really cloning.
+    this.stateStore.update((st: WhereverState) => {
+      const previous = st.restore?.targetPath === targetPath ? st.restore.job : null;
+      return {
+        ...st,
+        restore: {
+          targetPath,
+          // A RUNNING job is the one this request will join, so it stays on
+          // screen. A terminal one belonged to the attempt being retried: drop
+          // it, so the panel shows this request in flight rather than the
+          // previous failure until the server answers.
+          job: previous && previous.state === 'running' ? previous : null,
+          joined: false,
+          requestedUrl: trimmedUrl,
+          rejection: null,
+        },
+      };
+    });
+    return this.send({
+      type: 'restore_start',
+      targetPath,
+      action,
+      ...(trimmedUrl ? {url: trimmedUrl} : {}),
+      ...(gitInit !== undefined ? {gitInit} : {}),
+    });
+  }
+
+  /**
+   * Cancel the restore running for this session's folder. The server settles the
+   * job authoritatively and broadcasts the `cancelled` completion to every client
+   * watching that folder (this one included), so no state is guessed here.
+   */
+  public cancelRestore(): boolean {
+    const s = get(this.stateStore);
+    const targetPath = s.restore?.targetPath;
+    if (!targetPath) return false;
+    return this.send({type: 'restore_cancel', targetPath});
+  }
+
+  /**
+   * Re-load the active session file.
+   *
+   * This is how a completed restore goes LIVE: whether a session has a live agent
+   * is a load-time decision, and the load that found the folder missing
+   * deliberately built none. Re-loading is therefore the honest way to get one,
+   * not a refresh hint. Returns false when there is no active session file.
+   */
+  public reloadSession(): boolean {
+    const s = get(this.stateStore);
+    const sessionFile = s.activeSessionFile;
+    if (!sessionFile) return false;
+    this.joinSession(sessionFile, s.activeCwd ?? undefined);
+    return true;
   }
 
   // "Continue anyway" on the folder-conflict warning banner: ask the server to

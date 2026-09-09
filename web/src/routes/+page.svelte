@@ -6,6 +6,7 @@
 	import SessionBrowser from '$lib/components/SessionBrowser.svelte';
 	import ConversationSearch from '$lib/components/ConversationSearch.svelte';
 	import SudoPasswordDialog from '$lib/components/SudoPasswordDialog.svelte';
+	import RestorePanel from '$lib/components/RestorePanel.svelte';
 	import {
 		piState,
 		isConnected,
@@ -809,29 +810,16 @@
 		     EXCEPTION: a read-only session (e.g. a sessions.readOnly fleet folder)
 		     hides the composer entirely -- it is an observe-only view. -->
 		{#if fMissing}
-			<!-- MISSING FOLDER: this session's working folder does not exist on this
-			     machine (the transcript synced, the clone did not). The conversation
-			     above is fully readable, but the server built no agent and refuses
-			     every send, so the composer is replaced by an explanation NAMING the
-			     absolute path. There is deliberately no dismiss: unlike the folder
-			     conflict this is not a warning, it is the absence of the folder.
-			     Restore actions land in a later change; until then the honest lock is
-			     the whole point. -->
-			<div
-				class="border-t border-yellow-500/30 bg-yellow-500/10 px-4 py-3 text-sm text-yellow-400"
-			>
-				<div class="font-medium">
-					📁 This session's folder is not on this machine
-				</div>
-				<div class="mt-1 font-mono text-xs break-all text-yellow-300">
-					{fMissing.cwd}
-				</div>
-				<div class="mt-1 text-xs text-brand-text-muted">
-					The conversation is readable, but nothing can be run here until the
-					folder is restored. Restore it (e.g. clone the repository back to that
-					path), then reload this session.
-				</div>
-			</div>
+			<!-- MISSING FOLDER: this session's working folder is not usable on this
+			     machine -- it does not exist (the transcript synced, the clone did
+			     not), or a restore is still materialising it. The conversation above
+			     is fully readable, but the server built no agent and refuses every
+			     send, so the composer is replaced by the RESTORE PANEL: the missing
+			     path, an editable pre-filled URL, and the clone with live progress,
+			     ending in a reload that brings the session back live. There is
+			     deliberately no dismiss: unlike the folder conflict this is not a
+			     warning, it is the absence of the folder. -->
+			<RestorePanel />
 		{:else if readOnly && sessionInfo.sessionFile}
 			<div
 				class="border-t border-brand-border bg-brand-surface px-4 py-3 text-center text-xs text-brand-text-muted"

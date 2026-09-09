@@ -115,6 +115,80 @@ export interface FolderMissingInfo {
 	cwd: string;
 }
 
+// --- RESTORE (materialising a missing working folder) ----------------------
+//
+// Vocabulary, pinned (see CONTEXT.md): RESTORE here means making a missing
+// working folder exist again -- cloning the repository back, or creating the
+// folder. It is NOT the unrelated in-codebase sense of re-materialising queued
+// steers and drafts after a reload (`restoredFromQueue` above). Every frame and
+// field in this family is namespaced `restore*`.
+//
+// These mirror the server's restore-job snapshot (server/src/restore-jobs.ts)
+// field for field, duplicated here rather than imported so this package keeps no
+// server dependency (the same posture as ContextUsage).
+
+// One honest progress reading. `percent` is null exactly when git reports no
+// percentage for the phase, and `indeterminate` says so explicitly rather than
+// leaving the UI to invent a 0. `scope` is the repository itself
+// ('repository') or a submodule's path relative to the target: submodules are
+// counted SEPARATELY, never folded into one fake global percentage.
+export interface RestoreProgressInfo {
+	phase: string;
+	scope: string;
+	percent: number | null;
+	indeterminate: boolean;
+	/** The git line this was parsed from, for a detail line under the bar. */
+	text: string;
+	at: number;
+}
+
+// A failed restore, explained. `cause` is the server's mapping onto a named,
+// actionable problem ('no-key' | 'unknown-host' | 'not-found' | 'network' |
+// 'unknown'); `message` is the human sentence for it, and `stderr` is git's raw
+// output, kept UNDERNEATH the mapping and never replaced by it.
+export interface RestoreFailureInfo {
+	cause: string;
+	message: string;
+	stderr: string;
+}
+
+// A restore job as the server reports it. Keyed by `targetPath` on the server,
+// so `id` is what tells a retry apart from the job it replaced.
+export interface RestoreJobInfo {
+	id: number;
+	kind: 'clone' | 'create';
+	targetPath: string;
+	/** The url the job is ACTUALLY cloning (clone kind only). */
+	url?: string;
+	gitInit?: boolean;
+	state: 'running' | 'done' | 'failed' | 'cancelled';
+	progress: RestoreProgressInfo | null;
+	failure?: RestoreFailureInfo;
+	startedAt: number;
+	endedAt?: number;
+}
+
+// What the restore panel needs to render, for ONE folder. Created as soon as a
+// folder-missing session is loaded (with `job` already set when the server is
+// mid-clone for that path, so a reconnecting phone repaints a running job), and
+// updated by the server's restore frames.
+export interface RestoreInfo {
+	/** The absolute folder being restored. Frames for any other path are ignored. */
+	targetPath: string;
+	/** The server's job for that path, or null while none has been started. */
+	job: RestoreJobInfo | null;
+	// True when THIS client's last start JOINED a job that was already running.
+	// With `requestedUrl` it is what lets the panel say "a clone of <job.url> is
+	// already running" instead of pretending the edited url was accepted.
+	joined: boolean;
+	/** The url this client last asked for, whether or not it was the one used. */
+	requestedUrl?: string;
+	// A request REFUSED before anything was spawned (an unsafe target, a
+	// non-empty folder, a url outside the allowlist). No job exists and no
+	// completion is coming, so the panel shows this and stays in its offer state.
+	rejection: {reason: string; message: string} | null;
+}
+
 export interface WhereverState {
 	connected: boolean;
 	connecting: boolean;
@@ -152,6 +226,12 @@ export interface WhereverState {
 	// coming: the composer is replaced by a notice naming the path. Cleared with
 	// the session it belongs to.
 	folderMissing: FolderMissingInfo | null;
+	// The restore of the active session's missing folder: the server's job for
+	// that path (running, finished or not yet started) plus this client's own last
+	// request. Non-null exactly while a folder-missing session is open, so the
+	// panel that replaces the composer renders from here. Cleared with the session
+	// it belongs to.
+	restore: RestoreInfo | null;
 	isInterrupted: boolean;
 	// A dismissible, non-fatal notice about the active session (e.g. a CLI bridge
 	// took over while this session was mid-turn here, discarding the in-flight

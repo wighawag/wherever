@@ -1,5 +1,17 @@
 import { HistoryMessage, ContextUsageInfo, ToolImage, SkillCommand } from './session-types.js';
 export type { ContextUsageInfo, ToolImage, SkillCommand } from './session-types.js';
+// Type-only, so declaring the restore frames here does not pull the registry's
+// node:child_process/node:fs surface into anything that merely parses protocol.
+import type { RestoreJobKind, RestoreJobSnapshot, RestoreRejectionReason } from './restore-jobs.js';
+export type {
+  RestoreJobKind,
+  RestoreJobSnapshot,
+  RestoreJobState,
+  RestoreProgress,
+  RestoreFailure,
+  RestoreFailureCause,
+  RestoreRejectionReason,
+} from './restore-jobs.js';
 
 // Initial number of (most recent) history messages sent when a session is
 // loaded/joined. Older messages are fetched lazily via `history_load_more`.
@@ -46,6 +58,23 @@ export type ClientMessage =
   // into its session even though another session in the same folder is active.
   // It does NOT abort or take over the other session; both run concurrently.
   | { type: 'folder_conflict_continue'; sessionId: string }
+  // Client -> server: RESTORE the working folder at `targetPath` -- materialise
+  // it by CLONING `url` (SSH, or a `file://` fixture) or by CREATING the folder.
+  // Answered to THIS client with `restore_started` (carrying whether the request
+  // started a job or JOINED one already running for that path, and the url that
+  // job is really cloning) or with `restore_rejected` when it is refused before
+  // anything is spawned. Progress and the outcome then arrive as broadcasts, to
+  // every client matching the path -- including this one.
+  //
+  // NOTE the vocabulary (CONTEXT.md): `restore` here means materialising a
+  // MISSING WORKING FOLDER, never the unrelated re-materialising of queued
+  // steers/drafts after a reload. Every frame in this family is `restore_*`.
+  | { type: 'restore_start'; targetPath: string; action: RestoreJobKind; url?: string; gitInit?: boolean }
+  // Client -> server: cancel the restore job running at `targetPath`. The job is
+  // server-owned and path-keyed, so ANY client looking at that folder can cancel
+  // it -- including one that did not start it (the phone that started the clone
+  // may be the one that is gone). A directory the job created is removed with it.
+  | { type: 'restore_cancel'; targetPath: string }
   | { type: 'model_change'; model: string }
   | { type: 'file_upload'; uploadId: string; sessionId: string; filename: string; data: string }
   | { type: 'cli_register'; sessionFile: string; cwd: string; model?: string; isStreaming?: boolean }
@@ -148,8 +177,42 @@ export type ServerMessage =
   // rule it is curable -- by restoring the folder and RELOADING the session (a
   // live agent is a load-time decision). Detection is load-time only, so this
   // frame is only ever sent while missing; there is no "it came back" update.
-  // Later work extends it with remote candidates and any running restore job.
-  | { type: 'folder_missing'; sessionId: string; cwd: string }
+  //
+  // `job` carries any restore job the server is ALREADY running (or has just
+  // finished) for this path, so a client arriving mid-clone -- a reconnect, a
+  // second device, a phone waking up -- repaints the running progress instead of
+  // being offered a second clone. Absent when no job exists for the folder.
+  // Remote CANDIDATES deliberately do NOT ride on this frame: resolving them can
+  // shell out to a provider CLI, and this frame is on the session-load path, so
+  // the panel fetches them on demand from GET /remote-candidates.
+  | { type: 'folder_missing'; sessionId: string; cwd: string; job?: RestoreJobSnapshot }
+  // Server -> client: the answer to THIS client's `restore_start`. `outcome` is
+  // 'joined' when a job was already running for the path and this request
+  // coalesced onto it; `job.url` is then the url REALLY in flight, which the
+  // panel must show when it differs from the one the user typed. Sent to the
+  // requester only; everyone else learns about the job from the broadcasts below.
+  | { type: 'restore_started'; targetPath: string; outcome: 'started' | 'joined'; job: RestoreJobSnapshot }
+  // Server -> client: this client's `restore_start` was REFUSED before anything
+  // was spawned or created (an unsafe target, a non-empty folder, a url outside
+  // the SSH/file shape allowlist). No job exists, so there is nothing to cancel
+  // and no completion is coming; the panel shows `message` and stays in its
+  // offer-to-restore state. Sent to the requester only.
+  | { type: 'restore_rejected'; targetPath: string; reason: RestoreRejectionReason; message: string }
+  // Server -> client: live progress for the restore job at `targetPath`, carrying
+  // the whole job snapshot so ONE frame is enough to repaint from scratch.
+  //
+  // Broadcast to every connected client whose current session cwd, or pending
+  // load target, MATCHES the job path. That subscription is DERIVED from the
+  // match on each frame, never registered per socket, so a dropped phone leaves
+  // nothing behind and a reconnecting one is matched again for free.
+  | { type: 'restore_progress'; targetPath: string; job: RestoreJobSnapshot }
+  // Server -> client: the restore job at `targetPath` reached a TERMINAL state
+  // (`done`, `failed` or `cancelled` -- read `job.state`, all three arrive here).
+  // A failure carries `job.failure` with the mapped cause and git's raw stderr
+  // underneath. Same derived broadcast as restore_progress. On success the panel
+  // offers a RELOAD, because whether a session has a live agent is a load-time
+  // decision and only a reload can make one.
+  | { type: 'restore_complete'; targetPath: string; job: RestoreJobSnapshot }
   // Server -> client: this connection is being closed because a NEWER connection
   // arrived carrying the same `clientKey`, i.e. the server took it for this
   // viewer's own reconnect. A client that receives this is demonstrably alive, so

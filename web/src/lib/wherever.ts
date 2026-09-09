@@ -973,6 +973,36 @@ export function changeModel(model: string) {
 	client.changeModel(model);
 }
 
+// --- Restoring a missing working folder ------------------------------------
+//
+// RESTORE = make the missing FOLDER exist again (clone it back, or create it).
+// Not to be confused with the unrelated restoring of queued steers/drafts after
+// a reload; see CONTEXT.md, where the wording is pinned.
+
+// Clone `url` into the active session's missing folder (or create the folder).
+// The job is server-owned and keyed by that path, so this may JOIN a clone
+// another device already started -- the panel is told which, and with which url.
+export function startRestore(
+	action: 'clone' | 'create',
+	url?: string,
+	gitInit?: boolean,
+): boolean {
+	return client.startRestore(action, url, gitInit);
+}
+
+// Cancel the running restore for the active session's folder. A directory the
+// job created is removed with it; one that already existed is left alone.
+export function cancelRestore(): boolean {
+	return client.cancelRestore();
+}
+
+// Re-load the active session. This is how a completed restore goes LIVE: whether
+// a session has a live agent is a load-time decision, and the load that found
+// the folder missing deliberately built none.
+export function reloadSession(): boolean {
+	return client.reloadSession();
+}
+
 export const piState = derived(state, ($s) => $s);
 export const isConnected = derived(piState, ($s) => $s.connected);
 export const isStreaming = derived(piState, ($s) => $s.isStreaming);
@@ -986,6 +1016,10 @@ export const folderConflict = derived(piState, ($s) => $s.folderConflict);
 // dismiss: the composer is replaced by a notice naming `cwd`, and only restoring
 // that folder and reloading brings the session back.
 export const folderMissing = derived(piState, ($s) => $s.folderMissing);
+// The restore of that folder: the server's path-keyed job (running, finished, or
+// not yet started) plus this client's own last request. Drives the restore panel
+// that replaces the composer. null when no folder-missing session is open.
+export const restoreState = derived(piState, ($s) => $s.restore);
 export const isInterrupted = derived(piState, ($s) => $s.isInterrupted);
 // The mid-stream steer messages still queued on the server (not yet injected).
 // A user bubble whose content appears here is a pending steer the user can
