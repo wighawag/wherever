@@ -65,3 +65,12 @@ Safety, non-negotiable: the resolved target must be inside the home directory (r
 > Done means: the module clones recursively with observable, honest progress, refuses unsafe inputs, explains failures, cancels cleanly, and is covered by tests that pollute nothing outside their temp directories.
 >
 > RECORD non-obvious in-scope decisions durably and link them from the done record (ADR if it meets the gate, otherwise a JSDoc at the choice site or a `## Decisions` block).
+
+## Decisions
+
+1. **The home guard is mirrored, not imported** (JSDoc at `isWithinHome` in `restore-jobs.ts`). `index.ts` calls `dispatch()` at import, so importing its guard from a library module would start the CLI. Alternative considered: extract the guard first, rejected as it edits `index.ts` which this task must leave alone. Touches the later wiring task: it should collapse both onto this one.
+2. **`setupUpstreamTracking` is re-implemented here, not imported** (JSDoc at the function). `session-pool.ts` pulls the whole pi-coding-agent runtime, which would end the module's standalone-ness and its fast tests. Touches the re-point task, which should delete the session-pool copies. Behaviour is pinned by a test (`branch.main.remote === origin`).
+3. **URL validation is a shape ALLOWLIST, not a metacharacter denylist** (JSDoc at the regexes). It also excludes git's own dangerous transports (`ext::`, `--upload-pack=`) that no argv array protects against. Touches the later candidate-URL task: any candidate it synthesises must satisfy this allowlist.
+4. **Git's "correct access rights and the repository exists" trailer is deliberately NOT a `no-key` signature** (comment at the choice site). It is printed for a missing key *and* a missing repo, so keying on it reports every wrong-URL clone as a credentials problem. This is a user-visible message default.
+5. **Cancel is authoritative** (JSDoc at `cancel`): the job settles `cancelled` even if the child finished in the same breath, because the user asked for the folder not to be there. Alternative (last-writer-wins on exit code) rejected as it would leave a folder behind after an explicit cancel.
+6. **`ConnectTimeout=10` on the SSH command** (JSDoc at `buildCloneEnv`): a user-visible default covering the one hang batch mode cannot (a host that accepts TCP then goes silent). Reversible in one line.
