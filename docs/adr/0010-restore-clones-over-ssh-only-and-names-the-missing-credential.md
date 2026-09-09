@@ -1,0 +1,9 @@
+# Restore clones over SSH only, and NAMES the missing credential
+
+Folder restore clones over SSH exclusively: every candidate URL the server offers is an scp-style SSH remote, no HTTPS candidate is ever synthesised, no token is used, and the provider CLI is used only to PROBE whether a repository exists, never as a clone transport. The server box is assumed to be provisioned already (a key the host accepts, a populated `known_hosts`, an authenticated provider CLI).
+
+The rejected alternative was an HTTPS fallback through the already-authenticated provider CLI, which would make a clone succeed on an unprovisioned machine. It was rejected because it silently produces remotes of a shape the user does not push with, and it drags token handling into a path that otherwise has none. The trade-off accepted in exchange is that restore CANNOT rescue an unprovisioned box.
+
+That trade-off is what makes the error path load-bearing rather than cosmetic, so it is part of the decision: the clone runs with interactive credential prompts DISABLED (no terminal prompt, no askpass, batch-mode SSH) so a missing credential fails fast instead of hanging invisibly at zero percent, and git's well-known failure signatures are mapped onto messages that NAME the cause: no key this host accepts; the host is absent from `known_hosts` (which one manual connection fixes, and which is the first thing a genuinely fresh machine hits); repository not found, which is a wrong URL OR a key without access and is reported as both since they are indistinguishable from here; and host-resolution or timeout failures reported as network rather than credentials. Anything unrecognised is surfaced verbatim rather than reworded.
+
+Credential SETUP from the UI (generating a key, running a provider login, trusting a host key) remains deliberately out of scope. The product's job here is to say precisely which one-line fix the box needs, not to perform it.
