@@ -150,6 +150,55 @@ describe('restore panel state', () => {
 		expect(get(client.stateStore).restore?.job?.state).toBe('done');
 	});
 
+	it('sends the CREATE remedy with the git-init choice, in both states', () => {
+		// The second remedy: a folder that was never a clone. Same frame family,
+		// same path, no url -- only the checkbox differs, and it must travel as an
+		// EXPLICIT boolean either way. Omitting it when off would let the server's
+		// own default decide, which is exactly the surprise repository a user who
+		// turned `gitInitDefault` off is entitled not to get.
+		loadMissingFolderSession();
+
+		client.startRestore('create', undefined, true);
+		expect(ws.last().lastSentOfType('restore_start')).toEqual({
+			type: 'restore_start',
+			targetPath: TARGET,
+			action: 'create',
+			gitInit: true,
+		});
+
+		client.startRestore('create', undefined, false);
+		expect(ws.last().lastSentOfType('restore_start')).toEqual({
+			type: 'restore_start',
+			targetPath: TARGET,
+			action: 'create',
+			gitInit: false,
+		});
+
+		// It drives the ONE state machine: the create job is followed exactly as a
+		// clone is, to the same terminal state the panel's ready-and-reload rests on.
+		ws.last().receive({
+			type: 'restore_started',
+			targetPath: TARGET,
+			outcome: 'started',
+			job: runningJob({kind: 'create', url: undefined, gitInit: false}),
+		});
+		ws.last().receive({
+			type: 'restore_complete',
+			targetPath: TARGET,
+			job: runningJob({
+				kind: 'create',
+				url: undefined,
+				gitInit: false,
+				state: 'done',
+				endedAt: 3,
+			}),
+		});
+		const job = get(client.stateStore).restore?.job;
+		expect(job?.kind).toBe('create');
+		expect(job?.state).toBe('done');
+		expect(job?.gitInit).toBe(false);
+	});
+
 	it('says when a second tap JOINED a job cloning a DIFFERENT url', () => {
 		loadMissingFolderSession(runningJob());
 

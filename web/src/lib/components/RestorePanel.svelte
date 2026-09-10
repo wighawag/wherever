@@ -2,8 +2,18 @@
 	// The RESTORE PANEL: what a folder-missing session shows in place of the
 	// composer. The session's working folder is not on this machine (the
 	// transcript synced, the clone did not), so there is nothing to drive and
-	// nothing to type into -- but there IS a remedy, and this is it: clone the
-	// repository back into that exact path, from the phone, and watch it happen.
+	// nothing to type into -- but there IS a remedy, and this is it: put the
+	// folder back at that exact path, from the phone, and watch it happen.
+	//
+	// TWO remedies, ONE state machine. Cloning the repository back is the common
+	// case and the primary action. Creating the folder is the RARE one (a scratch
+	// directory, a folder whose contents only ever lived on the old machine): it
+	// is deliberately kept visually secondary, behind a disclosure, because a tap
+	// that lands on it by accident produces an EMPTY folder that then looks
+	// restored -- the one outcome worse than the missing folder itself, since the
+	// non-empty guard will refuse the clone that should have happened. Both drive
+	// the same server job, the same frames and the same running / ready / failed
+	// states below; only the request differs.
 	//
 	// Three things this panel is deliberately careful about:
 	//
@@ -29,7 +39,9 @@
 		reloadSession,
 	} from '$lib/wherever';
 	import {
+		fetchConfig,
 		fetchRemoteCandidates,
+		gitInitDefaultStore,
 		type RemoteCandidate,
 	} from '$lib/session-store';
 
@@ -40,14 +52,19 @@
 	let ready = $derived(job?.state === 'done');
 	let failure = $derived(job?.state === 'failed' ? job.failure : undefined);
 	let rejection = $derived(restore?.rejection ?? null);
+	// A create request is out and unanswered. The clone side reads this off the
+	// client's `requestedUrl`, which a create has none of, so it is tracked here.
+	// It never needs clearing: the `!job && !rejection` conjunction below is what
+	// actually opens and closes the window.
+	let createRequested = $state(false);
+	// Our Clone or Create tap is out and the server has not answered yet (neither
+	// a job nor a refusal). A tiny window on a fast link, a long one on a phone,
+	// and the one where a second tap would fire a pointless duplicate request.
+	let awaitingAnswer = $derived(
+		(!!restore?.requestedUrl || createRequested) && !job && !restore?.rejection,
+	);
 	// A clone of a DIFFERENT url is already running for this folder: our tap
 	// joined it, so what lands here is that url, not the one in the field.
-	// Our Clone tap is out and the server has not answered yet (neither a job nor
-	// a refusal). A tiny window on a fast link, a long one on a phone, and the one
-	// where a second tap would fire a pointless duplicate request.
-	let awaitingAnswer = $derived(
-		!!restore?.requestedUrl && !job && !restore?.rejection,
-	);
 	let joinedOtherUrl = $derived(
 		restore?.joined &&
 			job?.url &&
@@ -56,12 +73,23 @@
 			? job.url
 			: null,
 	);
+	// Which remedy the running/finished job is: the two share every state below,
+	// so the wording (and the submodule note, which is meaningless for a mkdir)
+	// reads it rather than assuming a clone.
+	let creating = $derived(job?.kind === 'create');
 
 	let url = $state('');
 	let urlTouched = $state(false);
 	let candidates = $state<RemoteCandidate[]>([]);
 	let loadingCandidates = $state(false);
 	let showRawOutput = $state(false);
+	// The second remedy, closed by default (see the header note on why it is
+	// secondary).
+	let showCreate = $state(false);
+	let gitInit = $state(false);
+	// null until the user touches the checkbox; while it is null the configured
+	// default owns the value, exactly as the new-session dialog does it.
+	let gitInitChoice = $state<boolean | null>(null);
 	// The path the field was last pre-filled for. A plain variable, not $state:
 	// it guards the effect below and must not itself re-trigger it.
 	let prefilledFor = '';
@@ -77,6 +105,15 @@
 		url = '';
 		urlTouched = false;
 		candidates = [];
+		showCreate = false;
+		gitInitChoice = null;
+		createRequested = false;
+		// Refresh the server's configured git-init default with the panel, so the
+		// checkbox below reflects the CONFIG rather than whatever the store last
+		// happened to hold (the session browser is what normally fetches it, and
+		// the panel must not depend on that having happened). /config is a plain
+		// read behind the same token gate as the candidates call beside it.
+		fetchConfig();
 		loadingCandidates = true;
 		fetchRemoteCandidates(cwd)
 			.then((list) => {
@@ -113,10 +150,28 @@
 		return scope === 'repository' ? 'the repository' : `submodule ${scope}`;
 	}
 
+	// The git-init default is the CONFIGURED one (`gitInitDefault`, the same value
+	// that decides whether a NEW session's folder is initialised), never a second
+	// restore-only default: a user who turned it off must not get a surprise
+	// repository here either. The user's own tick, once made, wins for this panel.
+	$effect(() => {
+		const configured = $gitInitDefaultStore;
+		gitInit = gitInitChoice === null ? configured : gitInitChoice;
+	});
+
 	function submitClone() {
 		if (!url.trim()) return;
 		showRawOutput = false;
+		createRequested = false;
 		startRestore('clone', url);
+	}
+
+	function submitCreate() {
+		showRawOutput = false;
+		createRequested = true;
+		// The checkbox travels EXPLICITLY, in both states, so the answer is the
+		// one on screen rather than a default re-decided further down.
+		startRestore('create', undefined, gitInit);
 	}
 </script>
 
@@ -148,11 +203,20 @@
 		{:else if running}
 			<!-- A job is running for this folder. It may not be ours: a second device,
 			     or this phone's own previous socket before the connection dropped. -->
-			<div class="mt-2 text-xs text-brand-text-muted">
-				Cloning
-				<span class="font-mono break-all text-brand-text">{job?.url ?? ''}</span
-				>
-			</div>
+			{#if creating}
+				<div class="mt-2 text-xs text-brand-text-muted">
+					Creating the folder{job?.gitInit
+						? ' and initialising a git repository in it'
+						: ''}
+				</div>
+			{:else}
+				<div class="mt-2 text-xs text-brand-text-muted">
+					Cloning
+					<span class="font-mono break-all text-brand-text"
+						>{job?.url ?? ''}</span
+					>
+				</div>
+			{/if}
 			{#if joinedOtherUrl}
 				<div class="mt-1 text-xs text-yellow-300">
 					A clone of <span class="font-mono break-all">{joinedOtherUrl}</span> was
@@ -165,7 +229,11 @@
 				{@const p = job.progress}
 				<div class="mt-2 flex items-baseline justify-between gap-2 text-xs">
 					<span class="min-w-0 flex-1 break-words text-brand-text">
-						{phaseLabel(p.phase)} &middot; {scopeLabel(p.scope)}
+						<!-- A create has exactly one scope (there are no submodules to
+						     count separately), so naming it would be noise, not honesty. -->
+						{phaseLabel(p.phase)}{creating
+							? ''
+							: ` \u00b7 ${scopeLabel(p.scope)}`}
 					</span>
 					<span class="flex-shrink-0 font-mono text-brand-text-muted">
 						{p.indeterminate ? 'no percentage' : `${p.percent}%`}
@@ -192,13 +260,17 @@
 				</div>
 			{:else}
 				<div class="mt-2 text-xs text-brand-text-muted">
-					Starting the clone (git has not reported anything measurable yet)...
+					{creating
+						? 'Starting...'
+						: 'Starting the clone (git has not reported anything measurable yet)...'}
 				</div>
 			{/if}
-			<div class="mt-1 text-[11px] text-brand-text-muted">
-				Each submodule is counted separately and has its own progress above, so
-				there is no single overall percentage.
-			</div>
+			{#if !creating}
+				<div class="mt-1 text-[11px] text-brand-text-muted">
+					Each submodule is counted separately and has its own progress above,
+					so there is no single overall percentage.
+				</div>
+			{/if}
 
 			<button
 				type="button"
@@ -217,7 +289,8 @@
 
 			{#if job?.state === 'cancelled'}
 				<div class="mt-2 text-xs text-brand-text-muted">
-					The clone was cancelled and the folder it had created was removed.
+					The {creating ? 'folder creation' : 'clone'} was cancelled and the folder
+					it had created was removed.
 				</div>
 			{/if}
 
@@ -302,6 +375,50 @@
 			>
 				{awaitingAnswer ? 'Starting...' : 'Clone repository'}
 			</button>
+
+			<!-- The SECOND remedy: the folder was never a clone. Rare, so it is a
+			     disclosure rather than a button sitting beside Clone -- an accidental
+			     tap here makes an EMPTY folder that then looks restored, and the
+			     non-empty guard would refuse the clone that should have happened. -->
+			<div class="mt-3 border-t border-yellow-500/20 pt-2">
+				{#if !showCreate}
+					<button
+						type="button"
+						onclick={() => (showCreate = true)}
+						class="text-[11px] text-brand-text-muted underline opacity-80 hover:opacity-100"
+					>
+						This folder was never a clone? Create it instead
+					</button>
+				{:else}
+					<div class="text-[11px] text-brand-text-muted">
+						Makes the folder and any missing parents. Nothing is downloaded, so
+						whatever the folder used to hold is not coming back with it.
+					</div>
+					<div class="mt-1.5 flex items-center gap-2">
+						<input
+							id="restore-git-init"
+							type="checkbox"
+							checked={gitInit}
+							onchange={(e) => (gitInitChoice = e.currentTarget.checked)}
+							class="h-3.5 w-3.5 rounded border-brand-border bg-brand-surface-3 text-brand-blue focus:ring-brand-blue"
+						/>
+						<label
+							for="restore-git-init"
+							class="cursor-pointer text-xs text-brand-text-muted select-none"
+						>
+							Initialise a git repository
+						</label>
+					</div>
+					<button
+						type="button"
+						onclick={submitCreate}
+						disabled={awaitingAnswer}
+						class="mt-2 rounded border border-brand-border bg-brand-surface-3 px-3 py-1 text-[11px] font-medium text-brand-text-muted transition-colors hover:bg-brand-surface-2 hover:text-brand-text disabled:cursor-not-allowed disabled:opacity-40"
+					>
+						{awaitingAnswer ? 'Creating...' : 'Create folder'}
+					</button>
+				{/if}
+			</div>
 		{/if}
 	</div>
 {/if}
