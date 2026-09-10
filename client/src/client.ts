@@ -1474,12 +1474,36 @@ export class WhereverClient {
         });
         break;
 
-      case 'restore_started':
+      case 'restore_started': {
         // The answer to OUR restore_start. `outcome: 'joined'` means a job was
         // already running for this path and we coalesced onto it, so `job.url` is
         // the url really in flight -- which the panel must show when it differs
         // from the one this client asked for, rather than pretending the edited
         // url was accepted.
+        //
+        // It is ALSO the answer to a `session_new` that chose to CLONE an
+        // existing remote. That create has no restore state yet (no session, so
+        // no folder-missing frame ever created one), so the job is ADOPTED here
+        // as the create's own: the blocking "Creating session..." overlay gives
+        // way to the same progress the restore panel renders, and the create
+        // watchdog -- which fires long before a large repository finishes -- is
+        // disarmed, because a watched job is no longer something to time out.
+        const before = get(this.stateStore);
+        if (before.creatingSession && !before.restore) {
+          this.clearCreateWatchdog();
+          this.stateStore.update((s: WhereverState) => ({
+            ...s,
+            creatingSession: false,
+            restore: {
+              targetPath: msg.targetPath,
+              job: msg.job as RestoreJobInfo,
+              joined: msg.outcome === 'joined',
+              rejection: null,
+              forSessionCreate: true,
+            },
+          }));
+          break;
+        }
         this.stateStore.update((s: WhereverState) =>
           this.withRestore(s, msg.targetPath, (r) => ({
             ...r,
@@ -1489,6 +1513,7 @@ export class WhereverClient {
           })),
         );
         break;
+      }
 
       case 'restore_rejected':
         // Refused before anything was spawned: no job, no completion coming. Keep
@@ -1503,11 +1528,33 @@ export class WhereverClient {
         break;
 
       case 'restore_progress':
-      case 'restore_complete':
+      case 'restore_complete': {
         // Broadcast frames: the server sends them to every client whose folder
         // matches the job path, so they arrive whether or not THIS client started
         // the restore (a second device, or a reconnect mid-clone). Each carries
         // the whole job snapshot, so one frame is enough to repaint.
+        //
+        // The new-session clone ends differently from the panel's: there is
+        // nothing to reload, so a job that SUCCEEDED hands the screen straight
+        // back to the create the server is already continuing with (overlay +
+        // watchdog re-armed for that last, ordinary step). A failed or cancelled
+        // one ends the create; the server's session_error, carrying the mapped
+        // cause, arrives beside this frame.
+        const current = get(this.stateStore).restore;
+        if (
+          msg.type === 'restore_complete' &&
+          current?.forSessionCreate &&
+          current.targetPath === msg.targetPath
+        ) {
+          const cloned = (msg.job as RestoreJobInfo).state === 'done';
+          this.stateStore.update((s: WhereverState) => ({
+            ...s,
+            restore: null,
+            creatingSession: cloned,
+          }));
+          if (cloned) this.armCreateWatchdog();
+          break;
+        }
         this.stateStore.update((s: WhereverState) =>
           this.withRestore(s, msg.targetPath, (r) => ({
             ...r,
@@ -1516,6 +1563,7 @@ export class WhereverClient {
           })),
         );
         break;
+      }
 
       case 'folder_conflict':
         // Live update of whether another active session still exists in this

@@ -38,6 +38,18 @@ export type ClientMessage =
   | { type: 'ping' }
   | { type: 'session_load'; sessionFile: string; cwd?: string; model?: string }
   | { type: 'history_load_more'; sessionId: string; beforeOffset: number }
+  // Client -> server: start a NEW conversation in `cwd`.
+  //
+  // The two remote intents are distinct and mutually exclusive: `createRemote`
+  // PROVISIONS a new repository for a new folder, while `cloneRemote` clones the
+  // EXISTING one the probe found (what the dashboard's clone-or-create dialog
+  // offers). The clone runs as a path-keyed RESTORE JOB before the session is
+  // created, so the answer to a `cloneRemote` create begins with
+  // `restore_started` and its progress frames; `session_created` follows only
+  // when the job is done, and a failed or cancelled job answers `session_error`
+  // with the mapped cause and creates nothing. See CONTEXT.md and
+  // `docs/adr/0009` -- there is ONE clone implementation, shared with the
+  // restore panel.
   | { type: 'session_new'; cwd: string; model?: string; gitInit?: boolean; createRemote?: boolean; repoVisibility?: 'private' | 'public'; cloneRemote?: boolean }
   // Client -> server: fork the given session at a specific user-message entry,
   // mirroring pi's `/fork` (position 'before'). The server creates a new
@@ -191,6 +203,13 @@ export type ServerMessage =
   // coalesced onto it; `job.url` is then the url REALLY in flight, which the
   // panel must show when it differs from the one the user typed. Sent to the
   // requester only; everyone else learns about the job from the broadcasts below.
+  //
+  // It is ALSO the first answer to a `session_new` that chose to CLONE an
+  // existing remote: same frame, same job, same progress -- what differs is the
+  // ending. That client has no session yet, so it ADOPTS the job as its create's
+  // first step (dropping its blocking overlay and its create watchdog) and the
+  // server continues into creation itself once the job is done, instead of
+  // offering the panel's Reload.
   | { type: 'restore_started'; targetPath: string; outcome: 'started' | 'joined'; job: RestoreJobSnapshot }
   // Server -> client: this client's `restore_start` was REFUSED before anything
   // was spawned or created (an unsafe target, a non-empty folder, a url outside

@@ -3,11 +3,11 @@ import { createServer as createHttpServer, type IncomingMessage, type ServerResp
 import { createServer as createHttpsServer, request as httpRequest } from 'node:https';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { SessionPool, getWhereverConfig, getWhereverCertsDir, detectRemoteRepo, type WhereverConfig } from './session-pool.js';
+import { SessionPool, getWhereverConfig, getWhereverCertsDir, detectRemoteRepo, normalizePath, type WhereverConfig } from './session-pool.js';
 import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.js';
 import { searchConversations } from './conversation-search.js';
 import { matchRemoteRepoRule, resolveRemoteCandidates } from './remote-candidates.js';
-import { RestoreJobRegistry, type RestoreRequest } from './restore-jobs.js';
+import { RestoreJobRegistry, type RestoreJobSnapshot, type RestoreRequest } from './restore-jobs.js';
 import type { ClientMessage, ServerMessage, ToolImage } from './protocol.js';
 import { INITIAL_HISTORY_LIMIT, HISTORY_PAGE_SIZE } from './protocol.js';
 import fs from 'node:fs';
@@ -1554,7 +1554,19 @@ async function main(): Promise<void> {
           sendJSON(res, 400, { error: 'Missing cwd' });
           return;
         }
-        const result = await sessionPool.createNewSession(cwd, model, gitInit, createRemote, repoVisibility, cloneRemote);
+        // Same CLONE branch as the WebSocket `session_new`, through the same
+        // restore job registry, so this endpoint gains recursive submodules and
+        // loses nothing. There is no progress channel on a plain HTTP request,
+        // so it simply waits for the job it started (or joined); any WebSocket
+        // client looking at that folder still gets the live frames.
+        if (cloneRemote) {
+          const outcome = await cloneForNewSession(resolveCreateCwd(cwd), clients, sessionPool);
+          if (outcome.status === 'failed') {
+            sendJSON(res, 500, { error: outcome.error });
+            return;
+          }
+        }
+        const result = await sessionPool.createNewSession(cwd, model, gitInit, createRemote, repoVisibility);
         if (result.error) {
           sendJSON(res, 500, { error: result.error });
         } else {
@@ -2235,6 +2247,96 @@ function releaseRestoreObserver(targetPath: string): void {
   unsubscribe();
 }
 
+/**
+ * Resolve a caller-supplied `cwd` the way session creation does: `~` and a bare
+ * relative path both mean "under the home directory", everything else is
+ * resolved as given. Kept identical to `SessionPool.createNewSession`'s own
+ * resolution so the restore job's key, the frames it is broadcast under and the
+ * folder the session is finally created in are ONE path.
+ */
+function resolveCreateCwd(cwd: string): string {
+  if (cwd.startsWith('~')) return normalizePath(path.join(os.homedir(), cwd.slice(1)));
+  if (!path.isAbsolute(cwd)) return normalizePath(path.join(os.homedir(), cwd));
+  return normalizePath(path.resolve(cwd));
+}
+
+/**
+ * `skipped` means no remote was found to clone, so the caller carries on with an
+ * ordinary create (the pre-existing fall-back: the user asked to clone, the
+ * probe no longer finds the repository, and a folder is made instead).
+ */
+type NewSessionCloneOutcome = { status: 'cloned' | 'skipped' } | { status: 'failed'; error: string };
+
+/**
+ * The CLONE branch of session creation, run through the restore job registry.
+ *
+ * This is the OTHER entry point of `docs/adr/0009`, and it exists so there is
+ * exactly ONE clone implementation in the codebase: the same path-keyed jobs,
+ * the same recursive `--recurse-submodules` engine, the same URL allowlist and
+ * home-directory guard, and the same honest progress frames the restore panel
+ * renders. What it does NOT share is the ending: a loaded session offers a
+ * RELOAD (a live agent is a load-time decision), but here there is no session to
+ * reload until the clone lands, so the caller CONTINUES into creation itself.
+ *
+ * The job is awaited rather than reported-and-forgotten precisely because the
+ * create depends on it. It stays cancellable while it runs: the job is
+ * server-owned and path-keyed, so the ordinary `restore_cancel` frame reaches
+ * it and settles it `cancelled`, which fails the create here.
+ *
+ * `onStarted` is how the WebSocket caller tells ITS client which job to paint;
+ * the HTTP caller has no progress channel and simply waits. Broadcasts reach
+ * every client whose folder matches the path either way.
+ */
+async function cloneForNewSession(
+  targetPath: string,
+  clients: Map<string, WSClient>,
+  pool: SessionPool,
+  onStarted?: (outcome: 'started' | 'joined', job: RestoreJobSnapshot) => void,
+): Promise<NewSessionCloneOutcome> {
+  const config = getWhereverConfig();
+  const rule = matchRemoteRepoRule(config.remoteRepoRules, targetPath);
+  if (!rule) return { status: 'skipped' };
+  // The SAME probe the dashboard's clone-or-create dialog asked (via
+  // /check-remote-repo) before offering to clone. The URL is resolved HERE, on
+  // the server, rather than taken from the client: the create path has no
+  // editable URL field, so a client-supplied one would be a new, unasked-for
+  // authority. (The restore panel's editable field is the deliberate exception,
+  // and it is validated by the registry all the same.)
+  //
+  // Note what is NOT used: `resolveRemoteCandidates`, whose path-convention
+  // candidate is a GUESS offered to a human who can edit it. There is no field
+  // to edit here, so an unprobed guess would be cloned blind. A probe that finds
+  // nothing SKIPS the clone and lets the ordinary create proceed, exactly as the
+  // deleted synchronous path did.
+  const probe = detectRemoteRepo(rule, path.basename(targetPath));
+  if (!probe.exists || !probe.sshUrl) return { status: 'skipped' };
+
+  // Subscribe BEFORE requesting: a request can settle inside the call (a spawn
+  // that throws) and a frame emitted before the subscription exists is lost.
+  observeRestorePath(targetPath, clients, pool);
+  const result = restoreJobs.request({ kind: 'clone', targetPath, url: probe.sshUrl });
+  if (!result.ok) {
+    if (restoreJobs.get(targetPath)?.state !== 'running') releaseRestoreObserver(targetPath);
+    return { status: 'failed', error: result.message };
+  }
+  onStarted?.(result.outcome, result.job);
+
+  const settled = await restoreJobs.settled(targetPath).catch(() => undefined);
+  if (settled?.state === 'done') return { status: 'cloned' };
+  if (settled?.state === 'cancelled') {
+    return {
+      status: 'failed',
+      error: `The clone into ${targetPath} was cancelled, so no session was created.`,
+    };
+  }
+  return {
+    status: 'failed',
+    error:
+      settled?.failure?.message ??
+      `Failed to clone ${probe.sshUrl} into ${targetPath}, so no session was created.`,
+  };
+}
+
 // Resolve and report in one step. Every folder_conflict frame goes out through
 // here, so the `readOnly` it carries can never drift from the authority that
 // produced `active`.
@@ -2618,7 +2720,35 @@ async function handleWSMessage(
       // "Continue anyway" could only unlock THAT conversation, never give them the
       // fresh one. So: create the session (forceNew), then report the folder
       // conflict, if any, AGAINST the new session.
-      const result = await pool.createNewSession(msg.cwd, msg.model, msg.gitInit, msg.createRemote, msg.repoVisibility, msg.cloneRemote, true);
+      //
+      // CLONE-AN-EXISTING-REMOTE first, when that is what the user chose in the
+      // clone-or-create dialog. It runs as a RESTORE JOB (one clone
+      // implementation, `docs/adr/0009`): the client is told which job to paint
+      // and then watches the ordinary `restore_progress` frames, instead of
+      // staring at a blocking overlay its 25s create watchdog would give up on
+      // while git was still running. Creating a REMOTE (the other branch of that
+      // dialog) is untouched and still happens inside createNewSession.
+      if (msg.cloneRemote) {
+        const targetPath = resolveCreateCwd(msg.cwd);
+        // The restore broadcast is DERIVED from a path match against each
+        // client's folder, and this client has no session yet: recording the
+        // target as its pending cwd is what puts it in scope for its own clone.
+        client.pendingCwd = targetPath;
+        const outcome = await cloneForNewSession(targetPath, clients, pool, (result, job) => {
+          sendWS(client.ws, { type: 'restore_started', targetPath, outcome: result, job });
+        });
+        if (outcome.status === 'failed') {
+          // The clone is the create's first step, so its failure IS the create's
+          // failure: report it on the create's own channel (the mapped cause,
+          // from the registry) and make no session. The restore_complete frame
+          // carrying git's raw output was broadcast beside it.
+          client.pendingCwd = undefined;
+          sendWS(client.ws, { type: 'session_error', error: outcome.error });
+          return;
+        }
+      }
+
+      const result = await pool.createNewSession(msg.cwd, msg.model, msg.gitInit, msg.createRemote, msg.repoVisibility, true);
       if (result.error) {
         sendWS(client.ws, { type: 'session_error', error: result.error });
         return;
