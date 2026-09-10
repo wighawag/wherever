@@ -62,6 +62,18 @@ export interface FolderWithSessions {
   sessions: FolderSessionInfo[];
   /** True when this folder's cwd matched a sessions.readOnly glob. */
   readOnly?: boolean;
+  /**
+   * True when this folder does NOT exist on this machine (the listing view of
+   * the folder-missing session state: transcripts sync across machines, the
+   * clones they name do not). ORTHOGONAL to `readOnly`: a folder can be either,
+   * both or neither, and the two must never be rendered as one thing.
+   *
+   * Named `missing` rather than `folderMissing` (the session-level flag on
+   * `session_created`) because the subject here IS a folder -- exactly as
+   * `readOnly` drops the prefix on this same object. It is the SAME concept as
+   * the pinned `folder missing` state, not a second one.
+   */
+  missing?: boolean;
 }
 
 export interface SessionsResponse {

@@ -21,6 +21,11 @@ export interface FolderWithSessions {
 	name: string;
 	sessions: SessionInfo[];
 	readOnly?: boolean;
+	// True when this folder does not exist on this machine (the listing view of
+	// the folder-missing state). ORTHOGONAL to readOnly, which is a configured
+	// policy: a folder can be either, both or neither, so the browser renders the
+	// two differently and never as one thing.
+	missing?: boolean;
 }
 
 export interface ModelInfo {
