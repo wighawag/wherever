@@ -3,7 +3,7 @@ import { createServer as createHttpServer, type IncomingMessage, type ServerResp
 import { createServer as createHttpsServer, request as httpRequest } from 'node:https';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { SessionPool, getWhereverConfig, getWhereverCertsDir, detectRemoteRepo, normalizePath, type WhereverConfig } from './session-pool.js';
+import { SessionPool, getWhereverConfig, getWhereverCertsDir, detectRemoteRepo, normalizePath, invalidateFolderExistence, type WhereverConfig } from './session-pool.js';
 import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.js';
 import { searchConversations } from './conversation-search.js';
 import { matchRemoteRepoRule, resolveRemoteCandidates } from './remote-candidates.js';
@@ -2247,6 +2247,47 @@ function releaseRestoreObserver(targetPath: string): void {
   unsubscribe();
 }
 
+// The listing's per-folder existence answers, awaiting invalidation, keyed the
+// same way. A SECOND, INDEPENDENT subscription to the registry: the session
+// browser's "missing" mark is not a client of the restore panel, and routing its
+// invalidation through the broadcast relay above would make one the other's
+// plumbing. Neither reaches into the registry's internals and neither is wired
+// through the other (see CONTEXT.md, "the module owns the observation seam").
+const folderExistenceObservers = new Map<string, () => void>();
+
+/**
+ * Drop the listing's cached existence answer for a path when the restore job
+ * there SETTLES.
+ *
+ * A restore is the one moment wherever itself changes whether a folder is on
+ * this machine, so without this the browser would keep marking a just-restored
+ * folder "missing" for the rest of the cache's TTL. Every terminal state
+ * invalidates (a cancelled clone REMOVES a directory it created, so the cached
+ * answer is equally suspect), but only a `done` job asks the connected clients
+ * to refetch: that is what makes the mark disappear with no manual refresh.
+ *
+ * Idempotent per path and self-releasing inside `onSettled`, exactly like the
+ * broadcast observer.
+ */
+function observeRestoreForFolderExistence(targetPath: string, onSessionsUpdated?: () => void): void {
+  if (folderExistenceObservers.has(targetPath)) return;
+  const unsubscribe = restoreJobs.subscribe(targetPath, {
+    onSettled: (job) => {
+      invalidateFolderExistence(targetPath);
+      releaseFolderExistenceObserver(targetPath);
+      if (job.state === 'done') onSessionsUpdated?.();
+    },
+  });
+  folderExistenceObservers.set(targetPath, unsubscribe);
+}
+
+function releaseFolderExistenceObserver(targetPath: string): void {
+  const unsubscribe = folderExistenceObservers.get(targetPath);
+  if (!unsubscribe) return;
+  folderExistenceObservers.delete(targetPath);
+  unsubscribe();
+}
+
 /**
  * Resolve a caller-supplied `cwd` the way session creation does: `~` and a bare
  * relative path both mean "under the home directory", everything else is
@@ -2314,9 +2355,17 @@ async function cloneForNewSession(
   // Subscribe BEFORE requesting: a request can settle inside the call (a spawn
   // that throws) and a frame emitted before the subscription exists is lost.
   observeRestorePath(targetPath, clients, pool);
+  // No refetch callback here: this clone is followed by the session creation it
+  // exists for, which broadcasts `sessions_updated` on its own.
+  observeRestoreForFolderExistence(targetPath);
   const result = restoreJobs.request({ kind: 'clone', targetPath, url: probe.sshUrl });
   if (!result.ok) {
-    if (restoreJobs.get(targetPath)?.state !== 'running') releaseRestoreObserver(targetPath);
+    // A refusal is not a job: nothing will ever settle here, so neither
+    // subscription may be left waiting for a completion that is not coming.
+    if (restoreJobs.get(targetPath)?.state !== 'running') {
+      releaseRestoreObserver(targetPath);
+      releaseFolderExistenceObserver(targetPath);
+    }
     return { status: 'failed', error: result.message };
   }
   onStarted?.(result.outcome, result.job);
@@ -2894,6 +2943,7 @@ async function handleWSMessage(
       // Subscribe first: a request can settle inside the call (a spawn that
       // throws), and a frame emitted before the subscription exists is lost.
       observeRestorePath(targetPath, clients, pool);
+      observeRestoreForFolderExistence(targetPath, onSessionsUpdated);
       const request: RestoreRequest =
         msg.action === 'create'
           ? { kind: 'create', targetPath, gitInit: msg.gitInit === true }
@@ -2902,8 +2952,11 @@ async function handleWSMessage(
       if (!result.ok) {
         // Nothing was spawned or created, so there is no job to observe and no
         // completion coming. Say why, to the requester only, and let go of the
-        // subscription we optimistically took.
-        if (restoreJobs.get(targetPath)?.state !== 'running') releaseRestoreObserver(targetPath);
+        // subscriptions we optimistically took.
+        if (restoreJobs.get(targetPath)?.state !== 'running') {
+          releaseRestoreObserver(targetPath);
+          releaseFolderExistenceObserver(targetPath);
+        }
         sendWS(client.ws, {
           type: 'restore_rejected',
           targetPath,

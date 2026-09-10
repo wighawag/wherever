@@ -326,12 +326,101 @@ export function getSessionBodyReadCount(): number {
   return sessionBodyReads;
 }
 
+/**
+ * Per-FOLDER existence cache: does this working folder exist on this machine?
+ *
+ * The third cache of the listing pass, and it exists for the same reason as the
+ * other two. Transcripts and the folders they name travel separately, so on a
+ * migrated machine most folders are absent and the browser marks them -- but a
+ * session directory holds THOUSANDS of sessions and the dashboard refetches the
+ * whole list on every `sessions_updated`, so a `stat` per session would put a
+ * syscall storm back into the pass the (mtime, size) cache exists to keep free
+ * of IO. One check per DISTINCT folder path, remembered briefly.
+ *
+ * Keyed by the same normalized cwd the listing groups folders under
+ * (`resolveSessionCwd`), so a caller holding a differently-spelled path
+ * (a trailing slash, a `~`, a `..` segment) invalidates the entry it means.
+ *
+ * No eviction pass, unlike the file cache above: an entry is a boolean and a
+ * timestamp under a path, and the keys are the DISTINCT working folders seen
+ * since boot (hundreds, where the file cache holds thousands of parsed
+ * transcripts). A folder that stops being listed simply stops being asked about.
+ */
+const folderExistenceCache = new Map<string, { exists: boolean; checkedAt: number }>();
+
+/**
+ * How long an existence answer is reused. A folder that reappears by means
+ * wherever knows nothing about (the user cloned it in a terminal, a mount came
+ * back) loses its mark within this window with no invalidation at all, while a
+ * burst of listing refetches -- the dashboard's own `sessions_updated` is
+ * throttled to 2s -- costs one `stat` per distinct folder rather than one per
+ * request. A restore completing does not wait for it: it invalidates the entry
+ * (see `invalidateFolderExistence`).
+ */
+const FOLDER_EXISTENCE_TTL_MS = 10_000;
+
+/**
+ * Number of folder-existence `stat`s performed since the last reset. The cost
+ * is the property under test (one per distinct folder, not one per session), so
+ * it is counted rather than inferred.
+ */
+let folderExistenceChecks = 0;
+
+/** Test seam: how many folder-existence checks have been performed. */
+export function getFolderExistenceCheckCount(): number {
+  return folderExistenceChecks;
+}
+
+/**
+ * Forget the cached existence of one folder, so the next listing pass re-checks
+ * it. Called when a RESTORE JOB SETTLES: that is the one moment wherever itself
+ * changes whether a folder is there, and waiting out the TTL would leave the
+ * mark on a folder the user just restored.
+ */
+export function invalidateFolderExistence(dir: string): void {
+  folderExistenceCache.delete(resolveSessionCwd(dir));
+}
+
+/**
+ * Stamp each listed folder with whether it EXISTS on this machine.
+ *
+ * `folders` is already one entry per distinct cwd (that is what `buildFolders`
+ * produces), so this is one check per folder by construction -- the sessions
+ * inside it are never consulted. A path that exists but is NOT a directory
+ * counts as missing, the same rule the session-load check applies: it cannot be
+ * a working folder either.
+ */
+export async function annotateFolderExistence(folders: FolderWithSessions[]): Promise<void> {
+  const now = Date.now();
+  await Promise.all(
+    folders.map(async (folder) => {
+      const key = resolveSessionCwd(folder.path);
+      const cached = folderExistenceCache.get(key);
+      if (cached && now - cached.checkedAt < FOLDER_EXISTENCE_TTL_MS) {
+        folder.missing = !cached.exists;
+        return;
+      }
+      folderExistenceChecks++;
+      let exists = false;
+      try {
+        exists = (await fs.promises.stat(key)).isDirectory();
+      } catch {
+        exists = false;
+      }
+      folderExistenceCache.set(key, { exists, checkedAt: Date.now() });
+      folder.missing = !exists;
+    }),
+  );
+}
+
 /** Test seam: drop all cached listing state. */
 export function clearSessionIndexCache(): void {
   diskSessionCache.clear();
   dirCwdCache.clear();
   inFlightScans.clear();
+  folderExistenceCache.clear();
   sessionBodyReads = 0;
+  folderExistenceChecks = 0;
 }
 
 /**
@@ -1607,6 +1696,10 @@ export class SessionPool {
    * dashboard refetches this list on every `sessions_updated`, so an uncached
    * re-read of the whole sessions dir here stalls the WebSocket (and with it
    * any in-flight session load) for as long as the scan takes.
+   *
+   * Each folder is then stamped with whether it EXISTS on this machine
+   * (`missing`), from the per-folder existence cache -- one check per distinct
+   * folder, never one per session, for the same reason the scan is cached.
    */
   async listSessions(view: 'default' | 'readonly' = 'default'): Promise<FolderWithSessions[]> {
     const cfg = getWhereverConfig().sessions;
@@ -1627,7 +1720,9 @@ export class SessionPool {
       `/sessions (${view})`,
       { maxAgeDays: cfg?.maxAgeDays, maxSessions: cfg?.maxSessions },
     );
-    return this.buildFolders(infos, view === 'readonly' ? isReadOnly : undefined);
+    const folders = this.buildFolders(infos, view === 'readonly' ? isReadOnly : undefined);
+    await annotateFolderExistence(folders);
+    return folders;
   }
 
   /**

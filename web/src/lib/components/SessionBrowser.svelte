@@ -694,8 +694,23 @@
 							▶
 						</span>
 						<div class="min-w-0 flex-1">
-							<div class="truncate text-sm font-medium text-brand-text">
-								{folder.name}
+							<div class="flex items-center gap-1.5">
+								<div class="truncate text-sm font-medium text-brand-text">
+									{folder.name}
+								</div>
+								<!-- The folder is not on this machine (a synced transcript whose
+								     clone never travelled). Its own marker, deliberately NOT the
+								     read-only treatment: read-only is a CONFIGURED policy and
+								     lives as a whole separate page, while this is a fact about
+								     the disk and is curable by a restore. Both can be true of one
+								     folder, so they must never look like one thing. -->
+								{#if folder.missing}
+									<span
+										class="flex-shrink-0 rounded border border-brand-purple/50 bg-brand-purple/15 px-1.5 py-px text-[10px] font-semibold tracking-wide text-brand-purple uppercase"
+										title="This folder does not exist on this machine. Open a session in it to clone or create it."
+										>Missing</span
+									>
+								{/if}
 							</div>
 							<div class="truncate text-[10px] text-brand-text-muted">
 								{folder.path}
