@@ -4,6 +4,7 @@ slug: new-session-clone-via-registry
 spec: restore-missing-folder
 blockedBy: [restore-clone-panel]
 covers: [15, 22]
+needsAnswers: true
 ---
 
 ## What to build
