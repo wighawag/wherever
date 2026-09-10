@@ -1,3 +1,0 @@
-# `file_upload` is not gated by the read-only verdict (2026-09-09)
-
-Noticed while adding the folder-missing read-only reason: `case 'file_upload'` in `server/src/index.ts` never consults `client.readOnly`, so a client attached to a `sessions.readOnly` folder (or any other observe-only session) can still write a file into the resolved upload dir, even though it cannot send a message that would reference it. Pre-existing and out of scope for `folder-missing-read-only-state`; for a missing folder it is harmless in practice (the session is not resident, so `resolveUploadDir` gets no cwd and falls back).

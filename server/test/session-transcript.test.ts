@@ -168,7 +168,12 @@ describe('readSessionListingInfo', () => {
     // Nothing from the body is retained: the listing keeps a preview and a few
     // numbers. Generous bound, but a whole-file parse would blow far past it.
     expect(after - before).toBeLessThan(8 * 1024 * 1024);
-  });
+    // Explicit generous timeout: this case writes and reads tens of MB, so under
+    // a loaded full-suite run it can exceed vitest's default 5s. What it asserts
+    // is MEMORY, not elapsed time, so the limit is not part of the property and
+    // raising it weakens nothing -- it only stops the guard going red for a
+    // reason unrelated to what it guards.
+  }, 60_000);
 
   it('does not depend on the probe recognising a line: an unusual key order still counts', async () => {
     // The fast path keys off pi writing `type` first. A transcript written with
@@ -332,7 +337,9 @@ describe('readTranscriptWindow', () => {
     // The deep page must not cost meaningfully more than the tail: its cost is
     // set by the WINDOW, not by how much file happens to follow it.
     expect(deep.peak).toBeLessThan(tail.peak + 10 * 1024 * 1024);
-  });
+    // See the note on the bounded-transcript case above: a memory assertion, so
+    // the wall-clock limit is not part of what is being guarded.
+  }, 60_000);
 
   it('reports the last model_change even when the window stops early', async () => {
     // The window pass stops as soon as the window is full, so header/model/total
@@ -370,5 +377,6 @@ describe('readTranscriptWindow', () => {
     expect(w.messages).toHaveLength(5);
     // 5 retained MB-sized results + transients, nowhere near the whole file.
     expect(after - before).toBeLessThan(20 * 1024 * 1024);
-  });
+    // Third of the heavy cases: same reasoning as the two above.
+  }, 60_000);
 });

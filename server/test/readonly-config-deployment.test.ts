@@ -3,11 +3,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import { fileURLToPath } from 'node:url';
+import { freePort } from './free-port.js';
 
 /**
  * Deployment shape: the server runs as a declaratively-managed system service
@@ -162,17 +162,6 @@ function tmpDir(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `wherever-${prefix}-`));
   tmpDirs.push(dir);
   return dir;
-}
-
-async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.once('error', reject);
-    srv.listen(0, '127.0.0.1', () => {
-      const p = (srv.address() as net.AddressInfo).port;
-      srv.close(() => resolve(p));
-    });
-  });
 }
 
 /** Boot the real server with an explicit argv + env, and wait for /health. */

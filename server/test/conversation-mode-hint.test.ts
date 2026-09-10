@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   CONVERSATION_MODE_HINT,
   CONVERSATION_MODE_REMINDER,
@@ -258,6 +258,14 @@ describe('lockstep with the CLI-bridge extension twin', () => {
   });
 
   it('places the tail reminder identically', () => {
+    // The two implementations each stamp their own `Date.now()` on the reminder
+    // message, so a deep-equal between them is a RACE: it passes only when both
+    // calls land in the same millisecond, and fails by a millisecond or two under
+    // load. Freeze the clock rather than exclude the field, so the comparison
+    // still asserts that both stamp a timestamp AND that they agree on it.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    try {
     const cases: ContextMessageLike[][] = [
       [userMessage('hello?')],
       [userMessage('q'), { role: 'assistant', content: [{ type: 'text', text: 'a' }] }],
@@ -266,6 +274,9 @@ describe('lockstep with the CLI-bridge extension twin', () => {
     ];
     for (const messages of cases) {
       expect(extensionWithReminder(messages)).toEqual(withConversationModeReminder(messages));
+    }
+    } finally {
+      vi.useRealTimers();
     }
   });
 

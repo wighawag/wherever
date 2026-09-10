@@ -3161,6 +3161,24 @@ async function handleWSMessage(
         break;
       }
 
+      // An upload WRITES a file to disk, so it is a write capability and belongs
+      // behind the same verdict as a send. Without this, a client on an
+      // observe-only session (a sessions.readOnly folder, an uncontinued folder
+      // conflict, or a missing folder) could not send a message referencing an
+      // attachment but could still drop the attachment itself into the upload
+      // dir. Refuse out loud rather than silently, for the same reason the
+      // message handler does: a client only hides its composer when it AGREES it
+      // is read-only, so any desync must be visible instead of swallowed.
+      if (client.readOnly) {
+        sendWS(client.ws, {
+          type: 'file_upload_error',
+          uploadId,
+          sessionId,
+          error: 'This session is read-only from here, so the file was not uploaded.',
+        });
+        break;
+      }
+
       try {
         const tracked = pool.getSession(sessionId);
         const cwd = tracked?.cwd;

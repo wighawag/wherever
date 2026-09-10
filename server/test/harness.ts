@@ -2,10 +2,10 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import { startFakeLlmServer, type FakeLlmServer, type FakeBehavior } from './fake-llm-server.js';
+import { freePort } from './free-port.js';
 
 // The deterministic test substrate (ADR 0001): boot the REAL wherever server
 // against a FAKE LLM in full isolation, on an ephemeral port. Parallel-safe (each
@@ -56,17 +56,6 @@ function installExitHooks(): void {
       process.kill(process.pid, sig);
     });
   }
-}
-
-async function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.once('error', reject);
-    srv.listen(0, '127.0.0.1', () => {
-      const p = (srv.address() as net.AddressInfo).port;
-      srv.close(() => resolve(p));
-    });
-  });
 }
 
 export interface HarnessOptions {

@@ -843,6 +843,7 @@ import { randomUUID } from 'node:crypto';
 import { createAttachFileTool } from './attach-file-tool.js';
 import { createSayTool } from './say-tool.js';
 import { createConversationModeSignal, type ConversationModeSignal } from './conversation-mode-hint.js';
+import { matchRemoteRepoRule } from './remote-candidates.js';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { Model, Api } from '@earendil-works/pi-ai';
 import type { SessionMessageEntry, SessionEntry } from '@earendil-works/pi-coding-agent';
@@ -1366,8 +1367,14 @@ export class SessionPool {
         // config patterns. A folder that was just CLONED already has an `origin`,
         // so the `hasOrigin` check below leaves it alone.
         const config = getWhereverConfig();
-        if (createRemote !== false && config.remoteRepoRules && Array.isArray(config.remoteRepoRules)) {
-          const rule = config.remoteRepoRules.find(r => new RegExp(r.pattern).test(resolvedCwd));
+        if (createRemote !== false) {
+          // Through the SHARED matcher, which expands a leading `~` in the rule
+          // pattern (users write `~/dev/github/me/`, mirroring commonFolders) and
+          // treats an invalid pattern as a non-match instead of throwing. Matching
+          // here with a bare RegExp meant a rule matched in /check-path and
+          // /check-remote-repo but NOT at the moment the session was actually
+          // created -- so the dialog promised a remote the create then skipped.
+          const rule = matchRemoteRepoRule(config.remoteRepoRules, resolvedCwd);
           if (rule) {
             const provider = rule.provider;
             const visibility = repoVisibility || rule.visibility || 'private';
