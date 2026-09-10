@@ -1,6 +1,6 @@
 {
   "name": "@wherever-dev/pi",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "Remote control extension for pi coding agent with HTTP/WebSocket API (wherever.dev)",
   "homepage": "https://github.com/wighawag/wherever#readme",
   "repository": {
