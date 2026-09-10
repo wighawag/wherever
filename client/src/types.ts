@@ -187,6 +187,13 @@ export interface RestoreInfo {
 	// non-empty folder, a url outside the allowlist). No job exists and no
 	// completion is coming, so the panel shows this and stays in its offer state.
 	rejection: {reason: string; message: string} | null;
+	// True when this restore is the first step of a SESSION CREATE (the
+	// new-session clone), not the restore of a loaded session's missing folder.
+	// Same job, same frames, same progress display -- what differs is the ENDING:
+	// there is no session to reload here (it does not exist until the clone
+	// lands), so the server continues into creation itself and the client hands
+	// the screen back to the create instead of offering a Reload.
+	forSessionCreate?: boolean;
 }
 
 export interface WhereverState {

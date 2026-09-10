@@ -736,40 +736,16 @@ export function detectRemoteRepo(rule: RemoteRepoRule, repoName: string): Remote
   return { exists: false };
 }
 
-/**
- * Clone an existing remote repository into `resolvedCwd` using its SSH URL. The
- * parent directory is created if needed and the leaf must be empty/absent. Adds
- * `origin` (git clone does this) and pre-configures upstream tracking. Returns
- * an error string on failure, or undefined on success.
- */
-export function cloneRemoteRepo(resolvedCwd: string, sshUrl: string): string | undefined {
-  try {
-    // git clone refuses a non-empty target. If the folder was pre-created
-    // (mkdir above), only clone when it is empty.
-    if (fs.existsSync(resolvedCwd)) {
-      const entries = fs.readdirSync(resolvedCwd);
-      if (entries.length > 0) {
-        return `Cannot clone into ${resolvedCwd}: directory is not empty`;
-      }
-      fs.rmdirSync(resolvedCwd);
-    }
-    const parent = path.dirname(resolvedCwd);
-    if (!fs.existsSync(parent)) {
-      fs.mkdirSync(parent, { recursive: true });
-    }
-    console.log(`Cloning existing repository ${sshUrl} into ${resolvedCwd}...`);
-    execFileSync('git', ['clone', sshUrl, path.basename(resolvedCwd)], {
-      cwd: parent,
-      stdio: 'ignore',
-    });
-    console.log(`Successfully cloned ${sshUrl}`);
-    setupUpstreamTracking(resolvedCwd);
-    return undefined;
-  } catch (err: any) {
-    console.error('Failed to clone remote repository:', err);
-    return `Failed to clone remote repository ${sshUrl}: ${err?.message || err}`;
-  }
-}
+// NOTE: there is deliberately NO clone helper here any more. Cloning a remote
+// into a folder is ONE implementation, the path-keyed restore job registry
+// (`restore-jobs.ts`, `docs/adr/0009`), driven from the WebSocket/HTTP layer
+// BEFORE session creation is asked for. The synchronous `cloneRemoteRepo()`
+// that used to live here cloned non-recursively, reported no progress and blew
+// past the client's create watchdog on any large repository; keeping it beside
+// the registry would have meant two divergent clones, which is exactly the
+// drift the registry exists to end. `setupUpstreamTracking` above is still used
+// by the remote-CREATION path (a brand new repository); the registry configures
+// tracking for a clone itself.
 
 import { createAgentSession, AuthStorage, ModelRegistry, DefaultResourceLoader, SettingsManager, getAgentDir, SessionManager } from '@earendil-works/pi-coding-agent';
 import type { BashOperations } from '@earendil-works/pi-coding-agent';
@@ -1237,7 +1213,7 @@ export class SessionPool {
    * folder-sharing risk that the dedupe used to prevent is carried by the
    * folder-conflict banner (read-only until "Continue anyway") instead.
    */
-  async createNewSession(cwd: string, modelStr?: string, gitInit?: boolean, createRemote?: boolean, repoVisibility?: 'private' | 'public', cloneRemote?: boolean, forceNew?: boolean): Promise<{ tracked: TrackedSession; error?: string; sessionFile?: string }> {
+  async createNewSession(cwd: string, modelStr?: string, gitInit?: boolean, createRemote?: boolean, repoVisibility?: 'private' | 'public', forceNew?: boolean): Promise<{ tracked: TrackedSession; error?: string; sessionFile?: string }> {
     let resolvedCwd = cwd;
     if (cwd.startsWith('~')) {
       resolvedCwd = path.join(os.homedir(), cwd.slice(1));
@@ -1260,36 +1236,21 @@ export class SessionPool {
     if (pendingCreate) {
       // A create for this folder is already running. Without forceNew, join it
       // (that is the double-submit guard). With forceNew we still WAIT for it --
-      // it may be doing the mkdir / git init / clone this folder needs -- and
-      // then create our own session on top, so "new" stays new.
+      // it may be doing the mkdir / git init this folder needs -- and then
+      // create our own session on top, so "new" stays new.
       if (!forceNew) return pendingCreate;
       await pendingCreate.catch(() => {});
     }
 
     const createPromise = (async () => {
       try {
-        // Clone path: when the caller asked to clone an existing remote repo
-        // (folder did not exist, matched a rule, and the remote was found), do
-        // the clone FIRST and skip the git-init / remote-create machinery below.
-        // git clone creates the folder itself, so we do NOT pre-mkdir here.
-        let cloned = false;
-        if (cloneRemote) {
-          const cfg = getWhereverConfig();
-          const rule = cfg.remoteRepoRules?.find(r => new RegExp(r.pattern).test(resolvedCwd));
-          if (rule) {
-            const repoName = path.basename(resolvedCwd);
-            const probe = detectRemoteRepo(rule, repoName);
-            if (probe.exists) {
-              const cloneErr = cloneRemoteRepo(resolvedCwd, probe.sshUrl);
-              if (cloneErr) {
-                throw new Error(cloneErr);
-              }
-              cloned = true;
-            }
-          }
-        }
-
-        if (!cloned && !fs.existsSync(resolvedCwd)) {
+        // CLONING an existing remote into this folder is NOT done here: it is a
+        // restore job, run to completion by the caller BEFORE it asks for a
+        // session (see `cloneForNewSession` in index.ts). By the time we are
+        // called the folder either exists (cloned, or already there) or is ours
+        // to create. Everything below is therefore the CREATE-A-REMOTE branch
+        // and the plain-folder branch, unchanged.
+        if (!fs.existsSync(resolvedCwd)) {
           fs.mkdirSync(resolvedCwd, { recursive: true });
         }
 
@@ -1299,8 +1260,9 @@ export class SessionPool {
         // re-created if the folder was deleted. Never clobbers an existing file.
         maybeSeedSearchWorkspace(resolvedCwd);
 
-        // Git initialization if requested (never needed after a clone)
-        if (gitInit && !cloned) {
+        // Git initialization if requested. A folder that was just cloned already
+        // has a `.git`, so the existence guard below makes this a no-op there.
+        if (gitInit) {
           try {
             if (!fs.existsSync(path.join(resolvedCwd, '.git'))) {
               execFileSync('git', ['init'], { cwd: resolvedCwd, stdio: 'ignore' });
@@ -1311,10 +1273,11 @@ export class SessionPool {
           }
         }
 
-        // Check if we should create a remote repo (GitHub/Codeberg etc) based on config patterns.
-        // Skipped entirely when we just cloned an existing remote.
+        // Check if we should create a remote repo (GitHub/Codeberg etc) based on
+        // config patterns. A folder that was just CLONED already has an `origin`,
+        // so the `hasOrigin` check below leaves it alone.
         const config = getWhereverConfig();
-        if (!cloned && createRemote !== false && config.remoteRepoRules && Array.isArray(config.remoteRepoRules)) {
+        if (createRemote !== false && config.remoteRepoRules && Array.isArray(config.remoteRepoRules)) {
           const rule = config.remoteRepoRules.find(r => new RegExp(r.pattern).test(resolvedCwd));
           if (rule) {
             const provider = rule.provider;

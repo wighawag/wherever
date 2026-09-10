@@ -7,8 +7,11 @@
 	import ConversationSearch from '$lib/components/ConversationSearch.svelte';
 	import SudoPasswordDialog from '$lib/components/SudoPasswordDialog.svelte';
 	import RestorePanel from '$lib/components/RestorePanel.svelte';
+	import RestoreProgress from '$lib/components/RestoreProgress.svelte';
 	import {
 		piState,
+		restoreState,
+		cancelRestore,
 		isConnected,
 		isInterrupted,
 		sessionError,
@@ -282,6 +285,14 @@
 	});
 
 	let isCreating = $derived($isCreatingSession);
+	// The CLONE half of a new session in a folder that has to be cloned first: the
+	// server runs it as a restore job and reports it, so the create shows real
+	// progress instead of a blind overlay a 25s watchdog gives up on. It ends by
+	// itself -- the server continues into creating the session once the clone is
+	// done -- so there is no Reload here, unlike the restore panel.
+	let createRestore = $derived(
+		$restoreState?.forSessionCreate ? $restoreState : null,
+	);
 	let searchFolder = $derived($searchFolderStore);
 
 	// The bottom composer is always mounted but mode-switched: it acts as the
@@ -361,7 +372,35 @@
 
 <Head title="Wherever" description="Create & maintain apps from wherever" />
 
-{#if isCreating}
+{#if createRestore}
+	<div
+		class="fixed inset-0 z-[100] flex items-center justify-center bg-brand-dark/60 p-4 backdrop-blur-sm"
+	>
+		<div
+			class="w-full max-w-sm rounded-lg border border-brand-border bg-brand-surface-2 p-5 text-brand-text"
+		>
+			<div class="text-base font-bold">Cloning the repository...</div>
+			<div class="mt-1 text-xs text-brand-text-muted">
+				The session is created as soon as the clone finishes, so there is
+				nothing to wait for afterwards. It keeps running on the server if this
+				page goes away.
+			</div>
+			{#if createRestore.job?.url}
+				<div class="mt-2 font-mono text-xs break-all text-brand-text-muted">
+					{createRestore.job.url}
+				</div>
+			{/if}
+			<RestoreProgress job={createRestore.job} />
+			<button
+				type="button"
+				onclick={() => cancelRestore()}
+				class="mt-3 rounded bg-brand-surface-3 px-3.5 py-1.5 text-xs font-semibold text-brand-text transition-colors hover:bg-brand-surface-2"
+			>
+				Cancel
+			</button>
+		</div>
+	</div>
+{:else if isCreating}
 	<div
 		class="fixed inset-0 z-[100] flex items-center justify-center bg-brand-dark/60 backdrop-blur-sm"
 	>

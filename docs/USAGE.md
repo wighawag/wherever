@@ -224,6 +224,8 @@ Delete one draft by id. POST rather than DELETE, mirroring `/session/delete`, so
 
 ### `POST /session/new`
 Start a session inside a directory. If that folder already has a live session with at least one attached viewer, this returns THAT session instead of creating a second agent beside it. (The WebSocket `session_new` message is the other intent: it always creates a new conversation.)
+
+With `"cloneRemote": true` and a folder that does not exist yet, the matching `remoteRepoRules` provider is probed and, if the repository exists, it is CLONED (recursively, submodules included) through the restore job registry before the session is created; a failed clone answers `500` with the mapped cause and creates nothing. The request waits for the clone, since plain HTTP has no progress channel; the WebSocket path reports live progress instead.
 * **Auth required:** Yes
 * **Request Body:**
   ```json
