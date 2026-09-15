@@ -164,6 +164,41 @@ export interface WhereverConfig {
     command?: string;
   };
   /**
+   * How the CLI BRIDGE EXTENSION reaches this server. Read from this shared
+   * config file by that extension (like `beep` above); the SERVER itself
+   * ignores it entirely, since it is told where to listen by its own flags.
+   *
+   * It exists because the connection settings were reachable ONLY as command
+   * line flags, so a deployment whose shape differs from the defaults had to
+   * repeat those flags on every single `pi` invocation, and a human starting
+   * pi by hand simply got a failed bridge. The common case is a server behind
+   * a TLS-terminating reverse proxy: it runs `--http` on loopback, while the
+   * extension defaults to `wss://`, so the bridge fails the TLS handshake
+   * ('wrong version number') with nothing on the server side to show for it.
+   *
+   * Precedence is: explicit CLI flag > this config > built-in default.
+   */
+  remote?: {
+    /** Host of the standalone server. Default '127.0.0.1'. Overridden by --remote-host. */
+    host?: string;
+    /** Port of the standalone server. Default 31415. Overridden by --remote-port. */
+    port?: number | string;
+    /** Auth token, when the server requires one. Overridden by --remote-token. */
+    token?: string;
+    /**
+     * Connect over plain `ws://` instead of `wss://`. Set this when the server
+     * runs with `--http`/`--no-ssl` behind a proxy that terminates TLS.
+     *
+     * NOTE this can only be forced ON, never off, from the command line:
+     * `--remote-insecure` sets it, but pi boolean flags cannot be passed as
+     * false, so with `insecure: true` here there is no flag that restores TLS.
+     * Remove it from the config instead.
+     */
+    insecure?: boolean;
+    /** Whether to connect as a bridge at all. Default true. Overridden by --remote-bridge. */
+    bridge?: boolean;
+  };
+  /**
    * Conversation search (`GET /search`), backed by the memonaut index. This is
    * NOT related to `searchFolder` below (which is the "search mode" session
    * workspace); it controls full-text search over past transcripts.

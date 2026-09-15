@@ -130,21 +130,27 @@ function findDanglingToolCalls(ctx: ExtensionContext): DanglingToolCall[] {
 }
 
 export default async function (pi: ExtensionAPI) {
-  // Register flags to specify Standalone Server settings
+  // Register flags to specify Standalone Server settings.
+  //
+  // NO `default:` on the settings that are also configurable, deliberately. A
+  // registered default is indistinguishable from the user typing that same
+  // value, so `getFlag` would always return something truthy and the config
+  // file could never win. The defaults are applied at the point of use instead
+  // (see connect()), which is what makes the documented precedence -- explicit
+  // flag > config > built-in default -- actually hold. They stay in the help
+  // text so `--help` still tells you what you get.
   pi.registerFlag("remote-port", {
-    description: "Port of the remote standalone server",
+    description: "Port of the remote standalone server (default 31415, or `remote.port` in config.json)",
     type: "string",
-    default: "31415",
   });
 
   pi.registerFlag("remote-host", {
-    description: "Host of the remote standalone server",
+    description: "Host of the remote standalone server (default 127.0.0.1, or `remote.host` in config.json)",
     type: "string",
-    default: "127.0.0.1",
   });
 
   pi.registerFlag("remote-token", {
-    description: "Authentication token for the remote standalone server",
+    description: "Authentication token for the remote standalone server (or `remote.token` in config.json)",
     type: "string",
   });
 
@@ -165,11 +171,21 @@ export default async function (pi: ExtensionAPI) {
   // server started with `--no-ssl` (e.g. bound to loopback behind a reverse
   // proxy that terminates TLS) was unreachable from the bridge. Passing
   // `--remote-insecure` forces a plain `ws://` connection.
+  //
+  // `remote.insecure` in config.json does the same thing persistently, which is
+  // what a reverse-proxied deployment actually wants: the flag alone meant every
+  // `pi` invocation had to remember it, and a human who forgot got a bridge that
+  // failed the TLS handshake with nothing explaining why. Because a pi boolean
+  // cannot be passed as false, the config value can only be undone by editing
+  // the config, not by a flag; that asymmetry is inherent to the flag system and
+  // is documented on the config field rather than worked around with a second
+  // negating flag.
   pi.registerFlag("remote-insecure", {
     description:
       "Connect to the standalone server over plain ws:// (no TLS). Use when the " +
       "server runs with --no-ssl, e.g. bound to localhost behind a reverse proxy " +
-      "(Caddy/nginx) that terminates HTTPS. Overrides --remote-secure.",
+      "(Caddy/nginx) that terminates HTTPS. Overrides --remote-secure. Can also be " +
+      "set persistently as `remote.insecure` in config.json.",
     type: "boolean",
     default: false,
   });
@@ -223,21 +239,51 @@ export default async function (pi: ExtensionAPI) {
     return beepOverride === undefined ? beepDefault() : beepOverride;
   }
 
-  // Read the wherever config (`~/.wherever/config.json`) and return the beep
-  // section, if any. Best-effort: a missing/invalid file yields undefined. The
-  // extension is a separate package from the server, so it reads the shared file
-  // directly rather than importing the server's loader.
-  function readBeepConfig(): { enabled?: boolean; command?: string } | undefined {
+  // Read the shared wherever config once and cache it. Best-effort: a missing,
+  // unreadable or invalid file yields `{}` so every caller can just read the
+  // section it wants. The extension is a separate package from the server, so it
+  // reads the shared file directly rather than importing the server's loader.
+  //
+  // WHEREVER_CONFIG_DIR is honoured for the same reason the server honours it
+  // (see getWhereverConfigDir in server/src/session-pool.ts): without it an
+  // isolated harness relocates the server's config but the extension keeps
+  // reading the developer's real ~/.wherever/config.json, which is exactly the
+  // cross-talk that variable exists to prevent. The fallback is unchanged, so
+  // an ordinary install reads the same path it always did.
+  let cachedConfig: Record<string, unknown> | undefined = undefined;
+  function readWhereverConfig(): Record<string, unknown> {
+    if (cachedConfig !== undefined) return cachedConfig;
+    cachedConfig = {};
     try {
-      const configPath = path.join(os.homedir(), ".wherever", "config.json");
-      const raw = fs.readFileSync(configPath, "utf-8");
+      const override = process.env.WHEREVER_CONFIG_DIR;
+      const configDir =
+        override && override.trim() ? path.resolve(override.trim()) : path.join(os.homedir(), ".wherever");
+      const raw = fs.readFileSync(path.join(configDir, "config.json"), "utf-8");
       const parsed = JSON.parse(raw);
-      const beep = parsed?.beep;
-      if (beep && typeof beep === "object") return beep as { enabled?: boolean; command?: string };
+      if (parsed && typeof parsed === "object") cachedConfig = parsed as Record<string, unknown>;
     } catch (err) {
-      // No config / unreadable / invalid JSON: fall through to auto-detect.
+      // No config / unreadable / invalid JSON: built-in defaults apply.
     }
+    return cachedConfig;
+  }
+
+  function readConfigSection<T>(name: string): T | undefined {
+    const section = readWhereverConfig()[name];
+    if (section && typeof section === "object") return section as T;
     return undefined;
+  }
+
+  function readBeepConfig(): { enabled?: boolean; command?: string } | undefined {
+    return readConfigSection<{ enabled?: boolean; command?: string }>("beep");
+  }
+
+  // Connection settings for this bridge, so a deployment that is not on the
+  // defaults does not have to repeat flags on every `pi` invocation. See the
+  // `remote` section of WhereverConfig for the full rationale.
+  function readRemoteConfig():
+    | { host?: string; port?: number | string; token?: string; insecure?: boolean; bridge?: boolean }
+    | undefined {
+    return readConfigSection("remote");
   }
 
   // Auto-detected sound command, computed once. `undefined` means "not computed
@@ -643,13 +689,22 @@ export default async function (pi: ExtensionAPI) {
 
     updateCliWidget('connecting');
 
-    const host = (pi.getFlag("remote-host") as string) || "127.0.0.1";
-    const port = (pi.getFlag("remote-port") as string) || "31415";
-    const token = pi.getFlag("remote-token") as string | undefined;
-    // Insecure if --remote-insecure is set, OR --remote-secure is explicitly
-    // false (kept for back-compat). Otherwise default to secure WSS.
+    // Precedence throughout: explicit CLI flag > config.json > built-in default.
+    // The flags carry no registered default (see registerFlag above), so an
+    // absent flag really is absent here rather than silently masking the config.
+    const remoteCfg = readRemoteConfig();
+
+    const host = (pi.getFlag("remote-host") as string | undefined) || remoteCfg?.host || "127.0.0.1";
+    const port = String(
+      (pi.getFlag("remote-port") as string | undefined) || remoteCfg?.port || "31415",
+    );
+    const token = (pi.getFlag("remote-token") as string | undefined) || remoteCfg?.token;
+    // Insecure if --remote-insecure is set, OR `remote.insecure` is true in the
+    // config, OR --remote-secure is explicitly false (kept for back-compat).
+    // Otherwise default to secure WSS. The flag can only force insecure ON, so
+    // the config value is undone by editing the config, not by a flag.
     const isSecure =
-      pi.getFlag("remote-insecure") === true
+      pi.getFlag("remote-insecure") === true || remoteCfg?.insecure === true
         ? false
         : pi.getFlag("remote-secure") !== false;
 
@@ -960,7 +1015,11 @@ export default async function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (event: SessionStartEvent, ctx: ExtensionContext) => {
-    const isBridgeEnabled = pi.getFlag("remote-bridge") !== false;
+    // `remote.bridge: false` in config.json is the only way to actually turn the
+    // bridge off: the flag is registered with default true and a pi boolean
+    // cannot be passed as false, so --remote-bridge could never disable it.
+    const isBridgeEnabled =
+      pi.getFlag("remote-bridge") !== false && readRemoteConfig()?.bridge !== false;
     if (!isBridgeEnabled) return;
 
     ctxVal = ctx;
