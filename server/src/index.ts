@@ -1143,13 +1143,34 @@ async function main(): Promise<void> {
       const searchDefaultModel = searchFolder
         ? sessionPool.getDefaultModelFor(searchFolder)
         : null;
+      // The label defaults to the machine hostname so two servers sharing the
+      // same sessions over cloned folders are distinguishable with zero config.
+      // An explicit "" or false opts out entirely (the pre-appearance look):
+      // empty strings are FALSY, so the opt-out must be checked before the
+      // hostname fallback, not with `||`.
+      const appearance = config.appearance || {};
+      const accent = appearance.accent || null;
+      const pattern: string = appearance.pattern || 'none';
+      const label =
+        appearance.label === false || (typeof appearance.label === 'string' && appearance.label.trim() === '')
+          ? ''
+          : appearance.label || os.hostname();
       sendJSON(res, 200, {
         gitInitDefault: !!config.gitInitDefault,
         uploadMethod: config.uploads?.method || 'websocket',
         downloadsEnabled: config.downloads?.enabled !== false,
         searchFolder: searchFolder || null,
         searchCreateRemote: !!config.searchCreateRemote,
-        searchDefaultModel
+        searchDefaultModel,
+        appearance: {
+          label,
+          accent,
+          colors: appearance.colors || null,
+          // Explicit `frame: false` turns the top bar off; `frame: true` forces it
+          // on even without an accent (it then uses the compiled default blue).
+          frame: appearance.frame !== undefined ? !!appearance.frame : !!accent,
+          pattern: ['stripes', 'dots', 'grid'].includes(pattern) ? pattern : 'none',
+        },
       });
       return;
     }

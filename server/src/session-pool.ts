@@ -77,10 +77,56 @@ export interface RemoteRepoRule {
   visibility?: 'private' | 'public';
 }
 
+/** Brand color token keys accepted by `appearance.colors` (see web/src/app.css). */
+export type AppearanceColorKey =
+  | 'brandDark'
+  | 'brandSurface'
+  | 'brandSurface2'
+  | 'brandSurface3'
+  | 'brandBorder'
+  | 'brandText'
+  | 'brandTextMuted'
+  | 'brandCyan'
+  | 'brandBlue'
+  | 'brandPurple';
+
+/**
+ * Per-instance visual identity for the web dashboard. Meant to distinguish
+ * multiple machines that mirror the same pi sessions (e.g. via git clones):
+ * give each server a distinct `accent` (and optionally a `label`) so you can
+ * tell at a glance which instance you are driving.
+ */
+/** Subtle backdrop patterns painted on the dashboard's dark background, in the accent tint. */
+export type AppearancePattern = 'none' | 'stripes' | 'dots' | 'grid';
+
+export interface AppearanceConfig {
+  /**
+   * Short instance name shown next to the logo and in the tab title. Defaults to
+   * the machine hostname (so two servers sharing the same sessions over cloned
+   * folders are distinguishable with zero config). Set to `""` or `false` to
+   * show no label at all (the exact pre-appearance look).
+   */
+  label?: string | false;
+  /** Accent color (any CSS color, e.g. "#8b5cf6"). Re-themes links, buttons, and the gradient accents. */
+  accent?: string;
+  /** Advanced: override individual brand color tokens. Applied on top of (after) `accent`. */
+  colors?: Partial<Record<AppearanceColorKey, string>>;
+  /**
+   * Draw a solid accent bar across the top edge of the whole dashboard — the
+   * most visible instance marker, visible even when the sidebar is collapsed or
+   * a session fills the screen. Default: enabled when `accent` is set.
+   */
+  frame?: boolean;
+  /** Backdrop pattern on the dark background, in the accent tint. Default: 'none'. */
+  pattern?: AppearancePattern;
+}
+
 export interface WhereverConfig {
   gitInitDefault?: boolean;
   remoteRepoRules?: RemoteRepoRule[];
   commonFolders?: string[];
+  /** Visual identity of THIS server instance in the web dashboard. */
+  appearance?: AppearanceConfig;
   speech?: {
     apiKey?: string;
     apiUrl?: string;

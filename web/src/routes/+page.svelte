@@ -47,6 +47,7 @@
 		availableModels,
 		searchFolderStore,
 		searchDefaultModelStore,
+		appearanceStore,
 	} from '$lib/session-store';
 	import {onMount} from 'svelte';
 	import {version} from '$app/environment';
@@ -327,6 +328,9 @@
 		})),
 	);
 	let searchDefaultModel = $derived($searchDefaultModelStore);
+	// Visual identity of the connected instance: theming is applied at fetch
+	// time (session-store), here it only feeds the title and the sidebar badge.
+	let appearanceLabel = $derived($appearanceStore.label);
 	let searchModel = $state('');
 	// Seed (or re-seed) the selection once options are available and nothing valid
 	// is chosen yet. Runs when the model list or folder default changes.
@@ -370,7 +374,10 @@
 	}
 </script>
 
-<Head title="Wherever" description="Create & maintain apps from wherever" />
+<Head
+	title={appearanceLabel ? `Wherever · ${appearanceLabel}` : 'Wherever'}
+	description="Create & maintain apps from wherever"
+/>
 
 {#if createRestore}
 	<div
@@ -442,6 +449,14 @@
 					>
 						<img src={url('/logo.svg')} alt="Wherever" class="h-6 w-6" />
 						<span class="gradient-text text-lg font-bold">Wherever</span>
+						{#if appearanceLabel}
+							<!-- Instance badge: shows WHICH machine's server you are talking to,
+							     tinted by the instance accent (brand-blue). -->
+							<span
+								class="max-w-32 truncate rounded-full border border-brand-border bg-brand-blue/15 px-2 py-0.5 text-[10px] font-semibold text-brand-blue"
+								title={appearanceLabel}>{appearanceLabel}</span
+							>
+						{/if}
 					</button>
 					<div class="flex items-center gap-2">
 						<button

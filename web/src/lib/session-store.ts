@@ -1,4 +1,9 @@
 import {writable, get} from 'svelte/store';
+import {
+	defaultAppearance,
+	applyAppearance,
+	type AppearanceInfo,
+} from '$lib/theme';
 
 export interface SessionInfo {
 	path: string;
@@ -381,6 +386,9 @@ export const searchCreateRemoteStore = writable<boolean>(false);
 // resolved server-side against that folder's settings. null when unset.
 export const searchDefaultModelStore = writable<string | null>(null);
 
+/** Visual identity of the connected server instance (label + theme overrides). */
+export const appearanceStore = writable<AppearanceInfo>(defaultAppearance);
+
 export interface PathCheckResult {
 	exists: boolean;
 	isGit: boolean;
@@ -509,6 +517,17 @@ export async function fetchConfig(): Promise<void> {
 		searchFolderStore.set(data.searchFolder || null);
 		searchCreateRemoteStore.set(!!data.searchCreateRemote);
 		searchDefaultModelStore.set(data.searchDefaultModel || null);
+		const appearance: AppearanceInfo = {
+			label: data.appearance?.label || '',
+			accent: data.appearance?.accent || null,
+			colors: data.appearance?.colors || null,
+			frame: !!data.appearance?.frame,
+			pattern: data.appearance?.pattern || 'none',
+		};
+		appearanceStore.set(appearance);
+		// Re-theme immediately so the palette matches the instance you connected
+		// to, not whichever one the dashboard previously talked to.
+		applyAppearance(appearance);
 	} catch (err) {
 		console.error('Failed to fetch config:', err);
 	}

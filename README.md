@@ -399,7 +399,7 @@ Whenever you run `pi`, you can override bridge defaults:
 
 ## Configuration File (`~/.wherever/config.json`)
 
-Wherever supports user configuration to customize defaults for session creation and enable automatic Git remote repository setup.
+Wherever supports user configuration to customize defaults for session creation, enable automatic Git remote repository setup, and visually identify each server instance.
 
 The configuration file is located at `~/.wherever/config.json` on the server machine.
 
@@ -407,6 +407,14 @@ The configuration file is located at `~/.wherever/config.json` on the server mac
 
 - **`gitInitDefault`** (boolean, Default: `false`):
   When creating a session in a non-existent folder, this defines if the **"Initialize Git repository"** option is checked by default in the web UI.
+
+- **`appearance`** (object, optional):
+  Per-instance visual identity for the web dashboard, meant to distinguish machines that mirror the same pi sessions (e.g. folders cloned between machines over git): give each machine's server its own `label` and `accent` so you can tell at a glance which instance you are driving.
+  - `label` (string or `false`, optional, Default: the machine hostname): Instance name shown next to the logo in the sidebar and appended to the browser tab title. The hostname default already differentiates machines with zero configuration. Set to `""` or `false` to show no label at all (the exact pre-`appearance` look).
+  - `accent` (string, optional): Accent color overriding the dashboard's accent tokens (any CSS color, e.g. `"#8b5cf6"`). Re-tints links, buttons, gradients, active-session highlights, and the mobile/PWA `theme-color` chrome.
+  - `colors` (object, optional): Advanced, applied on top of `accent`: override individual brand tokens with any CSS color. Keys: `brandDark`, `brandSurface`, `brandSurface2`, `brandSurface3`, `brandBorder`, `brandText`, `brandTextMuted`, `brandCyan`, `brandBlue`, `brandPurple` (see `web/src/app.css` for the compiled-in defaults).
+  - `frame` (boolean, optional, Default: enabled when `accent` is set): Draws a solid accent bar across the top edge of the whole dashboard — the most visible instance marker, readable even when the sidebar is collapsed or a session fills the screen. Set `false` to turn it off, or `true` to force it on without an `accent` (it then uses the default blue).
+  - `pattern` (string, optional, Default: `'none'`): Backdrop pattern painted on the dashboard's dark background, in the accent tint: `'stripes'` (diagonal), `'dots'`, `'grid'`, or `'none'`. The tint is low-alpha, so it reads as a watermark rather than noise.
 
 - **`commonFolders`** (array of strings, Default: `[]`):
   A list of preset folder paths (e.g. `["~/projects/my-app", "~/dev/github"]`). These folders are displayed as quick-select completion options in the session creation panel, appearing even when the path input is empty.
@@ -452,6 +460,10 @@ Each rule in `remoteRepoRules` can contain:
 ```json
 {
   "gitInitDefault": true,
+  "appearance": {
+    "label": "laptop-ahead",
+    "accent": "#8b5cf6"
+  },
   "commonFolders": ["~/projects/my-app", "~/dev/github"],
   "remoteRepoRules": [
     {

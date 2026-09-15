@@ -29,7 +29,14 @@ body {
 
 .gradient-text {
 	@apply bg-clip-text text-transparent;
-	background-image: linear-gradient(to right, #06b6d4, #3b82f6, #8b5cf6);
+	/* Built from the brand tokens (not hardcoded hex) so a server-side
+	 * `appearance` override retints the gradient along with the rest. */
+	background-image: linear-gradient(
+		to right,
+		var(--color-brand-cyan),
+		var(--color-brand-blue),
+		var(--color-brand-purple)
+	);
 }
 
 .gradient-border {
@@ -42,7 +49,12 @@ body {
 	inset: 0;
 	border-radius: inherit;
 	padding: 1px;
-	background: linear-gradient(to right, #06b6d4, #3b82f6, #8b5cf6);
+	background: linear-gradient(
+		to right,
+		var(--color-brand-cyan),
+		var(--color-brand-blue),
+		var(--color-brand-purple)
+	);
 	-webkit-mask:
 		linear-gradient(#fff 0 0) content-box,
 		linear-gradient(#fff 0 0);
@@ -221,4 +233,61 @@ body {
 .markdown-body img {
 	max-width: 100%;
 	height: auto;
+}
+
+/*
+ * Instance identity overlays (driven by the server's `appearance` config).
+ * See web/src/lib/theme.ts: the class/attribute toggles are applied to <html>
+ * when the dashboard fetches /config, the color always comes from the brand
+ * tokens so a configured `accent` retints these along with the rest of the UI.
+ */
+
+/* Solid accent bar across the top edge of the whole dashboard: visible even
+ * with the sidebar collapsed or a session filling the screen. Fixed overlay,
+ * pointer-transparent, above the app's own modals (z-[100]). */
+html.wherever-framed::after {
+	content: '';
+	position: fixed;
+	inset: 0 0 auto 0;
+	height: 4px;
+	z-index: 1000;
+	background: var(--color-brand-blue);
+	pointer-events: none;
+}
+
+/* Backdrop patterns, painted on the app's dark background wherever it shows
+ * (the app root and the chat backdrop both use the bg-brand-dark utility, so
+ * they are retargeted through it). The tint is the accent at low alpha, so
+ * the pattern reads as a watermark, not as noise. */
+html[data-wherever-pattern='stripes'] .bg-brand-dark {
+	background-image: repeating-linear-gradient(
+		-45deg,
+		color-mix(in oklab, var(--color-brand-blue) 8%, transparent) 0,
+		color-mix(in oklab, var(--color-brand-blue) 8%, transparent) 1px,
+		transparent 1px,
+		transparent 14px
+	);
+}
+
+html[data-wherever-pattern='dots'] .bg-brand-dark {
+	background-image: radial-gradient(
+		color-mix(in oklab, var(--color-brand-blue) 14%, transparent) 1px,
+		transparent 1.3px
+	);
+	background-size: 13px 13px;
+}
+
+html[data-wherever-pattern='grid'] .bg-brand-dark {
+	background-image:
+		linear-gradient(
+			to right,
+			color-mix(in oklab, var(--color-brand-blue) 9%, transparent) 1px,
+			transparent 1px
+		),
+		linear-gradient(
+			to bottom,
+			color-mix(in oklab, var(--color-brand-blue) 9%, transparent) 1px,
+			transparent 1px
+		);
+	background-size: 18px 18px;
 }
