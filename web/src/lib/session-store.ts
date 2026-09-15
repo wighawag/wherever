@@ -1,9 +1,5 @@
 import {writable, get} from 'svelte/store';
-import {
-	defaultAppearance,
-	applyAppearance,
-	type AppearanceInfo,
-} from '$lib/theme';
+import {defaultAppearance, type AppearanceInfo} from '$lib/theme';
 
 export interface SessionInfo {
 	path: string;
@@ -524,10 +520,11 @@ export async function fetchConfig(): Promise<void> {
 			frame: !!data.appearance?.frame,
 			pattern: data.appearance?.pattern || 'none',
 		};
+		// Publishing the appearance is all this module does with it: painting it
+		// onto the document belongs to the UI (+layout.svelte), which re-themes
+		// whenever this store changes. Keeping the DOM write out of here means the
+		// transport layer stays testable without a document.
 		appearanceStore.set(appearance);
-		// Re-theme immediately so the palette matches the instance you connected
-		// to, not whichever one the dashboard previously talked to.
-		applyAppearance(appearance);
 	} catch (err) {
 		console.error('Failed to fetch config:', err);
 	}
