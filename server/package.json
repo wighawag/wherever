@@ -1,6 +1,6 @@
 {
   "name": "wherever-dev",
-  "version": "0.15.1",
+  "version": "0.15.2",
   "description": "Standalone multi-session server for pi coding agent (wherever.dev)",
   "homepage": "https://github.com/wighawag/wherever#readme",
   "repository": {
