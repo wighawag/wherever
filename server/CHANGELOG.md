@@ -1,5 +1,23 @@
 # wherever-dev
 
+## 0.15.2
+
+### Patch Changes
+
+- 88e0810: Apply the instance appearance from the layout rather than from the config fetch.
+
+  `fetchConfig()` in `session-store.ts` wrote directly to `document.documentElement` via `applyAppearance()`, putting a DOM side effect in the module that talks to the server. The store is now the only thing it publishes, and `+layout.svelte` re-themes off that store: it already owns `app.css`, where the `--color-brand-*` tokens and the frame/pattern rules the appearance drives actually live.
+
+  Driving the effect off the store rather than off the fetch also means any future writer re-themes too, instead of the palette only updating on the one code path that happened to remember to call it.
+
+  Adds coverage for the `/config` appearance mapping, which had none: the accent/label/frame/pattern payload, the compiled defaults for a server that configures no appearance, and the last-known appearance surviving an unreachable server.
+
+- e6c3ca2: Fix the web unit suite failing to resolve `$lib` imports.
+
+  `web/vitest.config.ts` is a standalone config that deliberately does not load the SvelteKit vite plugin, so nothing registered the `$lib` alias. This went unnoticed until `src/lib/session-store.ts` gained an `import ... from '$lib/theme'`, which put an aliased specifier on a module the tests actually load, breaking all 6 tests in `session-store.test.ts` and `remote-candidates.test.ts`.
+
+  The alias is now registered directly in the vitest config, keeping the no-plugin property intact. Its target is read from SvelteKit's own `svelte-kit sync` output rather than hardcoded as `src/lib`, so it cannot drift from what SvelteKit resolves `$lib` to if `kit.files.lib` is ever changed.
+
 ## 0.15.1
 
 ### Patch Changes
