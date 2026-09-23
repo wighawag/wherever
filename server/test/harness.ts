@@ -162,6 +162,19 @@ export async function startHarness(opts?: HarnessOptions): Promise<Harness> {
         // well cover /tmp/** -- which is exactly where the harness puts its
         // workspace, silently hiding the test's own sessions from /sessions.
         WHEREVER_CONFIG_DIR: whereverConfigDir,
+        // And the STATE dir, which is where drafts actually live. Isolating the
+        // config dir alone does NOT cover them: getWhereverStateDir() prefers
+        // WHEREVER_STATE_DIR and only falls back to the config dir, so an
+        // inherited value wins outright.
+        //
+        // This is not hypothetical any more. The project is now developed from
+        // inside a wherever session, sessions are hosted IN-PROCESS by the
+        // server, and the NixOS unit sets WHEREVER_STATE_DIR=/var/lib/wherever,
+        // so every descendant shell carries it. Measured 2026-09-23: the suite
+        // read AND appended to the operator's live /var/lib/wherever/drafts.json,
+        // which is both 8 confusing failures and real drafts in their dashboard.
+        // The ambient environment is production's, not a neutral laptop's.
+        WHEREVER_STATE_DIR: '',
         PI_REMOTE_NO_SSL: 'true',
         ...(opts?.idleTimeoutMs != null ? { PI_IDLE_TIMEOUT: String(opts.idleTimeoutMs) } : {}),
         ...(opts?.env ?? {}),

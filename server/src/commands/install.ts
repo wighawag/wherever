@@ -539,6 +539,26 @@ Install options:
   --no-memory-limits  Omit both directives. (Linux only; launchd has no
                       equivalent, so these are ignored on macOS.)
 
+Server options (also valid after 'wherever start'):
+  --host HOST         Address to bind (default 127.0.0.1).
+  --port PORT         Port to bind (default 31415).
+  --socket PATH       Listen on a unix socket at PATH instead of a TCP port,
+                      for running behind nginx/Caddy. A stale socket file is
+                      removed first; a LIVE one is refused. Serves plain HTTP
+                      unless --ssl-key/--ssl-cert are given, since whatever
+                      fronts the socket terminates TLS.
+  --socket fd://N     Serve on an already-bound socket inherited as descriptor
+                      N (systemd socket activation passes the first as fd://3).
+                      Preferred for a supervised service: systemd applies
+                      SocketUser=/SocketGroup=/SocketMode= as root, so the
+                      socket can be owned by one account and connectable by a
+                      proxy running as another, with no shared group needed.
+  --socket-mode MODE  Octal mode for a socket created by --socket PATH
+                      (default 0660). Ignored for the fd:// form, where the
+                      supervisor owns the mode.
+  --token SECRET      Require this token. Prefer WHEREVER_TOKEN /
+                      WHEREVER_TOKEN_FILE: argv is world-readable via 'ps'.
+
 Any other flag is forwarded verbatim to the baked 'wherever start' command,
 so all server flags work here directly, e.g.
   wherever install --host 0.0.0.0 --port 31415 --http-localhost-fallback

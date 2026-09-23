@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createServer as createHttpsServer, request as httpRequest } from 'node:https';
+import { connect as netConnect } from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { SessionPool, getWhereverConfig, getWhereverCertsDir, detectRemoteRepo, normalizePath, invalidateFolderExistence, type WhereverConfig } from './session-pool.js';
@@ -469,7 +470,254 @@ function warnIfSetButBlank(name: string, value: string | undefined): void {
   );
 }
 
-function parseArgs(): { port: number; host: string; token?: string; tokenSource: string; idleTimeout: number; sslKey?: string; sslCert?: string; noSsl: boolean; httpLocalhostFallbackPort?: number; debug: boolean } {
+/**
+ * Where the server listens when it is NOT a TCP port. Two forms, because they
+ * answer two different needs:
+ *
+ *  - `path`: `--socket /run/wherever.sock`. The general case, for anyone putting
+ *    wherever behind nginx or Caddy. WE create the socket, so we own removing a
+ *    stale one and setting its mode.
+ *  - `fd`: `--socket fd://3`. A socket a supervisor already created, bound,
+ *    chowned and chmodded, handed over as an open descriptor. systemd's socket
+ *    activation is the case that matters: `SocketUser`/`SocketGroup`/
+ *    `SocketMode` are applied by systemd AS ROOT before this process starts, so
+ *    the socket can be owned by one account and connectable by another (a
+ *    reverse proxy running as a different uid) with no shared group, no setgid
+ *    parent directory and no privileged code here. The path form cannot do
+ *    that: it can only create a socket owned by whoever we already are.
+ */
+type SocketSpec =
+  | { kind: 'path'; path: string; mode: number }
+  | { kind: 'fd'; fd: number };
+
+/**
+ * Mode for a socket WE create. Deliberate rather than inherited from the umask,
+ * because the umask is ambient: the same command produces a 0755 socket under a
+ * 022 umask and a 0700 one under 077, so whether the reverse proxy can connect
+ * would depend on the shell that happened to launch the service.
+ *
+ * 0660 rather than 0600 because fronting the server with a proxy is the reason
+ * the path form exists, and that needs group access. It is not a widening on a
+ * typical Linux box: with user-private groups the owner's primary group has one
+ * member, so 0660 grants nobody new until an admin deliberately sets a shared
+ * group on the socket's directory. `--socket-mode` overrides it either way.
+ */
+const DEFAULT_SOCKET_MODE = 0o660;
+
+function parseSocketMode(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_SOCKET_MODE;
+  const text = raw.trim();
+  // Refuse anything that is not plainly octal rather than letting parseInt take
+  // a prefix: `parseInt('0o660', 8)` is 0 and `parseInt('999', 8)` is NaN, and
+  // both would silently produce a socket nobody can open.
+  if (!/^[0-7]{3,4}$/.test(text)) {
+    console.error(
+      `FATAL: --socket-mode ${raw} is not an octal file mode. Give three or four octal digits, e.g. 660, 0600 or 0770.`,
+    );
+    process.exit(1);
+  }
+  return parseInt(text, 8);
+}
+
+/**
+ * Check that fd <n> really is an inherited listening socket BEFORE we try to
+ * serve on it. Every branch here is a mistake that otherwise surfaces as a
+ * confusing failure much later: `listen({fd})` on a descriptor that is not a
+ * socket throws something obscure, and a unit that forgot its `.socket` file
+ * would otherwise fail in a way that reads like a wherever bug.
+ */
+function validateInheritedFd(fd: number): void {
+  const listenPid = (process.env.LISTEN_PID ?? '').trim();
+  const listenFds = (process.env.LISTEN_FDS ?? '').trim();
+
+  // LISTEN_PID names the process systemd handed the descriptors to. A mismatch
+  // means something between systemd and us forked instead of exec'ing, so the
+  // variable now names our parent.
+  //
+  // WARN rather than refuse, which is deliberately LESS strict than
+  // `sd_listen_fds()` (it returns "no fds" on a mismatch). The difference is who
+  // chose the descriptor. `sd_listen_fds()` DISCOVERS fds, so LISTEN_PID is its
+  // only evidence that any exist and being strict is right. Here the operator
+  // named `fd://<n>` explicitly and we independently fstat it below, so the
+  // mismatch tells us about the launch chain rather than about the socket.
+  // Refusing would kill a correct, working setup over an advisory variable: an
+  // inherited fd survives a fork perfectly well, and wrapper scripts that fork
+  // are common (this project's own test harness runs behind one).
+  const listenPidMismatch = listenPid !== '' && Number(listenPid) !== process.pid;
+  if (listenPidMismatch) {
+    console.warn(
+      `[wherever] LISTEN_PID is ${listenPid}, not this process (${process.pid}): something in the ` +
+        `launch chain forked instead of exec'ing. Continuing, because fd ${fd} was named explicitly ` +
+        `and is verified to be a socket below. To silence this, \`exec\` the server from the wrapper.`,
+    );
+  }
+
+  // Only meaningful when LISTEN_FDS is describing OUR descriptors. If LISTEN_PID
+  // already told us it is talking about a different process, its count is not
+  // about us either and a range check against it would reject a valid fd.
+  if (listenFds !== '' && !listenPidMismatch) {
+    const count = Number(listenFds);
+    if (Number.isFinite(count) && count > 0 && (fd < 3 || fd >= 3 + count)) {
+      console.error(
+        `FATAL: --socket fd://${fd} is outside the range systemd passed: LISTEN_FDS=${count}, so the ` +
+          `descriptors are ${3}..${3 + count - 1}. The first (and usually only) one is fd://3.`,
+      );
+      process.exit(1);
+    }
+  }
+
+  let st: fs.Stats;
+  try {
+    st = fs.fstatSync(fd);
+  } catch (err) {
+    console.error(
+      `FATAL: --socket fd://${fd} is not an open file descriptor: ${(err as Error).message}. ` +
+        `Nothing passed this server a socket. Under systemd this means the matching .socket unit is ` +
+        `missing or was not the thing that started this service.`,
+    );
+    process.exit(1);
+  }
+  if (!st!.isSocket()) {
+    console.error(
+      `FATAL: --socket fd://${fd} is an open file descriptor but NOT a socket. Refusing to serve on it.`,
+    );
+    process.exit(1);
+  }
+}
+
+/** Turn the raw `--socket` value into a validated spec, or undefined for TCP. */
+function resolveSocketSpec(raw: string | undefined, modeRaw: string | undefined): SocketSpec | undefined {
+  if (raw === undefined) return undefined;
+  // An empty value neutralises an inherited WHEREVER_SOCKET, the same way
+  // `--token ''` neutralises an inherited token.
+  const value = raw.trim();
+  if (value === '') return undefined;
+
+  if (value.startsWith('fd://')) {
+    const digits = value.slice('fd://'.length);
+    if (!/^\d+$/.test(digits)) {
+      console.error(`FATAL: --socket ${raw} is not a valid descriptor reference. Use fd://3.`);
+      process.exit(1);
+    }
+    const fd = Number(digits);
+    if (fd < 3) {
+      console.error(
+        `FATAL: --socket fd://${fd} refers to ${['stdin', 'stdout', 'stderr'][fd]}, not an inherited ` +
+          `socket. Passed descriptors start at 3.`,
+      );
+      process.exit(1);
+    }
+    validateInheritedFd(fd);
+    if (modeRaw !== undefined && modeRaw.trim() !== '') {
+      console.warn(
+        `[wherever] --socket-mode is ignored with --socket fd://${fd}: the supervisor that created the ` +
+          `socket owns its mode (systemd sets SocketMode= on the .socket unit).`,
+      );
+    }
+    return { kind: 'fd', fd };
+  }
+
+  // A relative path would be resolved against the cwd, which for a service is
+  // wherever the supervisor happened to put it. Demand the operator say.
+  if (!path.isAbsolute(value)) {
+    console.error(`FATAL: --socket ${raw} must be an absolute path (or fd://<n> for an inherited socket).`);
+    process.exit(1);
+  }
+  return { kind: 'path', path: value, mode: parseSocketMode(modeRaw) };
+}
+
+/**
+ * Does something already answer on this socket path? Used to tell a LIVE server
+ * from a leftover inode, which is the difference between "refuse to start" and
+ * "clean up and bind". Unlinking without asking would silently steal the address
+ * from a healthy server, which stays running and serving nobody.
+ */
+function unixSocketAccepts(sockPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = netConnect(sockPath);
+    let settled = false;
+    const done = (live: boolean) => {
+      if (settled) return;
+      settled = true;
+      try {
+        probe.destroy();
+      } catch {}
+      resolve(live);
+    };
+    probe.once('connect', () => done(true));
+    // ECONNREFUSED on a socket file means the inode outlived its server, which is
+    // exactly the stale case. Any other error also means we cannot use it as-is.
+    probe.once('error', () => done(false));
+    probe.setTimeout(2000, () => done(false));
+  });
+}
+
+/** Clear a stale socket file, refusing anything that is not ours to remove. */
+async function prepareSocketPath(sockPath: string): Promise<void> {
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(sockPath);
+  } catch {
+    return; // nothing in the way
+  }
+  if (!st.isSocket()) {
+    console.error(
+      `FATAL: --socket ${sockPath} already exists and is not a socket. Refusing to unlink it: if this ` +
+        `path is wrong, a regular file or directory here would be destroyed by a typo.`,
+    );
+    process.exit(1);
+  }
+  if (await unixSocketAccepts(sockPath)) {
+    console.error(
+      `FATAL: --socket ${sockPath} is already being served by another process. Refusing to unlink a ` +
+        `LIVE socket: doing so would leave that server running and unreachable.`,
+    );
+    process.exit(1);
+  }
+  try {
+    fs.unlinkSync(sockPath);
+  } catch (err) {
+    console.error(`FATAL: --socket ${sockPath} is stale but could not be removed: ${(err as Error).message}`);
+    process.exit(1);
+  }
+}
+
+/** Bind `server` to a unix socket, creating it or adopting an inherited one. */
+async function listenOnUnixSocket(
+  server: { listen: (...args: any[]) => unknown },
+  spec: SocketSpec,
+  onListening: () => void,
+): Promise<void> {
+  if (spec.kind === 'fd') {
+    // Nothing to create, clean up or chmod: the supervisor did all three as root
+    // before this process existed. Adopting it is the whole operation.
+    server.listen({ fd: spec.fd }, onListening);
+    return;
+  }
+
+  await prepareSocketPath(spec.path);
+
+  // bind() applies the umask, so setting the mode only AFTER listening leaves a
+  // window in which the socket is more permissive than asked for. Narrow it from
+  // both ends: a umask that makes the created mode correct, and a chmod that
+  // makes it exact regardless. Restoring in `finally` is safe because node binds
+  // a pipe synchronously inside listen() and only defers the 'listening' event.
+  const previousMask = process.umask(0o777 & ~spec.mode);
+  try {
+    server.listen(spec.path, () => {
+      try {
+        fs.chmodSync(spec.path, spec.mode);
+      } catch (err) {
+        console.warn(`[wherever] could not set mode on ${spec.path}: ${(err as Error).message}`);
+      }
+      onListening();
+    });
+  } finally {
+    process.umask(previousMask);
+  }
+}
+
+function parseArgs(): { port: number; host: string; socket?: SocketSpec; token?: string; tokenSource: string; idleTimeout: number; sslKey?: string; sslCert?: string; noSsl: boolean; httpLocalhostFallbackPort?: number; debug: boolean } {
   const args = process.argv.slice(2);
   let port = parseInt(process.env.PI_REMOTE_PORT || '31415', 10);
   let host = process.env.PI_REMOTE_HOST || '127.0.0.1';
@@ -494,6 +742,14 @@ function parseArgs(): { port: number; host: string; token?: string; tokenSource:
   let sslCert = process.env.WHEREVER_SSL_CERT || process.env.PI_REMOTE_SSL_CERT || undefined;
   let noSsl = process.env.PI_REMOTE_NO_SSL === 'true' || process.env.PI_REMOTE_HTTP === 'true';
   let httpLocalhostFallbackPort: number | undefined = undefined;
+  // Listen on a unix socket instead of a TCP port. See SocketSpec for the two
+  // accepted forms and why both exist.
+  let socketArg: string | undefined = process.env.WHEREVER_SOCKET || undefined;
+  let socketModeArg: string | undefined = process.env.WHEREVER_SOCKET_MODE || undefined;
+  // Whether --host/--port were given on the COMMAND LINE, as opposed to merely
+  // having their defaults. Only an explicit one is worth warning about when it
+  // is about to be ignored; the defaults are always present and mean nothing.
+  let cliHostOrPortGiven = false;
   // Enables the eruda custom-plugin loader in the served dashboard (local
   // debugging only). Off by default: plugin loading takes a URL param into a
   // <script src>, which is a DOM-XSS vector unless explicitly opted into.
@@ -513,9 +769,17 @@ function parseArgs(): { port: number; host: string; token?: string; tokenSource:
     switch (args[i]) {
       case '--port':
         port = parseInt(args[++i] || '31415', 10);
+        cliHostOrPortGiven = true;
         break;
       case '--host':
         host = args[++i] || '127.0.0.1';
+        cliHostOrPortGiven = true;
+        break;
+      case '--socket':
+        socketArg = args[++i];
+        break;
+      case '--socket-mode':
+        socketModeArg = args[++i];
         break;
       case '--token':
         cliToken = args[++i];
@@ -555,6 +819,30 @@ function parseArgs(): { port: number; host: string; token?: string; tokenSource:
     }
   }
 
+  const socket = resolveSocketSpec(socketArg, socketModeArg);
+
+  if (socket) {
+    // REFUSED rather than ignored. The fallback opens a SECOND listener, a plain
+    // HTTP one on a TCP port, which contradicts the reason to ask for a socket
+    // in the first place: "reachable only through this socket". Silently keeping
+    // it would mean an operator who asked for no TCP surface quietly got some,
+    // and on a host where the service's uid cannot serve TCP at all it would be
+    // a listener that accepts connections and can never answer them.
+    if (httpLocalhostFallbackPort !== undefined) {
+      console.error(
+        `FATAL: --http-localhost-fallback cannot be combined with --socket. The fallback is a second ` +
+          `listener on a TCP port, which defeats the point of binding a unix socket. Drop one of them.`,
+      );
+      process.exit(1);
+    }
+    if (cliHostOrPortGiven) {
+      console.warn(
+        `[wherever] --host/--port are ignored with --socket: a unix socket has neither. The server is ` +
+          `reachable only through the socket.`,
+      );
+    }
+  }
+
   const { token, source: tokenSource } = resolveToken(cliToken, cliTokenGiven);
 
   // Scrub the token out of our own environment once it is resolved. Node builds
@@ -568,7 +856,7 @@ function parseArgs(): { port: number; host: string; token?: string; tokenSource:
   delete process.env.WHEREVER_TOKEN;
   delete process.env.PI_REMOTE_TOKEN;
 
-  return { port, host, token, tokenSource, idleTimeout, sslKey, sslCert, noSsl, httpLocalhostFallbackPort, debug };
+  return { port, host, socket, token, tokenSource, idleTimeout, sslKey, sslCert, noSsl, httpLocalhostFallbackPort, debug };
 }
 
 /** Loopback-only binds are the safe default; everything else is reachable by others. */
@@ -671,7 +959,7 @@ function sendThenTerminate(ws: WebSocket, msg: ServerMessage, flushTimeoutMs = 1
 }
 
 async function main(): Promise<void> {
-  const { port, host, token, tokenSource, idleTimeout, sslKey, sslCert, noSsl, httpLocalhostFallbackPort, debug } = parseArgs();
+  const { port, host, socket, token, tokenSource, idleTimeout, sslKey, sslCert, noSsl, httpLocalhostFallbackPort, debug } = parseArgs();
   debugEnabled = debug;
   const sessionPool = new SessionPool(idleTimeout);
   await sessionPool.initialize();
@@ -709,7 +997,27 @@ async function main(): Promise<void> {
     // cannot be loaded further down: see the `tlsExplicitlyConfigured` branch.
     tlsExplicitlyConfigured = !!(actualSslKey && actualSslCert);
 
-    if (!actualSslKey || !actualSslCert) {
+    // A unix socket does not get the self-signed pair. TLS over a unix socket
+    // protects nothing: there is no network path to intercept, and the access
+    // boundary is the socket's file permissions rather than anything a
+    // certificate could attest. The certificate would also be nonsense, since
+    // the generated one is `CN=localhost` and a socket has no hostname to match.
+    // Minting it is not free either: it shells out to openssl and WRITES a
+    // keypair into the state dir at every first boot.
+    //
+    // EXPLICIT material is still honoured (the condition is
+    // `tlsExplicitlyConfigured`), so an operator who really wants TLS on a
+    // socket passes --ssl-key/--ssl-cert and gets it. This only declines to
+    // invent it unasked.
+    if (socket && !tlsExplicitlyConfigured) {
+      console.log(
+        '[wherever] serving plain HTTP over the unix socket: TLS is the business of whatever fronts ' +
+          'it. Pass --ssl-key/--ssl-cert to override.',
+      );
+      isSecure = false;
+    }
+
+    if (isSecure && (!actualSslKey || !actualSslCert)) {
       // Automatic self-signed certificate generation. These files are WRITTEN, so
       // they belong to the state dir (WHEREVER_STATE_DIR, defaulting to the config
       // dir, itself defaulting to ~/.wherever) -- with both unset this is exactly
@@ -2040,12 +2348,21 @@ async function main(): Promise<void> {
   if (typeof heartbeat.unref === 'function') heartbeat.unref();
   wss.on('close', () => clearInterval(heartbeat));
 
-  server.listen(port, host, () => {
-    const protocol = isSecureServer ? 'https' : 'http';
+  // WHERE this server can be reached, as one string. A unix socket has neither
+  // a scheme nor a host nor a port, so the banner and the warnings below must
+  // describe it rather than interpolating `${protocol}://${host}:${port}` and
+  // printing an address that does not exist.
+  const addressLabel = socket
+    ? socket.kind === 'fd'
+      ? `unix socket on inherited fd ${socket.fd}`
+      : `unix:${socket.path}`
+    : `${isSecureServer ? 'https' : 'http'}://${host}:${port}`;
+
+  const onListening = () => {
     // The SOURCE, never the token itself: this line goes to the journal, which
     // is readable by more people than the secret is.
     const authInfo = token ? ` (token-protected via ${tokenSource})` : ' (no authentication)';
-    console.log(`\n🔐 Wherever Server: ${protocol}://${host}:${port}${authInfo}`);
+    console.log(`\n🔐 Wherever Server: ${addressLabel}${authInfo}`);
     if (token && tokenSource === '--token') {
       console.warn(
         '[wherever] the token came from the command line, which is visible to every user on this ' +
@@ -2057,7 +2374,25 @@ async function main(): Promise<void> {
     // also exactly what a failed secret render looks like, and the two are
     // indistinguishable from the outside, so it must not slip by as one
     // parenthetical word in an otherwise cheerful startup line.
-    if (!token && !isLoopbackHost(host)) {
+    if (!token && socket) {
+      // A socket gets its OWN branch rather than falling through to either side
+      // of the host test. It is not off-loopback, so the warning above would be
+      // a lie about what is exposed; but it is not the quiet loopback case
+      // either, because a socket's reach is set by its file permissions, and
+      // those are frequently widened on purpose so a reverse proxy can connect.
+      // "Local" therefore does not mean "only me", and the mode is the thing a
+      // reader needs told.
+      const reach =
+        socket.kind === 'path'
+          ? `mode ${socket.mode.toString(8).padStart(4, '0')} on ${socket.path}`
+          : 'the mode its supervisor gave it';
+      console.warn(
+        `[wherever] WARNING: serving a unix socket with NO AUTHENTICATION. Access is limited only by ` +
+          `the socket's file permissions (${reach}), and anyone who can open it has full agent and ` +
+          `filesystem access. If you meant to configure a token, it did not arrive: check ` +
+          `WHEREVER_TOKEN / WHEREVER_TOKEN_FILE.`,
+      );
+    } else if (!token && !isLoopbackHost(host)) {
       console.warn(
         `[wherever] WARNING: listening on ${host} with NO AUTHENTICATION. Anyone who can reach ` +
           `this address has full agent and filesystem access. If you meant to configure a token, ` +
@@ -2065,7 +2400,9 @@ async function main(): Promise<void> {
       );
     }
 
-    if (isSecureServer) {
+    // Only meaningful for a browser typing an address in. A socket has none, and
+    // whatever fronts it presents its own certificate to the actual client.
+    if (isSecureServer && !socket) {
       console.log(`
 👉 FIRST TIME CONNECTING?
 Since the server uses an automatically generated self-signed SSL certificate:
@@ -2075,7 +2412,13 @@ Since the server uses an automatically generated self-signed SSL certificate:
 This encrypts all network traffic securely and enables safe, private remote access!
 `);
     }
-  });
+  };
+
+  if (socket) {
+    await listenOnUnixSocket(server, socket, onListening);
+  } else {
+    server.listen(port, host, onListening);
+  }
 
   if (httpServer && httpLocalhostFallbackPort !== undefined) {
     const insecurePort = httpLocalhostFallbackPort === -1 ? port + 1 : httpLocalhostFallbackPort;
