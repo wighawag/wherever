@@ -1,0 +1,11 @@
+{
+  "appId": "dev.wherever.spike",
+  "appName": "Wherever Spike",
+  "webDir": "../web/build",
+  "android": {
+    "webContentsDebuggingEnabled": true
+  },
+  "server": {
+    "androidScheme": "https"
+  }
+}

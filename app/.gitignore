@@ -1,0 +1,10 @@
+# The generated Android project. Regenerate with `npx cap add android`.
+# Deliberately NOT tracked: this is a throwaway spike, and a Gradle build tree
+# (caches, wrapper jars, build outputs) is exactly the kind of bulk that must
+# never reach the Nix store. package.nix filters its source through an
+# ALLOWLIST (topLevelAllowed) for that reason, and `app` is not in it.
+android/
+
+node_modules/
+package-lock.json
+www/

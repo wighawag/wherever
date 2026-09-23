@@ -1,0 +1,21 @@
+{
+  "name": "wherever-app-spike",
+  "version": "0.0.0",
+  "private": true,
+  "description": "THROWAWAY Capacitor shell. Built only to observe whether an app-owned WebView keeps the WebSocket alive across an Android app switch. See work/tasks/backlog/capacitor-webview-socket-spike.md. Deliberately OUTSIDE the pnpm workspace: adding it to pnpm-workspace.yaml would change pnpm-lock.yaml and stale the pnpmDepsHash pinned in package.nix, and it has no JS dependency on the workspace (it consumes the BUILT ../web/build directory, not a package).",
+  "scripts": {
+    "sync": "cap sync android",
+    "copy": "cap copy android",
+    "open": "cap open android",
+    "apk": "cd android && ./gradlew assembleDebug",
+    "install-apk": "adb install -r android/app/build/outputs/apk/debug/app-debug.apk"
+  },
+  "dependencies": {
+    "@capacitor/android": "^7.0.0",
+    "@capacitor/app": "^7.0.0",
+    "@capacitor/core": "^7.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.0.0"
+  }
+}
