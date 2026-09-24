@@ -11,6 +11,7 @@ import {
 	shouldSignalConversationMode,
 } from './core/conversation-mode';
 import {buildAttachmentMessage} from './core/attachments';
+import {adoptTokenFromUrlOnce} from './core/token-adoption';
 import {normalizeDrafts, type Draft} from './core/drafts';
 import {
 	setCurrentSession,
@@ -69,6 +70,13 @@ function defaultPort(): number {
 }
 
 export function getConfig() {
+	// Before anything reads the stored config, let a token supplied in the page
+	// URL (`#token=...`, or a legacy `?token=...`) be merged into it. This runs
+	// HERE rather than in a layout hook because getConfig() is itself called at
+	// module scope below, which is earlier than any component lifecycle. It is
+	// idempotent, so calling it on every read costs nothing.
+	adoptTokenFromUrlOnce();
+
 	const defaultHost =
 		typeof window !== 'undefined' && window.location && window.location.hostname
 			? window.location.hostname
@@ -76,6 +84,13 @@ export function getConfig() {
 
 	const stored = getStoredConfig();
 	if (stored) {
+		// A config written by token adoption alone (fresh browser, link with a
+		// token) carries no port, and the legacy healing below only assigns one
+		// when the page port differs from 31415. Fill it in first so the returned
+		// config always has a usable port.
+		if (stored.port === undefined) {
+			stored.port = defaultPort();
+		}
 		// Legacy port healing: a config stored before reverse-proxy support has
 		// port 31415 baked in. If the dashboard is actually served from a
 		// different origin port (e.g. 443 behind Caddy), that stale 31415 makes

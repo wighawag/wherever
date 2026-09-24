@@ -382,6 +382,22 @@ If `WHEREVER_TOKEN_FILE` is the source in use and the file is missing, unreadabl
 
 TLS gets the same treatment: if you point `--ssl-key`/`--ssl-cert` (or the `WHEREVER_SSL_*` variables) at material that cannot be loaded, the server exits instead of quietly falling back to plaintext HTTP on the same address. Use `--no-ssl` if plaintext is what you want.
 
+#### Handing the token to a browser (one link, no typing)
+
+A token-protected instance is reachable with a **single link**: open
+
+```
+https://<host>:31415/#token=your-secure-token
+```
+
+The dashboard takes the token out of the fragment on boot, stores it in its normal connection config, and then **removes it from the address bar** (with `history.replaceState`, so no history entry keeps the secret either). From that point on the page, the `/sessions` API calls and the WebSocket are all authenticated, reloads keep working, and there is nothing to type into Connection Settings. This is the form to share, e.g. in the QR code or chat message you send yourself when setting up a phone.
+
+Use the **hash**, not a query string. A fragment is never sent to the server, so the token stays out of HTTP access logs, out of the `Referer` header sent to whatever site you visit next, and out of the request log of every reverse proxy in between. `https://<host>:31415/?token=...` is still accepted, so links already handed out keep working, but it leaks the secret into all three of those places; both forms are scrubbed from the address bar once read.
+
+A blank `#token=` is ignored rather than stored, so a malformed link cannot log you out of a session that is already working, and adopting a link only touches the token: your host, port and display preferences are left as they are. That last point cuts both ways, so it is worth stating plainly: if this dashboard is configured to connect to a *different* host, a token link opened here replaces the token it uses for that host, since the link says nothing about which server it belongs to.
+
+**Percent-encode the token in the link.** The fragment is read as form-encoded key/value pairs (`#token=X&foo=1` works, and so do other fragment keys), which means a literal `+` in the token would arrive as a space: write it `%2B`. The same is true of the `?token=` form, which the server already decodes the same way. The capitalisation of the key itself does not matter (`#TOKEN=` is accepted), so a retyped link still works rather than being mistaken for something else.
+
 ### CLI Bridge Settings
 
 Whenever you run `pi`, you can override bridge defaults:
@@ -529,7 +545,7 @@ Using a secure private mesh VPN like [Tailscale](https://tailscale.com) or [Head
    wherever start --host 0.0.0.0 --token your-secure-token
    ```
    _Warning: Always use a strong `--token` when binding to any interface other than localhost!_
-3. Access your Svelte dashboard securely from your remote device's browser at `https://<your-tailscale-ip>:31415` with your token.
+3. Access your Svelte dashboard securely from your remote device's browser at `https://<your-tailscale-ip>:31415/#token=your-secure-token`. The token in the fragment is adopted on first load and then cleared from the address bar, so the phone never needs it typed in by hand (see [Handing the token to a browser](#handing-the-token-to-a-browser-one-link-no-typing)).
 
 #### Trusted HTTPS for Tailscale (recommended for PWA install)
 

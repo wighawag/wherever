@@ -1,5 +1,12 @@
 import {writable, get} from 'svelte/store';
 import {defaultAppearance, type AppearanceInfo} from '$lib/theme';
+import {adoptTokenFromUrlOnce} from '$lib/core/token-adoption';
+
+// getToken()/getBaseUrl() below read the stored config STRAIGHT out of
+// localStorage, and a route can import this module without importing
+// wherever.ts, so adoption is kicked off here at module scope too. It is
+// idempotent and shares its state with the call in getConfig().
+adoptTokenFromUrlOnce();
 
 export interface SessionInfo {
 	path: string;

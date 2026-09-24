@@ -142,8 +142,12 @@
 
 	function getBaseUrl(): string {
 		const config = localStorage.getItem('wherever-config');
-		if (config) {
-			const parsed = JSON.parse(config);
+		const parsed = config ? JSON.parse(config) : null;
+		// host/port are checked before being dereferenced because the stored config
+		// is not guaranteed to carry them: a token adopted from a `#token=` link on
+		// a browser that never opened Connection Settings writes the token field
+		// alone. Fall back to this page's own origin, as the final return does.
+		if (parsed && parsed.host && parsed.port) {
 			const protocol =
 				window.location.protocol === 'https:' ? 'https:' : 'http:';
 			const host = parsed.host.startsWith('http')
