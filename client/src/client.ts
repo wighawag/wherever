@@ -1363,6 +1363,17 @@ export class WhereverClient {
         }
         break;
 
+      case 'session_reloading':
+        // A `/reload` was accepted (by us or another viewer): the live agent is
+        // being rebuilt. Block the composer exactly like a cold load; the
+        // session_ready (or session_error) that ends the reload clears it and
+        // re-requests the skill list. Ignore a frame for a session we left.
+        this.stateStore.update((s: WhereverState) => {
+          if (s.sessionId && msg.sessionId && s.sessionId !== msg.sessionId) return s;
+          return { ...s, agentPending: true };
+        });
+        break;
+
       case 'skills_list':
         // The set of `/skill:<name>` commands for the active session. Replace
         // outright; ignore a list for a session we already switched away from.
@@ -2362,6 +2373,17 @@ export class WhereverClient {
     const s = get(this.stateStore);
     if (!s.sessionId) return;
     this.send({type: 'abort', sessionId: s.sessionId});
+  }
+
+  // The web `/reload`: ask the server to rebuild the active session's agent so
+  // it re-reads settings, extensions, skills, prompts and context files. Nothing
+  // is changed locally: the server answers session_reloading (block the
+  // composer), then session_ready, or a session_notice when it refuses (the
+  // agent is busy, a CLI bridge owns the session, read-only).
+  public reloadResources(): void {
+    const s = get(this.stateStore);
+    if (!s.sessionId) return;
+    this.send({type: 'session_reload', sessionId: s.sessionId});
   }
 
   // Cancel the queued mid-stream steer messages for the active session without

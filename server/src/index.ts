@@ -4,7 +4,7 @@ import { createServer as createHttpsServer, request as httpRequest } from 'node:
 import { connect as netConnect } from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { SessionPool, getWhereverConfig, getWhereverCertsDir, detectRemoteRepo, normalizePath, invalidateFolderExistence, type WhereverConfig } from './session-pool.js';
+import { SessionPool, RELOADING_REFUSAL, getWhereverConfig, getWhereverCertsDir, detectRemoteRepo, normalizePath, invalidateFolderExistence, type WhereverConfig } from './session-pool.js';
 import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.js';
 import { searchConversations } from './conversation-search.js';
 import { matchRemoteRepoRule, resolveRemoteCandidates } from './remote-candidates.js';
@@ -2941,6 +2941,7 @@ async function handleWSMessage(
       // folder -- but the client is locked and, on the cold path below, no live
       // agent is built at all.
       const restoreInFlight = restoreJobs.get(meta.cwd)?.state === 'running';
+      const reloadingNow = meta.resident && pool.isReloading(meta.sessionFile);
       const folderMissing = meta.folderMissing || restoreInFlight;
       client.folderMissingCwd = folderMissing ? meta.cwd : undefined;
 
@@ -2966,7 +2967,10 @@ async function handleWSMessage(
         folderConflict,
         folderMissing,
         contextUsage: meta.resident ? (pool.getContextUsage(meta.sessionFile) ?? null) : null,
-        pending: !meta.resident,
+        // A resident session mid-/reload has no usable agent yet: paint it as
+        // pending; the reload's own session_ready (sent to every viewer, this
+        // one included once attached below) ends it.
+        pending: !meta.resident || reloadingNow,
       });
       sendWS(client.ws, {
         type: 'message_history',
@@ -3002,6 +3006,8 @@ async function handleWSMessage(
         pool.addClient(meta.sessionFile, client.id);
         switchClientSession(client, meta.sessionFile, pool, onSessionsUpdated);
         client.readOnly = forcedReadOnly;
+        // Mid-/reload: the reload's completion frame is this client's ready.
+        if (reloadingNow) break;
         sendWS(client.ws, {
           type: 'session_ready',
           sessionId: meta.sessionId,
@@ -3422,6 +3428,15 @@ async function handleWSMessage(
         });
         break;
       }
+      // A /reload is rebuilding the agent. The composer is blocked on every viewer
+      // (session_reloading), so this is a race or an old client: answer, retryably.
+      if (pool.isReloading(client.sessionId)) {
+        // session_error is what fails the message on the client (Retry), but it
+        // also clears agentPending: re-assert the reload block right after it.
+        sendWS(client.ws, { type: 'session_error', sessionId: msg.sessionId, error: RELOADING_REFUSAL });
+        sendWS(client.ws, { type: 'session_reloading', sessionId: attached.sessionId });
+        break;
+      }
       const streaming = pool.isStreaming(client.sessionId);
       // The optional conversationMode field is the per-turn spoken-conversation
       // signal (absent = off). It only decides whether a hint is appended to this
@@ -3476,6 +3491,74 @@ async function handleWSMessage(
       break;
     }
 
+    case 'session_reload': {
+      if (!client.sessionId) return;
+      // Same authority guard as 'message': only reload the session this
+      // connection is attached to AND looking at.
+      const attached = pool.getSession(client.sessionId);
+      const target = msg.sessionId ? pool.getSession(msg.sessionId) : attached;
+      if (!attached || !target || target !== attached) {
+        sendWS(client.ws, {
+          type: 'session_error',
+          sessionId: msg.sessionId,
+          error: 'The session changed, so it was not reloaded. Re-open it and try /reload again.',
+        });
+        break;
+      }
+      const refuse = (message: string) =>
+        sendWS(client.ws, { type: 'session_notice', sessionId: attached.sessionId, level: 'warning', message });
+      // Reloading re-runs extension code and rebuilds the agent every viewer
+      // shares: an observe-only client may not trigger that.
+      if (client.readOnly) {
+        refuse('This session is read-only from here, so it was not reloaded.');
+        break;
+      }
+      const sessionFile = attached.sessionFile;
+      const sessionId = attached.sessionId;
+      // Tell the connections that are CURRENTLY on this session, decided at send
+      // time: a viewer who switched away mid-reload must not get this session's
+      // frames (the client's session_error handler is not session-scoped). Found
+      // by scanning connections rather than the pool entry, because a failed
+      // rebuild drops the entry while its viewers are still attached to the file.
+      const tellViewers = (message: ServerMessage) => {
+        for (const c of clients.values()) {
+          if (c.sessionId === sessionFile) sendWS(c.ws, message);
+        }
+      };
+      const result = await pool.reloadSession(sessionFile, {
+        onStart: () => tellViewers({ type: 'session_reloading', sessionId }),
+      });
+      if (!result.started) {
+        refuse(result.error ?? 'The session could not be reloaded.');
+        break;
+      }
+      if (result.closed) {
+        // Deleted / evicted / taken over mid-reload: the path that closed it has
+        // already told its viewers what happened. An error on top would mislead.
+        break;
+      }
+      if (result.error) {
+        // Every current viewer saw session_reloading, so each needs its end.
+        tellViewers({ type: 'session_error', sessionId, error: result.error });
+        break;
+      }
+      tellViewers({
+        type: 'session_ready',
+        sessionId,
+        sessionFile,
+        model: pool.getSession(sessionFile)?.model,
+        isStreaming: pool.isStreaming(sessionFile),
+        contextUsage: pool.getContextUsage(sessionFile) ?? null,
+      });
+      tellViewers({
+        type: 'session_notice',
+        sessionId,
+        level: 'info',
+        message: 'Reloaded extensions, skills, prompts and context files.',
+      });
+      break;
+    }
+
     case 'bash_sudo_password': {
       if (!client.sessionId) return;
       if (client.readOnly) return;
@@ -3497,6 +3580,13 @@ async function handleWSMessage(
 
     case 'model_change': {
       if (!client.sessionId) return;
+      if (pool.isReloading(client.sessionId)) {
+        // A notice, not session_error: the latter would clear the reload's
+        // composer block on this client before the rebuilt agent is ready.
+        const reloadingId = pool.getSession(client.sessionId)?.sessionId ?? '';
+        sendWS(client.ws, { type: 'session_notice', sessionId: reloadingId, level: 'warning', message: RELOADING_REFUSAL });
+        break;
+      }
       const result = await pool.changeModel(client.sessionId, msg.model);
       if (result.error) {
         sendWS(client.ws, { type: 'session_error', error: result.error });

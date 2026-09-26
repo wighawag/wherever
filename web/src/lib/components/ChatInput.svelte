@@ -11,6 +11,7 @@
 		beginFilePicker,
 		endFilePicker,
 		composerPrefill,
+		reloadResources,
 	} from '$lib/wherever';
 	import {isStreaming, isReadOnly, activeSessionInfo} from '$lib/wherever';
 	import {getConversationKnobs} from '$lib/wherever';
@@ -689,6 +690,21 @@
 				text = '';
 				draftSource = null;
 				return;
+			} else if (lower === '/reload') {
+				// pi's `/reload` is a TUI command, not something the agent can act on,
+				// so it must never reach the model as chat text. The SERVER rebuilds the
+				// agent and answers with session_reloading/session_ready, or a notice
+				// when it refuses (agent busy, terminal-driven session, read-only).
+				// Without a session or a connection, or while the agent is still being
+				// built (a cold load or a reload in progress: the server may not have
+				// attached us yet), fall through to the normal send path, whose
+				// blocked-send feedback already explains why and keeps the text.
+				if (sessionInfo.sessionId && connected && !appState.agentPending) {
+					reloadResources();
+					text = '';
+					draftSource = null;
+					return;
+				}
 			}
 		}
 

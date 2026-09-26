@@ -23,6 +23,37 @@ import type { AgentSession, ExtensionError } from '@earendil-works/pi-coding-age
  *     a server session is disposed, so no call site can skip `session_shutdown`.
  */
 
+/**
+ * Drop pi's PROCESS-WIDE cache of loaded extension factories, so the next
+ * resource load re-reads extension code from disk.
+ *
+ * pi caches each extension's factory at module level (keyed by cwd), and only
+ * `DefaultResourceLoader.reload()` on an ALREADY-LOADED loader clears it: that is
+ * how pi's own `/reload` picks up edited extension code. Wherever's `/reload`
+ * rebuilds with a FRESH loader (see SessionPool.reloadSession), whose first
+ * `reload()` does not clear, so without this the rebuilt agent silently runs the
+ * old code. `clearExtensionCache` is not in the package's `exports` map, so it is
+ * reached through the module file next to the resolved entry point; it is the
+ * same module instance the SDK uses (same URL). If a future SDK moves it, reload
+ * still works for settings, skills, prompts and context files, and this logs
+ * why extension edits were not picked up. Pinned by test/session-reload-ws.test.ts.
+ * Clearing is safe for other sessions: their next build just reloads from disk.
+ */
+export async function clearPiExtensionCache(): Promise<void> {
+  try {
+    const entry = import.meta.resolve('@earendil-works/pi-coding-agent');
+    const loader = (await import(new URL('./core/extensions/loader.js', entry).href)) as {
+      clearExtensionCache?: () => void;
+    };
+    if (typeof loader.clearExtensionCache !== 'function') throw new Error('clearExtensionCache not found');
+    loader.clearExtensionCache();
+  } catch (err) {
+    console.error(
+      `[wherever] could not clear pi's extension cache; /reload will not pick up edited extension code: ${(err as Error).message}`,
+    );
+  }
+}
+
 /** Upper bound on extension `session_shutdown` handlers before we dispose anyway. */
 export const EXTENSION_SHUTDOWN_TIMEOUT_MS = 5_000;
 
@@ -73,9 +104,10 @@ function logExtensionError(label: string, err: ExtensionError): void {
  *   session could not survive it, but because `AgentSession.reload()` calls pi-ai's
  *   `resetApiProviders()`, which is PROCESS-WIDE: in a multi-session server, one
  *   session's reload would drop the custom API providers every OTHER live
- *   session's extensions registered. Before bindings existed the SDK's reload
- *   handler was a no-op, so refusing keeps that behaviour until reload is designed
- *   as a server-level operation.
+ *   session's extensions registered. The web `/reload` does not use it either: it
+ *   REBUILDS the agent (`SessionPool.reloadSession`). Routing an extension's
+ *   `ctx.reload()` there is possible but would dispose the session whose command
+ *   is still running, so it stays refused until that is designed.
  * - `shutdownHandler`: left unset. `ctx.shutdown()` from an extension must not
  *   stop the whole multi-session server.
  * - `abortHandler`: left unset, so `ctx.abort()` aborts this session's turn (the
@@ -124,14 +156,17 @@ export async function bindServerSessionExtensions(
 }
 
 /**
- * Emit `session_shutdown` (reason `quit`) to the session's extensions, then
- * dispose it. The shutdown is awaited but bounded by `timeoutMs`, so a hung
- * extension cannot block idle eviction or server shutdown. Never rejects.
+ * Emit `session_shutdown` to the session's extensions, then dispose it. The
+ * shutdown is awaited but bounded by `timeoutMs`, so a hung extension cannot
+ * block idle eviction or server shutdown. Never rejects. `reason` is `quit` for
+ * every teardown except the pool's `/reload` rebuild, which says `reload` so
+ * extensions can tell a restart from an exit (as they can under the pi CLI).
  */
 export async function shutdownAndDisposeAgentSession(
   agentSession: AgentSession,
   label: string,
   timeoutMs = EXTENSION_SHUTDOWN_TIMEOUT_MS,
+  reason: 'quit' | 'reload' = 'quit',
 ): Promise<void> {
   // Stop any in-flight turn FIRST, synchronously. dispose() would abort it, but
   // it runs only after the (up to timeoutMs) shutdown handlers; until then a live
@@ -150,7 +185,7 @@ export async function shutdownAndDisposeAgentSession(
     if (runner.hasHandlers('session_shutdown')) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timedOut = await Promise.race([
-        runner.emit({ type: 'session_shutdown', reason: 'quit' }).then(() => false),
+        runner.emit({ type: 'session_shutdown', reason }).then(() => false),
         new Promise<boolean>((resolve) => {
           timer = setTimeout(() => resolve(true), timeoutMs);
         }),

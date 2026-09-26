@@ -35,6 +35,13 @@ export type ClientMessage =
   // in-flight turn. Only server-type sessions can dequeue a single steer; CLI
   // bridges never emit queue_update, so no cancel affordance shows for them.
   | { type: 'cancel_steer'; sessionId: string }
+  // Client -> server: the web `/reload`. Re-read settings, extensions, skills,
+  // prompts and context files for this (server-created) session by REBUILDING
+  // its agent (SessionPool.reloadSession). Refused with a session_notice while
+  // the agent is streaming/compacting, for CLI bridges (reload in the terminal)
+  // and for a read-only client. Once accepted: session_reloading, then
+  // session_ready (success) or session_error (the rebuild failed).
+  | { type: 'session_reload'; sessionId: string }
   | { type: 'ping' }
   | { type: 'session_load'; sessionFile: string; cwd?: string; model?: string }
   | { type: 'history_load_more'; sessionId: string; beforeOffset: number }
@@ -158,6 +165,11 @@ export type ServerMessage =
   // reading is instant, sending needs the live agent. May carry a refreshed
   // model/isStreaming/contextUsage now that the real agent exists.
   | { type: 'session_ready'; sessionId: string; sessionFile: string; model?: string; isStreaming?: boolean; contextUsage?: ContextUsageInfo | null }
+  // Server -> every client of the session: a `/reload` was accepted and the live
+  // agent is being rebuilt. The client blocks the composer (agentPending) until
+  // the session_ready (or session_error) that ends the reload, exactly like a
+  // cold load. The conversation stays readable throughout.
+  | { type: 'session_reloading'; sessionId: string }
   | { type: 'context_usage'; sessionId: string; contextUsage: ContextUsageInfo | null }
   | { type: 'session_destroyed'; sessionId: string; reason: string }
   | { type: 'session_error'; sessionId?: string; error: string; detail?: string }

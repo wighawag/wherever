@@ -17,7 +17,7 @@ This document provides a comprehensive evaluation of the overall health, archite
 * **Intelligent UX Features:**
   * **Input Queueing:** `ChatInput.svelte` implements a highly fluid queueing system: if a user inputs text while the agent is streaming, the client caches it and automatically fires it as soon as the agent finishes.
   * **Interactive Collapsible Tools:** `ChatMessageList.svelte` parses raw CLI execution messages (e.g. `bash`, `read`, `write`, `grep`, `find`) and presents them as interactive, collapsible items with custom icons and formatted argument-value blocks rather than raw dump strings.
-  * **Slash Commands:** Local UI slash command handling (`/new`, `/reset`, `/clear`, `/leave`, `/exit`) directly mirrors terminal CLI behaviors.
+  * **Slash Commands:** Local UI slash command handling (`/new`, `/reset`, `/clear`, `/leave`, `/exit`) directly mirrors terminal CLI behaviors. `/reload` is intercepted too but carried out by the server (`session_reload`, see CONTEXT.md).
 * **Safe Session Takeover & Read-Only Observer Mode:**
   * Multi-session conflict resolution on the standalone server protects workspaces from simultaneous conflicting client actions. "Read Only" observer state allows multi-client mirroring without collision, and "Take Over" sends a prompt `session_interrupted` websocket notice to re-route prior controllers safely.
 * **Self-Signed SSL Generation:**

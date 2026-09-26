@@ -918,6 +918,7 @@ export function detectRemoteRepo(rule: RemoteRepoRule, repoName: string): Remote
 // tracking for a clone itself.
 
 import { createAgentSession, AuthStorage, ModelRegistry, DefaultResourceLoader, SettingsManager, getAgentDir, SessionManager } from '@earendil-works/pi-coding-agent';
+import type { CreateAgentSessionOptions } from '@earendil-works/pi-coding-agent';
 import type { BashOperations } from '@earendil-works/pi-coding-agent';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -927,6 +928,7 @@ import { createConversationModeSignal, type ConversationModeSignal } from './con
 import {
   bindServerSessionExtensions,
   shutdownAndDisposeAgentSession,
+  clearPiExtensionCache,
   EXTENSION_SHUTDOWN_TIMEOUT_MS,
   EXTENSION_BIND_WARN_AFTER_MS,
 } from './extension-lifecycle.js';
@@ -937,6 +939,22 @@ import type { Model, Api } from '@earendil-works/pi-ai';
 import type { SessionMessageEntry, SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { SessionInfo, HistoryMessage, FolderWithSessions, ModelInfo, FolderSessionInfo, ContextUsageInfo, SkillCommand } from './session-types.js';
 import type { WebSocket } from 'ws';
+
+/**
+ * Outcome of `SessionPool.reloadSession`. `started: false` is a refusal that
+ * changed nothing. `closed: true` means the session was closed by another path
+ * (delete, eviction, CLI takeover, shutdown) mid-reload; that path already told
+ * its viewers, so the caller should not send them an error on top.
+ */
+export interface ReloadResult {
+  started: boolean;
+  error?: string;
+  closed?: boolean;
+}
+
+/** What a send (or model change) gets while the session's agent is being rebuilt. */
+export const RELOADING_REFUSAL =
+  'The session is reloading, so this was not delivered. Try again once it is ready.';
 
 export interface ServerTrackedSession {
   type: 'server';
@@ -963,6 +981,19 @@ export interface ServerTrackedSession {
   // before_agent_start hook, which appends the spoken-conversation hint to that
   // turn's system prompt. See conversation-mode-hint.ts.
   conversationSignal: ConversationModeSignal;
+  // True while `reloadSession` is rebuilding this session's agent. During that
+  // window `agentSession` is the OLD, shutting-down agent: sends are refused, and
+  // no other teardown path touches it (the reload owns it; see reloadSession).
+  reloading?: boolean;
+  // The running reload, so teardown (server shutdown) and a waiting sudo command
+  // can await it. Set exactly while `reloading` is true.
+  reloadPromise?: Promise<unknown>;
+  // Server-initiated agent calls in flight (a user message or `!command`), counted
+  // from the moment they are handed to the agent. pi's `isStreaming` only turns
+  // true once the run proper starts, AFTER awaiting extension commands, `input`
+  // handlers and the compaction check, so it cannot tell a reload that a send is
+  // already under way. A reload is refused while this is above zero.
+  busy?: number;
 }
 
 export interface CliTrackedSession {
@@ -1337,38 +1368,12 @@ export class SessionPool {
           }
         }
 
-        const settingsManager = SettingsManager.create(normalizedCwd, this.agentDir);
-        // The conversation-mode signal is an INLINE pi extension (the SDK-supported
-        // way to get a before_agent_start hook on a server-created session, the
-        // counterpart of the pi.on(...) the CLI-bridge extension registers). It is
-        // per session, so the armed flag can never cross sessions.
-        const conversationSignal = createConversationModeSignal();
-        const resourceLoader = new DefaultResourceLoader({
+        const { agentSession, conversationSignal } = await this.buildServerAgent({
           cwd: normalizedCwd,
-          agentDir: this.agentDir,
-          settingsManager,
-          extensionFactories: [conversationSignal.inlineExtension, ...this.extraExtensionFactories],
-        });
-        await resourceLoader.reload();
-
-        const { session: agentSession } = await createAgentSession({
-          cwd: normalizedCwd,
-          authStorage: this.authStorage,
-          modelRegistry: this.modelRegistry,
-          model,
           sessionManager,
-          settingsManager,
-          resourceLoader,
-          // Register attach_file + say for server-created sessions (web frontend
-          // with no CLI bridge). Both tools are self-contained; their UI affordance
-          // (attach_file's download button, say's spoken-reply card) is driven by
-          // the tool call reaching the web UI, no bridge/marker needed.
-          customTools: [createAttachFileTool(normalizedCwd), createSayTool()],
+          model,
+          label: resolvedFile,
         });
-        // Start the extensions BEFORE the session is tracked or reaches a client:
-        // createAgentSession only loads them, bindExtensions emits session_start +
-        // resources_discover (see extension-lifecycle.ts for the chosen bindings).
-        await this.bindOrDispose(agentSession, resolvedFile);
 
         const modelLabel = agentSession.model ? `${agentSession.model.provider}:${agentSession.model.id}` : '';
 
@@ -1584,32 +1589,12 @@ export class SessionPool {
           }
         }
 
-        const settingsManager = SettingsManager.create(resolvedCwd, this.agentDir);
-        // Per-turn conversation-mode signal (see the other DefaultResourceLoader
-        // call for the rationale).
-        const conversationSignal = createConversationModeSignal();
-        const resourceLoader = new DefaultResourceLoader({
+        const { agentSession, conversationSignal } = await this.buildServerAgent({
           cwd: resolvedCwd,
-          agentDir: this.agentDir,
-          settingsManager,
-          extensionFactories: [conversationSignal.inlineExtension, ...this.extraExtensionFactories],
-        });
-        await resourceLoader.reload();
-
-        const { session: agentSession } = await createAgentSession({
-          cwd: resolvedCwd,
-          authStorage: this.authStorage,
-          modelRegistry: this.modelRegistry,
-          model,
           sessionManager,
-          settingsManager,
-          resourceLoader,
-          // Register attach_file + say for server-created sessions (see the other
-          // createAgentSession call for the rationale).
-          customTools: [createAttachFileTool(resolvedCwd), createSayTool()],
+          model,
+          label: resolvedCwd,
         });
-        // Start the extensions before tracking (see the other createAgentSession call).
-        await this.bindOrDispose(agentSession, agentSession.sessionFile || resolvedCwd);
 
         const sessionFile = normalizeSessionFile(agentSession.sessionFile || '');
         const modelLabel = agentSession.model ? `${agentSession.model.provider}:${agentSession.model.id}` : '';
@@ -1987,6 +1972,11 @@ export class SessionPool {
   async sendUserMessage(sessionFileOrId: string, text: string, streamingBehavior?: 'steer' | 'followUp', conversationMode = false): Promise<void> {
     const tracked = this.getSession(sessionFileOrId);
     if (!tracked) return;
+    // Backstop for the WS layer's own check: mid-reload the tracked agent is the
+    // one being shut down. Throwing surfaces as a retryable session_error.
+    if (tracked.type === 'server' && tracked.reloading) {
+      throw new Error(RELOADING_REFUSAL);
+    }
     tracked.lastActivity = Date.now();
     this.cancelIdleCheck(tracked.sessionFile);
 
@@ -2052,14 +2042,21 @@ export class SessionPool {
       // expansions are start-of-message anchored, and any trailing text after
       // "/skill:<name> " is preserved and appended after the skill block. Plain
       // text keeps the sendUserMessage() path (extension "input"-event source).
-      if (text.startsWith('/')) {
-        await tracked.agentSession.prompt(text, {
-          expandPromptTemplates: true,
-          streamingBehavior,
-          source: 'interactive',
-        });
-      } else {
-        await tracked.agentSession.sendUserMessage(text, { deliverAs: streamingBehavior });
+      // Counted as busy (synchronously, before the first await) so a /reload
+      // cannot dispose the agent under a send that pi has not started streaming.
+      tracked.busy = (tracked.busy ?? 0) + 1;
+      try {
+        if (text.startsWith('/')) {
+          await tracked.agentSession.prompt(text, {
+            expandPromptTemplates: true,
+            streamingBehavior,
+            source: 'interactive',
+          });
+        } else {
+          await tracked.agentSession.sendUserMessage(text, { deliverAs: streamingBehavior });
+        }
+      } finally {
+        tracked.busy -= 1;
       }
     } else if (tracked.type === 'cli') {
       // Relay the signal to the bridged pi (omitted when off, so the payload is
@@ -2085,6 +2082,23 @@ export class SessionPool {
   // custom executor that feeds the password over stdin; when omitted the agent
   // uses its default local shell backend.
   private async runServerBash(
+    tracked: ServerTrackedSession,
+    command: string,
+    excludeFromContext: boolean,
+    operations?: BashOperations,
+  ): Promise<void> {
+    // Never run on the old agent mid-reload (submitSudoPassword waits the reload out).
+    if (tracked.reloading) throw new Error(RELOADING_REFUSAL);
+    // Busy for the whole command: a reload would otherwise abort it via dispose().
+    tracked.busy = (tracked.busy ?? 0) + 1;
+    try {
+      await this.runServerBashUnguarded(tracked, command, excludeFromContext, operations);
+    } finally {
+      tracked.busy -= 1;
+    }
+  }
+
+  private async runServerBashUnguarded(
     tracked: ServerTrackedSession,
     command: string,
     excludeFromContext: boolean,
@@ -2196,8 +2210,16 @@ export class SessionPool {
     if (!pending) return false;
     this.pendingSudo.delete(promptId);
 
-    const tracked = this.getSession(pending.sessionFileOrId);
+    let tracked = this.getSession(pending.sessionFileOrId);
     if (!tracked) return false;
+    // The password answers a prompt the user already saw; a /reload that started
+    // meanwhile must not make them retype it. Wait the (bounded) reload out and
+    // run on the rebuilt agent. The password lives only in this closure meanwhile.
+    if (tracked.type === 'server' && tracked.reloading) {
+      await tracked.reloadPromise;
+      tracked = this.getSession(pending.sessionFileOrId);
+      if (!tracked) return false;
+    }
 
     tracked.lastActivity = Date.now();
     this.cancelIdleCheck(tracked.sessionFile);
@@ -2276,6 +2298,7 @@ export class SessionPool {
     if (!tracked) return { error: 'Session not found' };
 
     if (tracked.type === 'server') {
+      if (tracked.reloading) return { error: RELOADING_REFUSAL };
       const parsed = this.parseModelStr(modelStr);
       if (!parsed) return { error: `Invalid model format: ${modelStr}` };
       const model = this.modelRegistry.find(parsed.provider, parsed.id);
@@ -2376,9 +2399,16 @@ export class SessionPool {
   destroySession(sessionFileOrId: string, reason: string): Promise<void> {
     const tracked = this.getSession(sessionFileOrId);
     if (!tracked) return Promise.resolve();
-    this.cancelIdleCheck(tracked.sessionFile);
     let teardown: Promise<void> = Promise.resolve();
-    if (tracked.type === 'server') {
+    if (tracked.type === 'server' && tracked.reloading) {
+      // reloadSession owns the agent mid-rebuild: it is already shutting the old
+      // one down, and it releases the new one once it sees the entry is gone.
+      // Waiting for it keeps server shutdown from exiting mid-teardown.
+      teardown = (tracked.reloadPromise ?? Promise.resolve()).then(
+        () => {},
+        () => {},
+      );
+    } else if (tracked.type === 'server') {
       tracked.eventUnsubscribe();
       teardown = shutdownAndDisposeAgentSession(tracked.agentSession, `${tracked.sessionFile} (${reason})`, this.extensionShutdownTimeoutMs);
     } else {
@@ -2386,13 +2416,7 @@ export class SessionPool {
         tracked.cliWs.close();
       } catch (err) {}
     }
-    this.sessions.delete(tracked.sessionFile);
-    // A prompt whose session is gone can never be answered: drop it here so an
-    // abandoned prompt is bounded by the session's own lifetime (idle eviction)
-    // rather than waiting for someone to type the next `!sudo`.
-    for (const [id, p] of this.pendingSudo) {
-      if (p.sessionFileOrId === tracked.sessionFile) this.pendingSudo.delete(id);
-    }
+    this.dropSessionEntry(tracked);
     return teardown;
   }
 
@@ -2420,16 +2444,21 @@ export class SessionPool {
     if (existing) {
       clients = existing.clients;
       this.cancelIdleCheck(sessionFile);
-      if (existing.type === 'server') {
+      if (existing.type === 'server' && existing.reloading) {
+        // Mid-reload there is no turn to interrupt (reload refuses while
+        // streaming), and reloadSession owns the agent: it releases the rebuilt
+        // one once it sees this CLI entry has replaced its own.
+      } else if (existing.type === 'server') {
         interruptedToolCall = existing.inFlightToolCount > 0;
         interruptedTurn = interruptedToolCall || existing.agentSession.isStreaming;
         try {
           existing.eventUnsubscribe();
         } catch (err) {}
         // Start the server agent's teardown NOW (its in-flight turn is aborted
-        // synchronously, then session_shutdown, then dispose), but only AWAIT it after the CLI entry has replaced it in the pool, so
-        // no message can reach the dying agent while its extensions shut down.
-        // The CLI's pi process binds its own extensions; nothing to do for it.
+        // synchronously, then session_shutdown, then dispose), but only AWAIT
+        // it after the CLI entry has replaced it in the pool, so no message can
+        // reach the dying agent while its extensions shut down. The CLI's pi
+        // process binds its own extensions; nothing to do for it.
         serverTeardown = shutdownAndDisposeAgentSession(existing.agentSession, `${sessionFile} (cli takeover)`, this.extensionShutdownTimeoutMs);
       }
     }
@@ -2555,6 +2584,188 @@ export class SessionPool {
     // In parallel: each teardown is bounded on its own, so shutdown takes at most
     // one extension-shutdown timeout, not one per session.
     await Promise.all(sessionIds.map((id) => this.destroySession(id, 'server shutdown')));
+  }
+
+  /**
+   * Build and START a live server agent: fresh settings, resource loader
+   * (extensions, skills, prompts, context files), createAgentSession, then
+   * bindExtensions. The ONE place a server agent is built, shared by loadSession,
+   * createNewSession and reloadSession, so the three can never drift in which
+   * tools, extensions or lifecycle a server session gets.
+   */
+  private async buildServerAgent(opts: {
+    cwd: string;
+    sessionManager: SessionManager;
+    model?: Model<Api>;
+    thinkingLevel?: CreateAgentSessionOptions['thinkingLevel'];
+    sessionStartEvent?: CreateAgentSessionOptions['sessionStartEvent'];
+    label: string;
+  }): Promise<{ agentSession: AgentSession; conversationSignal: ConversationModeSignal }> {
+    const settingsManager = SettingsManager.create(opts.cwd, this.agentDir);
+    // The conversation-mode signal is an INLINE pi extension (the SDK-supported
+    // way to get a before_agent_start hook on a server-created session, the
+    // counterpart of the pi.on(...) the CLI-bridge extension registers). It is
+    // per session, so the armed flag can never cross sessions.
+    const conversationSignal = createConversationModeSignal();
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: opts.cwd,
+      agentDir: this.agentDir,
+      settingsManager,
+      extensionFactories: [conversationSignal.inlineExtension, ...this.extraExtensionFactories],
+    });
+    await resourceLoader.reload();
+
+    const { session: agentSession } = await createAgentSession({
+      cwd: opts.cwd,
+      authStorage: this.authStorage,
+      modelRegistry: this.modelRegistry,
+      model: opts.model,
+      thinkingLevel: opts.thinkingLevel,
+      sessionManager: opts.sessionManager,
+      settingsManager,
+      resourceLoader,
+      // Register attach_file + say for server-created sessions (web frontend
+      // with no CLI bridge). Both tools are self-contained; their UI affordance
+      // (attach_file's download button, say's spoken-reply card) is driven by
+      // the tool call reaching the web UI, no bridge/marker needed.
+      customTools: [createAttachFileTool(opts.cwd), createSayTool()],
+      sessionStartEvent: opts.sessionStartEvent,
+    });
+    // Start the extensions BEFORE the session is tracked or reaches a client:
+    // createAgentSession only loads them, bindExtensions emits session_start +
+    // resources_discover (see extension-lifecycle.ts for the chosen bindings).
+    await this.bindOrDispose(agentSession, opts.label);
+    return { agentSession, conversationSignal };
+  }
+
+  /** True while `reloadSession` is rebuilding this session's agent. */
+  isReloading(sessionFileOrId: string): boolean {
+    const tracked = this.getSession(sessionFileOrId);
+    return tracked?.type === 'server' && tracked.reloading === true;
+  }
+
+  /**
+   * The web `/reload`: re-read settings, extensions, skills, prompts and context
+   * files for a server session, like pi's `/reload`, WITHOUT calling
+   * `AgentSession.reload()`.
+   *
+   * pi's in-place reload calls pi-ai's `resetApiProviders()`, which is
+   * process-wide: every OTHER live session's extension-registered API providers
+   * would vanish for the seconds the reloading session spends re-loading its
+   * extensions. So the agent is REBUILT instead, through the same builder as a
+   * load: the old agent gets `session_shutdown` (reason `reload`) and is
+   * disposed, then a new AgentSession is built on the SAME SessionManager (so
+   * entries not yet flushed to disk survive, exactly as in an in-place reload),
+   * keeping the current model and thinking level, and its extensions get
+   * `session_start` (reason `reload`). The tracked entry is updated in place, so
+   * clients, idle state and the pool key are untouched.
+   *
+   * Refused while the agent is doing anything (streaming, compacting, running a
+   * `!command`, or a send still in its pre-stream phase: see `busy`), for CLI
+   * bridges (the terminal pi owns that agent) and while already reloading; a
+   * refusal returns `started: false` and changes nothing. `onStart` runs once
+   * every check has passed, before the old agent is touched. If the rebuild
+   * fails the old agent is already gone, so the entry is dropped and the next
+   * load builds a fresh one.
+   *
+   * Unlike pi's in-place reload, the rebuild does NOT carry over an active-tool
+   * set an extension narrowed with `setActiveTools`, extension flag values, or
+   * messages an extension queued for the next turn: the new agent starts from
+   * the defaults, as a fresh load would.
+   */
+  async reloadSession(
+    sessionFileOrId: string,
+    opts: { onStart?: () => void } = {},
+  ): Promise<ReloadResult> {
+    const tracked = this.getSession(sessionFileOrId);
+    if (!tracked) return { error: 'Session not found.', started: false };
+    if (tracked.type !== 'server') {
+      return { error: 'This session is running in a terminal pi. Run /reload in that terminal.', started: false };
+    }
+    if (tracked.reloading) return { error: 'This session is already reloading.', started: false };
+    const old = tracked.agentSession;
+    // `busy` covers what pi's flags miss: a send still in extension commands /
+    // input handlers / compaction check (not yet streaming), and a `!command`.
+    if (old.isStreaming || old.isCompacting || old.isBashRunning || (tracked.busy ?? 0) > 0) {
+      return { error: 'Wait for the current response to finish before reloading.', started: false };
+    }
+
+    // Everything from here to the first await is synchronous, so no send can
+    // slip in between the checks above and `reloading` being observable.
+    tracked.reloading = true;
+    tracked.lastActivity = Date.now();
+    const run = this.runReload(tracked, opts);
+    tracked.reloadPromise = run;
+    return run;
+  }
+
+  private async runReload(tracked: ServerTrackedSession, opts: { onStart?: () => void }): Promise<ReloadResult> {
+    const old = tracked.agentSession;
+    const label = `${tracked.sessionFile} (reload)`;
+    try {
+      // Past every refusal: the caller can now tell clients the agent is going away.
+      opts.onStart?.();
+      tracked.eventUnsubscribe();
+      const { sessionManager, model, thinkingLevel } = old;
+      await shutdownAndDisposeAgentSession(old, label, this.extensionShutdownTimeoutMs, 'reload');
+      // Otherwise the fresh loader below reuses pi's cached factories: the old code.
+      await clearPiExtensionCache();
+
+      let built: { agentSession: AgentSession; conversationSignal: ConversationModeSignal };
+      try {
+        built = await this.buildServerAgent({
+          cwd: tracked.cwd,
+          sessionManager,
+          model,
+          thinkingLevel,
+          sessionStartEvent: { type: 'session_start', reason: 'reload' },
+          label,
+        });
+      } catch (err) {
+        if (this.sessions.get(tracked.sessionFile) !== tracked) {
+          return { error: 'The session was closed while it was reloading.', started: true, closed: true };
+        }
+        this.dropSessionEntry(tracked);
+        return {
+          error: `Reload failed: ${(err as Error).message}. Re-open the session to start a fresh agent.`,
+          started: true,
+        };
+      }
+
+      // The session may have been destroyed (deleted, evicted, taken over by a
+      // CLI, server shutdown) while we were rebuilding. Those paths leave a
+      // reloading agent to us, so the new one is ours to release.
+      if (this.sessions.get(tracked.sessionFile) !== tracked) {
+        await shutdownAndDisposeAgentSession(built.agentSession, `${label} (closed during reload)`, this.extensionShutdownTimeoutMs);
+        return { error: 'The session was closed while it was reloading.', started: true, closed: true };
+      }
+
+      tracked.agentSession = built.agentSession;
+      tracked.conversationSignal = built.conversationSignal;
+      tracked.model = built.agentSession.model ? `${built.agentSession.model.provider}:${built.agentSession.model.id}` : '';
+      tracked.inFlightToolCount = 0;
+      tracked.isIdle = true;
+      tracked.eventUnsubscribe = this.setupEventListeners(tracked.sessionFile, built.agentSession);
+      return { started: true };
+    } finally {
+      tracked.reloading = false;
+      tracked.reloadPromise = undefined;
+      if (this.sessions.get(tracked.sessionFile) === tracked) this.scheduleIdleCheck(tracked.sessionFile);
+    }
+  }
+
+  /**
+   * Forget a session entry (its agent's teardown is the caller's business). A
+   * sudo prompt whose session is gone can never be answered: drop it here so an
+   * abandoned prompt is bounded by the session's own lifetime (idle eviction)
+   * rather than waiting for someone to type the next `!sudo`.
+   */
+  private dropSessionEntry(tracked: TrackedSession): void {
+    this.cancelIdleCheck(tracked.sessionFile);
+    this.sessions.delete(tracked.sessionFile);
+    for (const [id, p] of this.pendingSudo) {
+      if (p.sessionFileOrId === tracked.sessionFile) this.pendingSudo.delete(id);
+    }
   }
 
   /**

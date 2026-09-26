@@ -813,6 +813,14 @@ export function cancelSteer() {
 	client.cancelSteer();
 }
 
+// The composer's `/reload`: rebuild the active session's agent on the server so
+// it re-reads extensions, skills, prompts and context files (see
+// SessionPool.reloadSession). The server drives the UI state from here. Not to
+// be confused with reloadSession() below, which re-LOADS the session file.
+export function reloadResources() {
+	client.reloadResources();
+}
+
 export function joinSession(sessionFile: string, cwd?: string, model?: string) {
 	client.joinSession(sessionFile, cwd, model);
 }
