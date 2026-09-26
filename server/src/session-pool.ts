@@ -924,6 +924,13 @@ import { randomUUID } from 'node:crypto';
 import { createAttachFileTool } from './attach-file-tool.js';
 import { createSayTool } from './say-tool.js';
 import { createConversationModeSignal, type ConversationModeSignal } from './conversation-mode-hint.js';
+import {
+  bindServerSessionExtensions,
+  shutdownAndDisposeAgentSession,
+  EXTENSION_SHUTDOWN_TIMEOUT_MS,
+  EXTENSION_BIND_WARN_AFTER_MS,
+} from './extension-lifecycle.js';
+import type { InlineExtension } from '@earendil-works/pi-coding-agent';
 import { matchRemoteRepoRule } from './remote-candidates.js';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { Model, Api } from '@earendil-works/pi-ai';
@@ -1006,7 +1013,28 @@ export class SessionPool {
 
   onEvent?: (sessionFile: string, event: AgentSessionEvent) => void;
 
-  constructor(idleTimeoutMs = 300_000) {
+  /**
+   * Extra inline extensions loaded into EVERY server-created session, after the
+   * built-in ones. Not used by the server itself; it is the seam tests use to
+   * observe the extension lifecycle (session_start / session_shutdown).
+   */
+  private extraExtensionFactories: InlineExtension[];
+  /** Bound on extension `session_shutdown` before dispose (see extension-lifecycle.ts). */
+  private extensionShutdownTimeoutMs: number;
+  /** When a stuck `session_start` gets logged (see extension-lifecycle.ts). */
+  private extensionBindWarnAfterMs: number;
+
+  constructor(
+    idleTimeoutMs = 300_000,
+    options: {
+      extraExtensionFactories?: InlineExtension[];
+      extensionShutdownTimeoutMs?: number;
+      extensionBindWarnAfterMs?: number;
+    } = {},
+  ) {
+    this.extraExtensionFactories = options.extraExtensionFactories ?? [];
+    this.extensionShutdownTimeoutMs = options.extensionShutdownTimeoutMs ?? EXTENSION_SHUTDOWN_TIMEOUT_MS;
+    this.extensionBindWarnAfterMs = options.extensionBindWarnAfterMs ?? EXTENSION_BIND_WARN_AFTER_MS;
     this.agentDir = getAgentDir();
     this.authStorage = AuthStorage.create();
     this.modelRegistry = ModelRegistry.create(this.authStorage);
@@ -1319,7 +1347,7 @@ export class SessionPool {
           cwd: normalizedCwd,
           agentDir: this.agentDir,
           settingsManager,
-          extensionFactories: [conversationSignal.inlineExtension],
+          extensionFactories: [conversationSignal.inlineExtension, ...this.extraExtensionFactories],
         });
         await resourceLoader.reload();
 
@@ -1337,6 +1365,10 @@ export class SessionPool {
           // the tool call reaching the web UI, no bridge/marker needed.
           customTools: [createAttachFileTool(normalizedCwd), createSayTool()],
         });
+        // Start the extensions BEFORE the session is tracked or reaches a client:
+        // createAgentSession only loads them, bindExtensions emits session_start +
+        // resources_discover (see extension-lifecycle.ts for the chosen bindings).
+        await this.bindOrDispose(agentSession, resolvedFile);
 
         const modelLabel = agentSession.model ? `${agentSession.model.provider}:${agentSession.model.id}` : '';
 
@@ -1560,7 +1592,7 @@ export class SessionPool {
           cwd: resolvedCwd,
           agentDir: this.agentDir,
           settingsManager,
-          extensionFactories: [conversationSignal.inlineExtension],
+          extensionFactories: [conversationSignal.inlineExtension, ...this.extraExtensionFactories],
         });
         await resourceLoader.reload();
 
@@ -1576,6 +1608,8 @@ export class SessionPool {
           // createAgentSession call for the rationale).
           customTools: [createAttachFileTool(resolvedCwd), createSayTool()],
         });
+        // Start the extensions before tracking (see the other createAgentSession call).
+        await this.bindOrDispose(agentSession, agentSession.sessionFile || resolvedCwd);
 
         const sessionFile = normalizeSessionFile(agentSession.sessionFile || '');
         const modelLabel = agentSession.model ? `${agentSession.model.provider}:${agentSession.model.id}` : '';
@@ -2332,13 +2366,21 @@ export class SessionPool {
     tracked.idleTimer = null;
   }
 
-  destroySession(sessionFileOrId: string, reason: string): void {
+  /**
+   * Tear a session down. The pool entry is dropped SYNCHRONOUSLY (so nothing can
+   * reach a half-dead session), then a server session's extensions get their
+   * bounded `session_shutdown` before the agent is disposed. The returned promise
+   * settles when that is done and never rejects; callers that do not need to wait
+   * (idle eviction, the delete handler) may ignore it.
+   */
+  destroySession(sessionFileOrId: string, reason: string): Promise<void> {
     const tracked = this.getSession(sessionFileOrId);
-    if (!tracked) return;
+    if (!tracked) return Promise.resolve();
     this.cancelIdleCheck(tracked.sessionFile);
+    let teardown: Promise<void> = Promise.resolve();
     if (tracked.type === 'server') {
       tracked.eventUnsubscribe();
-      tracked.agentSession.dispose();
+      teardown = shutdownAndDisposeAgentSession(tracked.agentSession, `${tracked.sessionFile} (${reason})`, this.extensionShutdownTimeoutMs);
     } else {
       try {
         tracked.cliWs.close();
@@ -2351,6 +2393,7 @@ export class SessionPool {
     for (const [id, p] of this.pendingSudo) {
       if (p.sessionFileOrId === tracked.sessionFile) this.pendingSudo.delete(id);
     }
+    return teardown;
   }
 
   async registerCliSession(rawSessionFile: string, cwd: string, modelStr: string, cliWs: WebSocket, isStreaming = false): Promise<{ tracked: TrackedSession; error?: string; interruptedTurn?: boolean; interruptedToolCall?: boolean }> {
@@ -2373,6 +2416,7 @@ export class SessionPool {
     // (the tool-call flavour specifically) so the caller can warn accurately.
     let interruptedTurn = false;
     let interruptedToolCall = false;
+    let serverTeardown: Promise<void> = Promise.resolve();
     if (existing) {
       clients = existing.clients;
       this.cancelIdleCheck(sessionFile);
@@ -2381,8 +2425,12 @@ export class SessionPool {
         interruptedTurn = interruptedToolCall || existing.agentSession.isStreaming;
         try {
           existing.eventUnsubscribe();
-          existing.agentSession.dispose();
         } catch (err) {}
+        // Start the server agent's teardown NOW (its in-flight turn is aborted
+        // synchronously, then session_shutdown, then dispose), but only AWAIT it after the CLI entry has replaced it in the pool, so
+        // no message can reach the dying agent while its extensions shut down.
+        // The CLI's pi process binds its own extensions; nothing to do for it.
+        serverTeardown = shutdownAndDisposeAgentSession(existing.agentSession, `${sessionFile} (cli takeover)`, this.extensionShutdownTimeoutMs);
       }
     }
 
@@ -2440,6 +2488,7 @@ export class SessionPool {
     }
 
     this.sessions.set(sessionFile, tracked);
+    await serverTeardown;
     return { tracked, interruptedTurn, interruptedToolCall };
   }
 
@@ -2503,8 +2552,22 @@ export class SessionPool {
 
   async disposeAll(): Promise<void> {
     const sessionIds = Array.from(this.sessions.keys());
-    for (const id of sessionIds) {
-      this.destroySession(id, 'server shutdown');
+    // In parallel: each teardown is bounded on its own, so shutdown takes at most
+    // one extension-shutdown timeout, not one per session.
+    await Promise.all(sessionIds.map((id) => this.destroySession(id, 'server shutdown')));
+  }
+
+  /**
+   * Bind a freshly created server session's extensions; if that throws, shut
+   * down and dispose the session so a failed create leaks nothing, then rethrow
+   * (the callers turn it into their `{ error }` result).
+   */
+  private async bindOrDispose(agentSession: AgentSession, label: string): Promise<void> {
+    try {
+      await bindServerSessionExtensions(agentSession, label, this.extensionBindWarnAfterMs);
+    } catch (err) {
+      await shutdownAndDisposeAgentSession(agentSession, `${label} (bind failed)`, this.extensionShutdownTimeoutMs);
+      throw err;
     }
   }
 
