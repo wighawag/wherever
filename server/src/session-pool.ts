@@ -933,6 +933,10 @@ import {
   EXTENSION_BIND_WARN_AFTER_MS,
 } from './extension-lifecycle.js';
 import type { InlineExtension } from '@earendil-works/pi-coding-agent';
+
+/** How long startup waits for the extension-provider discovery before going on
+ * without it (see SessionPool.initialize). */
+const EXTENSION_DISCOVERY_WAIT_MS = 10_000;
 import { matchRemoteRepoRule } from './remote-candidates.js';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { Model, Api } from '@earendil-works/pi-ai';
@@ -1074,7 +1078,83 @@ export class SessionPool {
 
   async initialize(): Promise<void> {
     this.modelRegistry.refresh();
+    // Bounded: an extension that talks to something slow while loading must
+    // not hold the server's startup hostage. Past the bound the discovery keeps
+    // going in the background and still registers what it finds.
+    let bound: NodeJS.Timeout | undefined;
+    await Promise.race([
+      this.discoverExtensionProviders(),
+      new Promise((r) => {
+        bound = setTimeout(r, EXTENSION_DISCOVERY_WAIT_MS);
+        bound.unref();
+      }),
+    ]);
+    clearTimeout(bound);
     this.warmSessionIndex();
+  }
+
+  /**
+   * Register, in the shared registry, the providers that extensions declare
+   * (`pi.registerProvider` during load), from a loader that has just been
+   * reloaded.
+   *
+   * pi QUEUES those registrations while extensions load and flushes them in
+   * two places: `createAgentSessionServices` (what the pi CLI uses) right after
+   * loading, before the model is picked; and the extension runner's bind,
+   * which wherever reaches only AFTER `createAgentSession` has picked it. Our
+   * sessions go the second way, so without this a default model served by an
+   * extension provider (a local model behind an extension, say) resolved to
+   * nothing: the session came up as `unknown:unknown` and every prompt failed
+   * with "No API key found", while the same settings worked in the pi CLI.
+   *
+   * The queue is emptied afterwards, as the services path does, so the bind
+   * does not register the same providers a second time. Registrations live in
+   * the shared registry for the life of the process (they survive `refresh()`),
+   * which is what the other sessions and `/models` need.
+   */
+  private registerExtensionProviders(resourceLoader: DefaultResourceLoader, label: string): void {
+    const runtime = resourceLoader.getExtensions().runtime;
+    for (const { name, config, extensionPath } of runtime.pendingProviderRegistrations) {
+      try {
+        this.modelRegistry.registerProvider(name, config);
+      } catch (err) {
+        console.error(
+          `[wherever] ${label}: extension ${extensionPath} failed to register provider "${name}": ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+    runtime.pendingProviderRegistrations = [];
+  }
+
+  /**
+   * At startup, load the GLOBAL extensions (the agent dir's, and the packages
+   * its settings name) once just to learn their providers, so `/models`, the
+   * default-model lookup and a model picked in the new-session form see them
+   * before any session exists. The agent dir is used as the cwd so that no
+   * folder's project-level `.pi` resources are pulled in.
+   *
+   * Nothing is bound and the loader is then dropped, so these extension
+   * instances never get `session_start` or `session_shutdown`: anything a
+   * factory starts at LOAD time (rather than on session_start, as a
+   * well-behaved extension does) runs once more and is not torn down. Every
+   * session build already runs the same factories.
+   *
+   * Best-effort: a failure here only delays the providers to the first session.
+   */
+  private async discoverExtensionProviders(): Promise<void> {
+    try {
+      const cwd = this.agentDir;
+      const settingsManager = SettingsManager.create(cwd, this.agentDir);
+      const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: this.agentDir, settingsManager });
+      await resourceLoader.reload();
+      this.registerExtensionProviders(resourceLoader, 'startup discovery');
+    } catch (err) {
+      console.error(
+        `[wherever] could not discover extension providers at startup: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /** Resolve the on-disk sessions directory (agentDir/sessions). Session files
@@ -1340,10 +1420,12 @@ export class SessionPool {
         const sessionCwd = cwd || header.cwd || process.cwd();
         const normalizedCwd = normalizePath(sessionCwd);
         let model: Model<Api> | undefined;
+        let modelRef: { provider: string; id: string } | undefined;
 
         if (modelStr) {
           const parsed = this.parseModelStr(modelStr);
           if (parsed) {
+            modelRef = parsed;
             model = this.modelRegistry.find(parsed.provider, parsed.id);
           }
         }
@@ -1362,6 +1444,7 @@ export class SessionPool {
             const e = entries[i] as SessionEntry;
             if (e.type !== 'model_change') continue;
             if ('provider' in e && 'modelId' in e) {
+              modelRef ??= { provider: e.provider, id: e.modelId };
               model = this.modelRegistry.find(e.provider, e.modelId);
             }
             break;
@@ -1372,6 +1455,7 @@ export class SessionPool {
           cwd: normalizedCwd,
           sessionManager,
           model,
+          modelRef,
           label: resolvedFile,
         });
 
@@ -1581,10 +1665,12 @@ export class SessionPool {
 
         const sessionManager = SessionManager.create(resolvedCwd);
         let model: Model<Api> | undefined;
+        let modelRef: { provider: string; id: string } | undefined;
 
         if (modelStr) {
           const parsed = this.parseModelStr(modelStr);
           if (parsed) {
+            modelRef = parsed;
             model = this.modelRegistry.find(parsed.provider, parsed.id);
           }
         }
@@ -1593,6 +1679,7 @@ export class SessionPool {
           cwd: resolvedCwd,
           sessionManager,
           model,
+          modelRef,
           label: resolvedCwd,
         });
 
@@ -2597,6 +2684,11 @@ export class SessionPool {
     cwd: string;
     sessionManager: SessionManager;
     model?: Model<Api>;
+    /** The model asked for by name, looked up again after this build's
+     * providers are registered: the caller's lookup ran before, so a provider
+     * only this build registers (startup discovery still running, or a
+     * project-local extension) would otherwise have missed it. */
+    modelRef?: { provider: string; id: string };
     thinkingLevel?: CreateAgentSessionOptions['thinkingLevel'];
     sessionStartEvent?: CreateAgentSessionOptions['sessionStartEvent'];
     label: string;
@@ -2614,12 +2706,23 @@ export class SessionPool {
       extensionFactories: [conversationSignal.inlineExtension, ...this.extraExtensionFactories],
     });
     await resourceLoader.reload();
+    // Before createAgentSession picks the model: see registerExtensionProviders.
+    this.registerExtensionProviders(resourceLoader, opts.label);
+    // A model handed in was looked up BEFORE this build re-registered its
+    // provider (a reload keeps the old session's model object), so take the
+    // registry's current one: an extension edit picked up by /reload (a new
+    // baseUrl, say) must reach the session. pi used to do this when the bind
+    // flushed the registrations (_refreshCurrentModelFromRegistry); the flush
+    // is now ours, so the refresh is too.
+    // The name asked for wins; otherwise the model object handed in (a reload).
+    const ref = opts.modelRef ?? (opts.model && { provider: opts.model.provider, id: opts.model.id });
+    const model = (ref && this.modelRegistry.find(ref.provider, ref.id)) ?? opts.model;
 
     const { session: agentSession } = await createAgentSession({
       cwd: opts.cwd,
       authStorage: this.authStorage,
       modelRegistry: this.modelRegistry,
-      model: opts.model,
+      model,
       thinkingLevel: opts.thinkingLevel,
       sessionManager: opts.sessionManager,
       settingsManager,
