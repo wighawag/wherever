@@ -1,0 +1,5 @@
+---
+"wherever-dev": patch
+---
+
+The AGENTS.md seeded into the search folder no longer assumes one particular setup. It used to send the agent to "the web-search skill" and, when a search failed, to blame Ollama and suggest `ollama signin`, which is wrong on any machine whose `web_search` / `web_fetch` come from another extension (pi-webveil over a local SearXNG, for instance), and small local models followed it literally. It now names no skill and no provider: it says the workspace needs an extension that provides `web_search` and `web_fetch`, and if they are missing or failing the agent says so plainly and never answers from memory as if it had searched. It also tells the agent that a question about the machine it runs on is answered with its bash tool rather than a search, and that anything worth keeping goes into a topic-named subfolder, never the workspace root. The bundled `skills/web-search` skill's failure advice is likewise provider-agnostic. An existing AGENTS.md is still never overwritten.

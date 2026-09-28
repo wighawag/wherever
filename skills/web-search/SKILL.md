@@ -42,19 +42,14 @@ Sources:
 - If the question is ambiguous, make a reasonable interpretation and answer it;
   only ask a clarifying question if the query is genuinely unanswerable as
   written.
-- If `web_search` / `web_fetch` fail to reach Ollama:
-  - **ECONNREFUSED / connection refused**: tell the user Ollama is not running.
-    Ask them to start it (e.g. `ollama serve`) and try again.
-  - **HTTP 401 / unauthorized**: tell the user to run `ollama signin` and try
-    again.
-  - Do NOT silently fall back to answering from memory without saying so. If you
-    must answer without live results, say explicitly that the web was
-    unreachable and that the answer is from prior knowledge and may be stale.
+- If `web_search` / `web_fetch` are missing or failing, say so plainly: quote the error, and tell the user these tools come from an extension that must be installed, enabled and (if it talks to a backend) reachable. Do not guess which provider it is.
+- Do NOT silently fall back to answering from memory. If you must answer without live results, say explicitly that the web was unreachable and that the answer is from prior knowledge and may be stale.
 
 ## Notes
 
 - `web_search` returns result entries (titles, URLs, snippets); `web_fetch`
-  retrieves the text of a specific URL. Both are provided by the
-  `@ollama/pi-web-search` package; do not reimplement them.
+  retrieves the text of a specific URL. Both come from whichever pi extension
+  provides them (any extension that supplies `web_search` and `web_fetch`
+  works); do not reimplement them.
 - Several searches or fetches in one turn are fine when the question has
   multiple parts. Batch independent lookups.

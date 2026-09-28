@@ -763,24 +763,21 @@ export function getWhereverConfig(): WhereverConfig {
   return {};
 }
 
-const SEARCH_WORKSPACE_AGENTS_MD = `# Search workspace
+// Provider-agnostic on purpose: it names no skill and no search backend, because
+// `web_search` / `web_fetch` can come from any extension (Ollama's, pi-webveil
+// over a local SearXNG, ...). Kept short: it is loaded into every search session,
+// including ones on small local models that follow it literally.
+export const SEARCH_WORKSPACE_AGENTS_MD = `# Search workspace
 
-This folder is a **search workspace**, not a coding project. Sessions started
-here (from the wherever search bar, or via \`pisearch\`) exist to answer questions
-with current information from the live web.
+This folder is a **search workspace**, not a coding project. Sessions started here (from the wherever search bar, or via \`pisearch\`) exist to answer questions with current information from the live web.
 
 ## How to behave here
 
-- Use the **web-search skill**: lead with \`web_search\`, open the most promising
-  1-3 results with \`web_fetch\` to verify, then answer.
-- Answer the question **directly and concisely**, then list the **source URLs**
-  you actually used. Prefer recent, authoritative sources; weight recency for
-  time-sensitive questions.
-- **Do not start a coding task** or edit files unless explicitly asked. There is
-  no project to build here.
-- If the web tools cannot reach Ollama (connection refused / 401), say so and
-  tell the user to start Ollama or run \`ollama signin\`. Do not silently answer
-  from memory without flagging it.
+- Lead with \`web_search\`, then open the 1-3 most promising results with \`web_fetch\` to verify before answering.
+- Answer **directly and briefly**, then list the **source URLs** you actually used. Prefer recent, authoritative sources, especially for time-sensitive questions.
+- If the question is about the computer you are running on, your bash tool runs on that machine: run commands to answer it instead of searching.
+- This workspace needs an extension that provides the \`web_search\` and \`web_fetch\` tools (any extension that supplies them works). If they are missing or failing, say so plainly and tell the user to install or enable such an extension. Never answer from memory as if you had searched.
+- **Do not start a coding task** or edit files unless asked. One exception: if a session produces something worth keeping (notes, a plan, a draft), put it in its own subfolder named after the topic, never loose in the workspace root.
 `;
 
 /**
@@ -1547,8 +1544,8 @@ export class SessionPool {
         }
 
         // If this is the configured search folder, seed a default AGENTS.md so
-        // search sessions behave correctly even in the browser path (where the
-        // web-search skill is only discoverable, not preloaded). Self-healing:
+        // search sessions behave correctly even in the browser path (where no
+        // search skill is preloaded). Self-healing:
         // re-created if the folder was deleted. Never clobbers an existing file.
         maybeSeedSearchWorkspace(resolvedCwd);
 
