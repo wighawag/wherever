@@ -36,7 +36,16 @@ describe('search workspace seed', () => {
     expect(text).not.toMatch(/skill/i);
     expect(text).toContain('web_search');
     expect(text).toContain('web_fetch');
-    expect(text).toMatch(/extension/i);
+  });
+
+  it('opens by asserting the tools exist, and mentions failure only on an error', () => {
+    const text = SEARCH_WORKSPACE_AGENTS_MD;
+    const firstPara = text.split('\n\n')[1];
+    expect(firstPara.startsWith('**')).toBe(true);
+    expect(firstPara).toContain('web_search');
+    expect(firstPara).toMatch(/never say that you cannot search the web/i);
+    expect(text).not.toMatch(/missing or failing/i);
+    expect(text).toMatch(/returns an error/i);
   });
 
   it('seeds AGENTS.md into the configured search folder when none exists', () => {

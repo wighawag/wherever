@@ -766,18 +766,28 @@ export function getWhereverConfig(): WhereverConfig {
 // Provider-agnostic on purpose: it names no skill and no search backend, because
 // `web_search` / `web_fetch` can come from any extension (Ollama's, pi-webveil
 // over a local SearXNG, ...). Kept short: it is loaded into every search session,
-// including ones on small local models that follow it literally.
+// including ones on small local models that follow it literally. It states that
+// the tools exist and work before anything else, and only mentions failure last,
+// triggered by an actual error: a small model (Gemma 4 E4B) given the earlier
+// "if they are missing or failing" wording concluded it could not search at all.
+// Mirrors wasisabi's modules/agents/searches-AGENTS.md.
 export const SEARCH_WORKSPACE_AGENTS_MD = `# Search workspace
 
-This folder is a **search workspace**, not a coding project. Sessions started here (from the wherever search bar, or via \`pisearch\`) exist to answer questions with current information from the live web.
+**You have two web tools, and they work: \`web_search\` and \`web_fetch\`.** \`web_search\` takes a question and returns results from the live web. \`web_fetch\` opens a page. Every question asked here gets a \`web_search\` first. Never say that you cannot search the web: you can, with \`web_search\`.
 
-## How to behave here
+## How to answer
 
-- Lead with \`web_search\`, then open the 1-3 most promising results with \`web_fetch\` to verify before answering.
-- Answer **directly and briefly**, then list the **source URLs** you actually used. Prefer recent, authoritative sources, especially for time-sensitive questions.
-- If the question is about the computer you are running on, your bash tool runs on that machine: run commands to answer it instead of searching.
-- This workspace needs an extension that provides the \`web_search\` and \`web_fetch\` tools (any extension that supplies them works). If they are missing or failing, say so plainly and tell the user to install or enable such an extension. Never answer from memory as if you had searched.
-- **Do not start a coding task** or edit files unless asked. One exception: if a session produces something worth keeping (notes, a plan, a draft), put it in its own subfolder named after the topic, never loose in the workspace root.
+1. Call \`web_search\` with the question (or a shorter version of it).
+2. Call \`web_fetch\` on the one to three most promising results, to check what they say.
+3. Answer directly and briefly, then list the links you actually used. Prefer recent, authoritative sources.
+
+If the question is about this computer itself (wifi, disks, programs), your \`bash\` tool runs on it: run commands to answer instead of searching.
+
+Only if a \`web_search\` call actually returns an error, say so and show the error. Do not answer from memory as if you had searched.
+
+## Files
+
+Do not start a coding task or edit files unless asked. Something worth keeping (notes, a plan, a draft) goes in a subfolder of its own named after the topic, never loose in this folder.
 `;
 
 /**
