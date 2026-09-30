@@ -20,6 +20,7 @@ import * as path from "node:path";
 import { Type } from "typebox";
 import { WhereverClient } from "@wherever-dev/client";
 import { createConversationModeSignal } from "./conversation-mode-hint.js";
+import { isInsideWhereverServer } from "./server-process-marker.js";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -130,6 +131,12 @@ function findDanglingToolCalls(ctx: ExtensionContext): DanglingToolCall[] {
 }
 
 export default async function (pi: ExtensionAPI) {
+  // Inside a wherever server (a server that still loads this package for its own
+  // sessions), register NOTHING: no bridge connection, no beep on the server
+  // host, no tools the server already provides itself. See
+  // server-process-marker.ts. session_start re-checks, for a marker set after load.
+  if (isInsideWhereverServer()) return;
+
   // Register flags to specify Standalone Server settings.
   //
   // NO `default:` on the settings that are also configurable, deliberately. A
@@ -1015,6 +1022,12 @@ export default async function (pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (event: SessionStartEvent, ctx: ExtensionContext) => {
+    // Never bridge from INSIDE a wherever server: connecting would register the
+    // server's own session as a CLI and loop takeover/handback, aborting every
+    // turn. Current servers do not load this package at all; this covers older
+    // ones. See server-process-marker.ts for why the marker is not an env var.
+    if (isInsideWhereverServer()) return;
+
     // `remote.bridge: false` in config.json is the only way to actually turn the
     // bridge off: the flag is registered with default true and a pi boolean
     // cannot be passed as false, so --remote-bridge could never disable it.

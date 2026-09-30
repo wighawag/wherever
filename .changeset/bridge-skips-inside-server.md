@@ -1,0 +1,5 @@
+---
+"@wherever-dev/pi": patch
+---
+
+The CLI bridge no longer connects when it is loaded inside a wherever server process. A wherever server from 0.18 onwards that lists this extension in the user's pi settings loaded it for its own sessions, and the bridge then registered the server's own session as a CLI terminal, which the server answered with a takeover, a shutdown and a reload, in a loop that aborted every turn with "CLI terminal disconnected". The bridge now registers nothing (no connection, no waiting-for-human beep on the server host, no tools) when it detects a wherever server process, and its `session_start` re-checks before connecting. It detects the server by either of two signals: the process marker newer servers set (`globalThis[Symbol.for('wherever-dev.server-process')]`), or, for older servers that predate the marker, a process entry script that belongs to the `wherever-dev` package (exact name in its nearest named `package.json`). Neither is an environment variable, so a real `pi` started from a wherever terminal or `!command` still bridges normally. Newer servers do not load the bridge at all; this protects against older ones.

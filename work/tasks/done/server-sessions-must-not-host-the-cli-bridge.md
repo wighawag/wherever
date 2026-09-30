@@ -24,11 +24,11 @@ Fix in two layers:
 
 ## Acceptance criteria
 
-- [ ] A server-created, loaded and reloaded session with the bridge extension present in the agent dir's settings does NOT register a CLI bridge: no `registerCliSession` call, and no "CLI terminal disconnected" `session_error`.
-- [ ] Other extensions still get the full lifecycle (`session_start`, `session_shutdown`), so the `777d652` fix (pi-mcp-adapter initialisation) is not regressed.
-- [ ] A real CLI bridge (a separate pi process) still registers and takes over as before.
-- [ ] The extension no-ops its bridge when it detects it is inside the wherever server.
-- [ ] Regression test that fails with the fix removed. It uses a real extension file in a temp agent dir (as `test/extension-provider-model.test.ts` does), isolates `WHEREVER_CONFIG_DIR`/agent dir to temp paths, and asserts the real `~/.wherever` and `~/.pi` are untouched.
+- [x] A server-created, loaded and reloaded session with the bridge extension present in the agent dir's settings does NOT register a CLI bridge: no `registerCliSession` call, and no "CLI terminal disconnected" `session_error`.
+- [x] Other extensions still get the full lifecycle (`session_start`, `session_shutdown`), so the `777d652` fix (pi-mcp-adapter initialisation) is not regressed.
+- [x] A real CLI bridge (a separate pi process) still registers and takes over as before.
+- [x] The extension no-ops its bridge when it detects it is inside the wherever server.
+- [x] Regression test that fails with the fix removed. It uses a real extension file in a temp agent dir (as `test/extension-provider-model.test.ts` does), isolates `WHEREVER_CONFIG_DIR`/agent dir to temp paths, and asserts the real `~/.wherever` and `~/.pi` are untouched.
 
 ## Blocked by
 

@@ -1,6 +1,6 @@
 name: test
 
-# Runs the server + web unit/integration suites on every push and PR.
+# Runs the server, web and extension unit/integration suites on every push and PR.
 #
 # Added because nothing ran them: `release.yml` only builds and publishes, and
 # `nix.yml` only exercises the Nix packaging. The server suite is the acceptance
@@ -89,3 +89,29 @@ jobs:
 
       - name: Run web tests
         run: pnpm --filter ./web test
+
+  extension:
+    name: extension suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # The extension imports `@wherever-dev/client`, whose package main is the
+      # gitignored `dist/`: same reason as the web job's client build.
+      - name: Build the client package (the extension resolves it by its dist entry)
+        run: pnpm --filter ./client build
+
+      - name: Run extension tests
+        run: pnpm --filter ./extension test
