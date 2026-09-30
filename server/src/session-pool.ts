@@ -932,6 +932,8 @@ import { randomUUID } from 'node:crypto';
 import { createAttachFileTool } from './attach-file-tool.js';
 import { createSayTool } from './say-tool.js';
 import { createConversationModeSignal, type ConversationModeSignal } from './conversation-mode-hint.js';
+import { withoutCliBridgeExtension } from './cli-bridge-extension.js';
+import { markWhereverServerProcess } from './server-process-marker.js';
 import {
   bindServerSessionExtensions,
   shutdownAndDisposeAgentSession,
@@ -1074,6 +1076,9 @@ export class SessionPool {
       extensionBindWarnAfterMs?: number;
     } = {},
   ) {
+    // Before any extension can load: tells an in-process CLI bridge it must not
+    // connect (defence in depth behind withoutCliBridgeExtension).
+    markWhereverServerProcess();
     this.extraExtensionFactories = options.extraExtensionFactories ?? [];
     this.extensionShutdownTimeoutMs = options.extensionShutdownTimeoutMs ?? EXTENSION_SHUTDOWN_TIMEOUT_MS;
     this.extensionBindWarnAfterMs = options.extensionBindWarnAfterMs ?? EXTENSION_BIND_WARN_AFTER_MS;
@@ -1154,7 +1159,12 @@ export class SessionPool {
     try {
       const cwd = this.agentDir;
       const settingsManager = SettingsManager.create(cwd, this.agentDir);
-      const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: this.agentDir, settingsManager });
+      const resourceLoader = new DefaultResourceLoader({
+        cwd,
+        agentDir: this.agentDir,
+        settingsManager,
+        extensionsOverride: withoutCliBridgeExtension,
+      });
       await resourceLoader.reload();
       this.registerExtensionProviders(resourceLoader, 'startup discovery');
     } catch (err) {
@@ -2711,6 +2721,10 @@ export class SessionPool {
       agentDir: this.agentDir,
       settingsManager,
       extensionFactories: [conversationSignal.inlineExtension, ...this.extraExtensionFactories],
+      // Never the CLI bridge (`@wherever-dev/pi`) in a server session: in-process
+      // it registers this very session as a CLI and loops takeover/handback. The
+      // identification rule is documented at isCliBridgeExtensionPath.
+      extensionsOverride: withoutCliBridgeExtension,
     });
     await resourceLoader.reload();
     // Before createAgentSession picks the model: see registerExtensionProviders.
