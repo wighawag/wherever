@@ -137,6 +137,13 @@ export interface WhereverConfig {
     dir?: string;
     subDir?: string;
     method?: 'post' | 'websocket';
+    /**
+     * Max size of ONE uploaded file, in bytes, enforced on every upload path
+     * (legacy `file_upload` by decoded size; the chunked and POST paths reuse
+     * it). Default 1 GiB (`DEFAULT_UPLOAD_MAX_BYTES` in upload-gate.ts): larger
+     * than the 100 MiB download cap on purpose, since phone videos exceed it.
+     */
+    maxBytes?: number;
   };
   /**
    * Controls which files the `GET /session/download` endpoint will serve to a

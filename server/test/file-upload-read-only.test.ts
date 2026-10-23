@@ -144,7 +144,15 @@ describe('file_upload is gated by the read-only verdict', () => {
 
   it('still accepts an upload on a normal, writable session', async () => {
     // The guard must refuse the read-only cases WITHOUT breaking the feature.
-    h = await startHarness({ initial: { kind: 'reply', text: 'hi' }, idleTimeoutMs: 60_000 });
+    // Uploads go to the session's own folder, never the default 'tmp' (the real
+    // os.tmpdir()), so an accepted upload stays inside the harness workspace.
+    configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-upload-cfg-'));
+    fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({ uploads: { type: 'session' } }));
+    h = await startHarness({
+      initial: { kind: 'reply', text: 'hi' },
+      idleTimeoutMs: 60_000,
+      env: { WHEREVER_CONFIG_DIR: configDir },
+    });
     const project = path.join(h.workspace, 'live-project');
     fs.mkdirSync(project, { recursive: true });
 
@@ -164,6 +172,7 @@ describe('file_upload is gated by the read-only verdict', () => {
 
     const saved = await c.waitForType('file_uploaded', 20_000);
     expect(saved.uploadId).toBe('u3');
+    expect(String(saved.savedPath).startsWith(path.join(project, '.wherever', 'uploads'))).toBe(true);
     expect(fs.readFileSync(String(saved.savedPath), 'utf8')).toBe('this must never reach the disk\n');
   }, 90_000);
 });
