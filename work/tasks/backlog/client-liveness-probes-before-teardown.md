@@ -4,6 +4,7 @@ slug: client-liveness-probes-before-teardown
 spec: ws-liveness-hardening
 blockedBy: []
 covers: [1, 4]
+needsAnswers: true
 ---
 
 ## What to build
