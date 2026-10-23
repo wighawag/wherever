@@ -4,7 +4,7 @@ slug: conversation-cache-indexeddb-module
 spec: instant-resume-from-cached-conversation
 blockedBy: []
 covers: [8, 9, 10, 12]
-needsAnswers: true
+needsAnswers: false
 ---
 
 ## What to build
