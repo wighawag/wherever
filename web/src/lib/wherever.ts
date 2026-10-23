@@ -1079,6 +1079,7 @@ export const isLoadingMoreHistory = derived(
 async function uploadFileViaPost(
 	sessionId: string,
 	file: File,
+	signal?: AbortSignal,
 ): Promise<{savedPath: string; filename: string}> {
 	const baseUrl = getBaseUrl();
 	const token = getToken();
@@ -1092,6 +1093,7 @@ async function uploadFileViaPost(
 			'Content-Type': 'text/plain',
 		},
 		body: fileData,
+		signal,
 	});
 
 	if (!res.ok) {
@@ -1105,6 +1107,7 @@ async function uploadFileViaPost(
 function uploadFileViaWebSocket(
 	sessionId: string,
 	file: File,
+	signal?: AbortSignal,
 ): Promise<{savedPath: string; filename: string}> {
 	return new Promise((resolve, reject) => {
 		try {
@@ -1115,7 +1118,9 @@ function uploadFileViaWebSocket(
 					const base64Data = result.split(',')[1] || '';
 
 					client
-						.uploadFileViaWebSocket(sessionId, file.name, base64Data)
+						.uploadFileViaWebSocket(sessionId, file.name, base64Data, {
+							signal,
+						})
 						.then(resolve)
 						.catch(reject);
 				} catch (err) {
@@ -1158,12 +1163,13 @@ export function downloadFileUrl(path: string): string | null {
 export async function uploadFile(
 	sessionId: string,
 	file: File,
+	options?: {signal?: AbortSignal},
 ): Promise<{savedPath: string; filename: string}> {
 	const method = get(uploadMethodStore);
 	if (method === 'post') {
-		return uploadFileViaPost(sessionId, file);
+		return uploadFileViaPost(sessionId, file, options?.signal);
 	} else {
-		return uploadFileViaWebSocket(sessionId, file);
+		return uploadFileViaWebSocket(sessionId, file, options?.signal);
 	}
 }
 

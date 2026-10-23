@@ -954,6 +954,28 @@
 				</form>
 			</div>
 		</div>
+	{:else if msgList.length === 0 && (loadingSession || resyncing)}
+		<!-- The session is known (session_created landed, so sessionFile is set)
+		     but its history has not arrived yet: the server sends session_created
+		     and message_history as two frames, and on a slow link the (large)
+		     history frame can trail by seconds. Without this branch that gap fell
+		     through to the "New Session Started" empty-state below, which lies
+		     about an existing conversation. -->
+		<div
+			class="flex flex-1 flex-col items-center justify-center bg-brand-dark p-6 text-brand-text-muted"
+		>
+			<div class="text-center">
+				<div
+					class="mb-4 inline-block h-8 w-8 animate-spin rounded-full border-4 border-brand-blue border-t-transparent"
+				></div>
+				<p class="text-base font-medium text-brand-text">
+					Loading conversation...
+				</p>
+				<p class="mt-1 text-xs text-brand-text-muted">
+					Retrieving workspace session history
+				</p>
+			</div>
+		</div>
 	{:else if msgList.length === 0}
 		<div class="flex flex-1 items-center justify-center text-brand-text-muted">
 			<div class="text-center">

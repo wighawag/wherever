@@ -166,7 +166,38 @@ export class WhereverClient {
   // until the reply). The latest tap always wins.
   private pendingLoadFile: string | null = null;
   private listeners = new Set<(msg: any) => void>();
-  private pendingUploads = new Map<string, {resolve: (val: any) => void, reject: (err: any) => void}>();
+  // In-flight WebSocket uploads, keyed by uploadId. Each keeps its full frame so
+  // it can be (re)sent: an upload is NOT bound to the socket it started on. On
+  // mobile, picking a file backgrounds the page and the socket is often lost
+  // within seconds; the upload then waits for the next connection (onOpen
+  // re-sends every pending frame, since a reply owed by a dead socket never
+  // arrives). Only a full teardown (disconnect(true)) or UPLOAD_TIMEOUT_MS
+  // settles one without a server reply, so the composer's "uploading" chip can
+  // never hang forever.
+  private pendingUploads = new Map<
+    string,
+    {
+      frame: any;
+      resolve: (val: any) => void;
+      reject: (err: any) => void;
+      timer: ReturnType<typeof setTimeout> | null;
+      // The socket the frame was last handed to (null = never sent / parked).
+      // A frame only counts as sent for the socket that is still current.
+      sentOn: any;
+    }
+  >();
+  // Bounds the time an upload spends WAITING to be sent (no socket, or held for
+  // a rejoin), not its transmission: the clock is cleared whenever the frame
+  // actually goes out on an open socket, and re-armed when that socket closes.
+  // So a large, slow-but-healthy upload is never rejected mid-transfer.
+  private static readonly UPLOAD_TIMEOUT_MS = 10 * 60_000;
+  // True between a reconnect's rejoin session_load and its session_created.
+  // A fresh server socket starts attached to no session with readOnly=false;
+  // the server only sets this client's write verdict (readOnly) when it answers
+  // the session_load. Uploads sent in that window would bypass the read-only
+  // gate (and a multi-MB frame queued ahead of the rejoin could trip the load
+  // watchdog), so they are held until session_created lands.
+  private uploadsHeldForRejoin = false;
   // Per-message confirmation watchdogs. A user message committed optimistically
   // is only proven delivered when the server echoes it back; if no echo lands
   // within CONFIRM_MS the watchdog flips it to delivery:'failed' so the UI can
@@ -295,6 +326,15 @@ export class WhereverClient {
       this.resumeSessionFile = null;
       this.resumeCwd = undefined;
       this.resumeModel = undefined;
+      // Uploads that were waiting for a socket (or whose reply died with the old
+      // one) go out only AFTER the rejoin has been answered (see
+      // uploadsHeldForRejoin): session_load first, uploads on session_created.
+      // With no session to rejoin there is no write verdict to wait for, and
+      // nothing to attribute the upload to any more, so they fail.
+      this.uploadsHeldForRejoin = !!rejoinFile;
+      if (!rejoinFile) {
+        this.rejectPendingUploads('The session was closed before the upload could be sent');
+      }
       if (rejoinFile) {
         // Keep the cached conversation on screen but mark it resyncing so the
         // "Reconnecting and syncing session..." banner shows and sending is
@@ -325,6 +365,7 @@ export class WhereverClient {
 
     const onClose = () => {
       if (this.ws !== currentWs) return;
+      this.uploadsLostSocket();
       this.stopLivenessWatchdog();
       this.clearLoadWatchdog();
       this.ws = null;
@@ -384,6 +425,8 @@ export class WhereverClient {
     // state, so cancel them here.
     this.clearLoadWatchdog();
     this.clearCreateWatchdog();
+    // suspend()/resume() close the socket through here, bypassing onClose.
+    this.uploadsLostSocket();
 
     if (this.ws) {
       const dyingWs = this.ws as any;
@@ -419,6 +462,10 @@ export class WhereverClient {
       // load can still recover them.
       for (const t of this.confirmTimers.values()) clearTimeout(t);
       this.confirmTimers.clear();
+      // An explicit full disconnect abandons in-flight uploads (they would
+      // otherwise be re-sent to whatever server is connected next).
+      this.rejectPendingUploads('Disconnected before the upload completed');
+      this.uploadsHeldForRejoin = false;
       this.stateStore.set({
         ...defaultState,
         hideThinking: !!this.config.hideThinking,
@@ -548,6 +595,9 @@ export class WhereverClient {
       this.stopLivenessWatchdog();
       const deadWs = this.ws;
       this.ws = null;
+      // This path bypasses onClose (the socket is no longer current), so the
+      // uploads it carried must be marked waiting here.
+      this.uploadsLostSocket();
       try {
         if (typeof deadWs.terminate === 'function') {
           deadWs.terminate();
@@ -599,6 +649,7 @@ export class WhereverClient {
       const s = get(this.stateStore);
       if (!s.loadingSession && !s.resyncing) return;
       console.warn('[wherever] session load timed out; clearing loading state');
+      this.failHeldUploads('Could not rejoin the session, so the upload was not sent');
       this.stateStore.update(st => ({
         ...st,
         loadingSession: false,
@@ -769,19 +820,17 @@ export class WhereverClient {
         break;
 
       case 'file_uploaded': {
-        const pending = this.pendingUploads.get(msg.uploadId);
+        const pending = this.takePendingUpload(msg.uploadId);
         if (pending) {
           pending.resolve({savedPath: msg.savedPath, filename: msg.filename});
-          this.pendingUploads.delete(msg.uploadId);
         }
         break;
       }
 
       case 'file_upload_error': {
-        const pending = this.pendingUploads.get(msg.uploadId);
+        const pending = this.takePendingUpload(msg.uploadId);
         if (pending) {
           pending.reject(new Error(msg.error));
-          this.pendingUploads.delete(msg.uploadId);
         }
         break;
       }
@@ -1284,6 +1333,20 @@ export class WhereverClient {
         // This reply matches the load we were waiting on (or the create we
         // requested): the load is resolved, so stop guarding against it.
         this.pendingLoadFile = null;
+        // The server has now applied this client's write verdict for the
+        // session (it sets readOnly before sending session_created), so uploads
+        // held across the reconnect can go out and be gated correctly.
+        if (this.uploadsHeldForRejoin) {
+          this.uploadsHeldForRejoin = false;
+          // Release only uploads aimed at the session we actually rejoined. A
+          // different session here means the user switched mid-hold; sending the
+          // old target's upload now would be gated by THIS session's verdict.
+          this.failUnsentUploads(
+            'The session changed before the upload could be sent',
+            msg.sessionId,
+          );
+          this.resendPendingUploads();
+        }
         this.stateStore.update((s: WhereverState) => ({
           ...s,
           session: msg.sessionFile,
@@ -1419,6 +1482,9 @@ export class WhereverClient {
         break;
 
       case 'session_destroyed':
+        if (get(this.stateStore).sessionId === msg.sessionId) {
+          this.failHeldUploads('The session ended before the upload could be sent');
+        }
         this.stateStore.update((s: WhereverState) => {
           if (s.sessionId === msg.sessionId) {
             return {
@@ -1442,6 +1508,10 @@ export class WhereverClient {
         break;
 
       case 'session_error':
+        // While held, the only request in flight is the rejoin: it failed, so the
+        // held uploads can never be gated and sent. Fail them now rather than
+        // leaving them (and every new upload) parked for the full timeout.
+        this.failHeldUploads('Could not rejoin the session, so the upload was not sent');
         this.stateStore.update((s: WhereverState) => ({
           ...s,
           sessionError: msg.error,
@@ -2447,6 +2517,7 @@ export class WhereverClient {
     if (s.activeSessionFile === sessionFile && !s.loadingSession && !s.resyncing) {
       return;
     }
+    this.abandonUnsentUploads();
     if (s.sessionId) {
       this.send({type: 'session_leave', sessionId: s.sessionId});
     }
@@ -2504,6 +2575,7 @@ export class WhereverClient {
     repoVisibility?: 'private' | 'public',
     cloneRemote?: boolean,
   ) {
+    this.abandonUnsentUploads();
     this.stateStore.update((s: WhereverState) => ({
       ...s,
       folderConflict: null,
@@ -2534,6 +2606,7 @@ export class WhereverClient {
   }
 
   public leaveSession() {
+    this.abandonUnsentUploads();
     const s = get(this.stateStore);
     // Leaving abandons any in-flight create too, so disarm its watchdog even when
     // there is no sessionId yet (a create that has not resolved).
@@ -2756,18 +2829,130 @@ export class WhereverClient {
     };
   }
 
-  public uploadFileViaWebSocket(sessionId: string, filename: string, base64Data: string): Promise<{savedPath: string; filename: string}> {
+  public uploadFileViaWebSocket(
+    sessionId: string,
+    filename: string,
+    base64Data: string,
+    options?: {signal?: AbortSignal},
+  ): Promise<{savedPath: string; filename: string}> {
     return new Promise((resolve, reject) => {
+      const signal = options?.signal;
+      if (signal?.aborted) {
+        reject(new Error('Upload cancelled'));
+        return;
+      }
       const uploadId = this.generateId();
-      this.pendingUploads.set(uploadId, {resolve, reject});
-      this.send({
+      const frame = {
         type: 'file_upload',
         uploadId,
         sessionId,
         filename,
-        data: base64Data
+        data: base64Data,
+      };
+      this.pendingUploads.set(uploadId, {frame, resolve, reject, timer: null, sentOn: null});
+      // Cancelling (e.g. the chip was removed) settles the promise and drops
+      // the parked frame so it is not re-sent on the next reconnect. A frame
+      // already handed to the socket cannot be recalled.
+      signal?.addEventListener('abort', () => {
+        this.takePendingUpload(uploadId)?.reject(new Error('Upload cancelled'));
       });
+      // Sent now when the socket is OPEN and not mid-rejoin. Otherwise the frame
+      // waits in pendingUploads and is sent once the rejoin is answered. It used
+      // to be fired and forgotten here, so an upload started while
+      // (re)connecting hung forever.
+      if (!this.trySendUpload(uploadId)) this.armUploadTimer(uploadId);
     });
+  }
+
+  // Number of uploads still waiting for a server reply (sent or parked).
+  public pendingUploadCount(): number {
+    return this.pendingUploads.size;
+  }
+
+  private trySendUpload(uploadId: string): boolean {
+    const pending = this.pendingUploads.get(uploadId);
+    if (!pending || this.uploadsHeldForRejoin) return false;
+    if (!this.send(pending.frame)) return false;
+    pending.sentOn = this.ws;
+    // On the wire: stop the waiting clock (transmission time is not bounded).
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.timer = null;
+    return true;
+  }
+
+  private isUploadOnWire(pending: {sentOn: any}): boolean {
+    return pending.sentOn !== null && pending.sentOn === this.ws;
+  }
+
+  // The socket carrying uploads went away (by close, suspend, or the liveness
+  // teardown, the latter two bypassing onClose). Every pending frame is waiting
+  // again: forget where it was sent and restart its waiting clock, so no upload
+  // can be left without a timer.
+  private uploadsLostSocket() {
+    for (const [id, pending] of this.pendingUploads) {
+      pending.sentOn = null;
+      this.armUploadTimer(id);
+    }
+  }
+
+  // Fail uploads that have not reached the current socket (parked or held),
+  // optionally sparing those aimed at `keepSessionId`.
+  private failUnsentUploads(reason: string, keepSessionId?: string) {
+    for (const [id, pending] of [...this.pendingUploads]) {
+      if (this.isUploadOnWire(pending)) continue;
+      if (keepSessionId && pending.frame.sessionId === keepSessionId) continue;
+      this.takePendingUpload(id)?.reject(new Error(reason));
+    }
+  }
+
+  private failHeldUploads(reason: string) {
+    if (!this.uploadsHeldForRejoin) return;
+    this.uploadsHeldForRejoin = false;
+    this.failUnsentUploads(reason);
+  }
+
+  // Switching / creating / leaving a session: an upload not yet on the wire
+  // would otherwise be released by the NEXT session's session_created and be
+  // gated by the wrong session's verdict. One already on the wire is left to
+  // its reply (the server answers on this socket regardless of attachment).
+  private abandonUnsentUploads() {
+    this.uploadsHeldForRejoin = false;
+    this.failUnsentUploads('The session changed before the upload could be sent');
+  }
+
+  private armUploadTimer(uploadId: string) {
+    const pending = this.pendingUploads.get(uploadId);
+    if (!pending || typeof setTimeout !== 'function') return;
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.timer = setTimeout(() => {
+      this.takePendingUpload(uploadId)?.reject(
+        new Error('Upload timed out (no connection to the server)'),
+      );
+    }, WhereverClient.UPLOAD_TIMEOUT_MS);
+    if (pending.timer && typeof (pending.timer as any).unref === 'function') {
+      (pending.timer as any).unref();
+    }
+  }
+
+  private takePendingUpload(uploadId: string) {
+    const pending = this.pendingUploads.get(uploadId);
+    if (!pending) return undefined;
+    this.pendingUploads.delete(uploadId);
+    if (pending.timer) clearTimeout(pending.timer);
+    return pending;
+  }
+
+  private resendPendingUploads() {
+    for (const [id, pending] of [...this.pendingUploads]) {
+      if (this.isUploadOnWire(pending)) continue;
+      if (!this.trySendUpload(id)) this.armUploadTimer(id);
+    }
+  }
+
+  private rejectPendingUploads(reason: string) {
+    for (const id of [...this.pendingUploads.keys()]) {
+      this.takePendingUpload(id)?.reject(new Error(reason));
+    }
   }
 
   private generateId() {

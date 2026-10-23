@@ -884,8 +884,9 @@
 			<!-- Suspended/reconnecting: show a thin status banner ABOVE the composer
 			     instead of replacing it. Keeping ChatInput mounted preserves the
 			     textarea (and any in-progress draft) in the live DOM so a resync can
-			     never destroy what the user was typing; the composer is merely
-			     disabled until the socket is back and the session has resynced. -->
+			     never destroy what the user was typing. The composer stays EDITABLE
+			     (type, attach; uploads wait for the socket): only SENDING is blocked
+			     (sendDisabled) until the socket is back and the session has resynced. -->
 			{#if sessionInfo.sessionFile && (resyncing || !connected)}
 				<div
 					class="flex items-center justify-center gap-2 border-t border-brand-border bg-brand-surface px-4 py-2 text-center text-sm text-brand-text-muted"
@@ -919,11 +920,9 @@
 				submitLabel="Search"
 				disabled={searchActive
 					? !connected
-					: !connected ||
-						readOnly ||
-						!sessionInfo.sessionFile ||
-						resyncing ||
-						agentPending}
+					: readOnly || !sessionInfo.sessionFile}
+				sendDisabled={!searchActive &&
+					(!connected || resyncing || agentPending)}
 				onSend={() => chatList?.forceScrollToBottom()}
 			/>
 		{/if}

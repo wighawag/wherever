@@ -39,6 +39,7 @@
 
 	let {
 		disabled,
+		sendDisabled = false,
 		onSend,
 		onSubmit,
 		placeholder,
@@ -49,7 +50,13 @@
 		searchModels = [],
 		searchModel = $bindable(''),
 	}: {
+		// Blocks EDITING (textarea, attach, mic): no session, read-only, ...
 		disabled: boolean;
+		// Blocks only SENDING (the Send/Steer button, Enter-to-send, dictation
+		// auto-send) while the box stays editable: a reconnect/resync, or a
+		// still-building agent. Losing the socket must never stop the user from
+		// reading, typing or attaching; it only stops the message going out.
+		sendDisabled?: boolean;
 		onSend?: () => void;
 		// When provided (search mode), submit routes here instead of sendMessage.
 		// Files are handed over UNUPLOADED: search has no session yet, so the
@@ -89,10 +96,19 @@
 	let skillMenuIndex = $state(0);
 
 	let fileInput = $state<HTMLInputElement>();
+	let nextAttachmentId = 0;
+	// In-flight uploads by attachment id, so removing a chip cancels its upload
+	// (a parked upload would otherwise still go out on reconnect and leave an
+	// orphan file in the upload dir).
+	const uploadControllers = new Map<number, AbortController>();
 	// An attachment is either already uploaded (`path` set, chat mode) or still a
 	// local File waiting for a session to upload it to (`file` set, search mode).
 	let attachments = $state<
 		{
+			// Stable identity: an upload resolves long after it starts (it may wait
+			// out a reconnect), and the user can remove other chips meanwhile, so
+			// results are matched by id, never by array index.
+			id: number;
 			name: string;
 			path?: string;
 			error?: string;
@@ -171,15 +187,25 @@
 	// Note: streaming does NOT disable the composer. A mid-stream submit steers
 	// the agent immediately (pi's default), so the box stays live while the agent
 	// works and the primary button reads "Steer".
+	//
+	// Chat mode deliberately does NOT gate editing on `connected`: a dropped
+	// socket (app switch, file picker, network blip) keeps the cached
+	// conversation on screen, and the composer must stay usable too (type, attach;
+	// attachments wait for the connection). Only sending is blocked, below.
 	let effectivelyDisabled = $derived(
 		searchMode
 			? disabled || !connected || !searchConfigured
-			: disabled || !connected || readOnly || !sessionInfo.sessionId,
+			: disabled || readOnly || !sessionInfo.sessionId,
+	);
+	// Editing allowed but sending is not (reconnecting / resyncing / agent still
+	// building). Superset of effectivelyDisabled.
+	let sendBlocked = $derived(
+		effectivelyDisabled || sendDisabled || (!searchMode && !connected),
 	);
 
 	let isAnyUploading = $derived(attachments.some((a) => a.uploading));
 	let canSend = $derived(
-		!effectivelyDisabled &&
+		!sendBlocked &&
 			!isAnyUploading &&
 			(text.trim().length > 0 || attachments.length > 0),
 	);
@@ -542,11 +568,11 @@
 			engine: speechEngine,
 		});
 		if (action === 'none') return;
-		if (effectivelyDisabled) return;
+		if (sendBlocked) return;
 		void whenTtsIdle().then(() => {
 			// Re-check: the user may have started streaming again, or the composer may
 			// have been disabled, while TTS was finishing.
-			if ($isStreaming || effectivelyDisabled) return;
+			if ($isStreaming || sendBlocked) return;
 			speechButton?.startRecordingProgrammatically();
 		});
 	});
@@ -587,28 +613,42 @@
 		if (searchMode) {
 			attachments = [
 				...attachments,
-				...files.map((f) => ({name: f.name, uploading: false, file: f})),
+				...files.map((f) => ({
+					id: nextAttachmentId++,
+					name: f.name,
+					uploading: false,
+					file: f,
+				})),
 			];
 			return;
 		}
 
-		const startIdx = attachments.length;
+		// No early "No active session" / "not connected" failure: the session id
+		// survives a socket drop (the cached session is kept), and uploadFile waits
+		// for the connection to come back. A slow pick (camera, file browser)
+		// commonly costs the socket on mobile; that must not cost the upload.
+		const sessionId = sessionInfo.sessionId;
+		const entries = files.map((f) => ({file: f, id: nextAttachmentId++}));
 		attachments = [
 			...attachments,
-			...files.map((f) => ({name: f.name, uploading: true})),
+			...entries.map(({file, id}) => ({id, name: file.name, uploading: true})),
 		];
 
-		for (let i = 0; i < files.length; i++) {
-			const file = files[i];
-			const idx = startIdx + i;
+		for (const {file, id} of entries) {
+			// Removed by the user while earlier files were uploading: skip it.
+			if (!attachments.some((a) => a.id === id)) continue;
 			try {
-				if (!sessionInfo.sessionId) {
+				if (!sessionId) {
 					throw new Error('No active session');
 				}
-				const res = await uploadFile(sessionInfo.sessionId, file);
-				attachments = attachments.map((a, currentIdx) =>
-					currentIdx === idx
-						? {name: file.name, path: res.savedPath, uploading: false}
+				const controller = new AbortController();
+				uploadControllers.set(id, controller);
+				const res = await uploadFile(sessionId, file, {
+					signal: controller.signal,
+				}).finally(() => uploadControllers.delete(id));
+				attachments = attachments.map((a) =>
+					a.id === id
+						? {id, name: file.name, path: res.savedPath, uploading: false}
 						: a,
 				);
 			} catch (err) {
@@ -623,9 +663,10 @@
 					targetUrl = `${baseUrl}/health${token ? `?token=${encodeURIComponent(token)}` : ''}`;
 				} catch (e) {}
 
-				attachments = attachments.map((a, currentIdx) =>
-					currentIdx === idx
+				attachments = attachments.map((a) =>
+					a.id === id
 						? ({
+								id,
 								name: file.name,
 								error: errMsg,
 								url: targetUrl,
@@ -638,10 +679,16 @@
 	}
 
 	function removeAttachment(index: number) {
+		const removed = attachments[index];
+		if (removed) uploadControllers.get(removed.id)?.abort();
 		attachments = attachments.filter((_, idx) => idx !== index);
 	}
 
 	function handleSend() {
+		// Every send path (button, Enter, dictation auto-send) funnels through
+		// here, so this is the one gate for "editable but not sendable". The text
+		// and attachments stay in the box for when the connection is back.
+		if (sendBlocked || isAnyUploading) return;
 		const trimmed = text.trim();
 
 		// Search mode: route to the injected handler with the (not yet uploaded)
@@ -980,7 +1027,7 @@
 	{:else}
 		{#if attachments.length > 0}
 			<div class="mb-3 flex flex-wrap gap-2">
-				{#each attachments as attachment, index}
+				{#each attachments as attachment, index (attachment.id)}
 					<div
 						class="flex items-center gap-2 rounded border border-brand-border bg-brand-surface-2 px-2.5 py-1.5 text-xs"
 					>
@@ -994,6 +1041,15 @@
 							<span
 								class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-brand-blue border-t-transparent"
 							></span>
+							{#if !connected}
+								<!-- The upload is parked until the socket is back; it resumes
+								     on its own (no need to re-attach). -->
+								<span
+									class="text-[10px] text-brand-text-muted"
+									title="The upload continues once reconnected"
+									>waiting for connection</span
+								>
+							{/if}
 						{:else if attachment.file}
 							<!-- Search mode: held locally, uploaded when the search creates
 							     its session. -->
@@ -1106,8 +1162,8 @@
 						? (placeholder ?? 'Search the web...')
 						: !connected
 							? appState.connecting
-								? 'Reconnecting to remote server...'
-								: 'Disconnected - cannot send'
+								? 'Reconnecting... you can keep typing'
+								: 'Disconnected - you can type, sending resumes once reconnected'
 							: streaming
 								? 'Agent is working, Steer to interrupt...'
 								: readOnly
