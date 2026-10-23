@@ -171,9 +171,12 @@ export class WhereverClient {
   // mobile, picking a file backgrounds the page and the socket is often lost
   // within seconds; the upload then waits for the next connection (onOpen
   // re-sends every pending frame, since a reply owed by a dead socket never
-  // arrives). Only a full teardown (disconnect(true)) or UPLOAD_TIMEOUT_MS
-  // settles one without a server reply, so the composer's "uploading" chip can
-  // never hang forever.
+  // arrives). Without a server reply an upload is settled by: a full teardown
+  // (disconnect(true)), UPLOAD_TIMEOUT_MS of waiting, MAX_UPLOAD_SENDS
+  // attempts each lost with its socket, cancellation, or a session change.
+  // The one unbounded case is by design: a frame on the wire of a socket that
+  // stays open is left to its reply (the server's handler always answers), so
+  // a slow but healthy transfer is never cut off.
   private pendingUploads = new Map<
     string,
     {
@@ -184,8 +187,19 @@ export class WhereverClient {
       // The socket the frame was last handed to (null = never sent / parked).
       // A frame only counts as sent for the socket that is still current.
       sentOn: any;
+      // How many times the frame has been handed to a socket.
+      sends: number;
     }
   >();
+  // An upload whose socket dies under it on every attempt (a frame too large
+  // for the server's maxPayload, which closes with 1009; or a slow uplink where
+  // the multi-MB frame starves the heartbeat) would otherwise be re-sent
+  // forever, kicking the live session into a resync each time. After this many
+  // sends lost with their socket, it fails.
+  private static readonly MAX_UPLOAD_SENDS = 3;
+  // `ws`'s default maxPayload is 100 MiB per frame; leave room for the JSON
+  // envelope. Larger base64 payloads are refused up front (~72 MB files).
+  private static readonly MAX_UPLOAD_BASE64_CHARS = 96 * 1024 * 1024;
   // Bounds the time an upload spends WAITING to be sent (no socket, or held for
   // a rejoin), not its transmission: the clock is cleared whenever the frame
   // actually goes out on an open socket, and re-armed when that socket closes.
@@ -1511,7 +1525,12 @@ export class WhereverClient {
         // While held, the only request in flight is the rejoin: it failed, so the
         // held uploads can never be gated and sent. Fail them now rather than
         // leaving them (and every new upload) parked for the full timeout.
-        this.failHeldUploads('Could not rejoin the session, so the upload was not sent');
+        // The rejoin's own errors carry no sessionId (a failed session_load or
+        // its exception path); an error tagged with a session belongs to some
+        // other request and must not fail the held uploads.
+        if (!msg.sessionId) {
+          this.failHeldUploads('Could not rejoin the session, so the upload was not sent');
+        }
         this.stateStore.update((s: WhereverState) => ({
           ...s,
           sessionError: msg.error,
@@ -2841,6 +2860,14 @@ export class WhereverClient {
         reject(new Error('Upload cancelled'));
         return;
       }
+      if (base64Data.length > WhereverClient.MAX_UPLOAD_BASE64_CHARS) {
+        reject(
+          new Error(
+            'File too large to upload over the WebSocket (max 72 MB)',
+          ),
+        );
+        return;
+      }
       const uploadId = this.generateId();
       const frame = {
         type: 'file_upload',
@@ -2849,7 +2876,7 @@ export class WhereverClient {
         filename,
         data: base64Data,
       };
-      this.pendingUploads.set(uploadId, {frame, resolve, reject, timer: null, sentOn: null});
+      this.pendingUploads.set(uploadId, {frame, resolve, reject, timer: null, sentOn: null, sends: 0});
       // Cancelling (e.g. the chip was removed) settles the promise and drops
       // the parked frame so it is not re-sent on the next reconnect. A frame
       // already handed to the socket cannot be recalled.
@@ -2860,7 +2887,7 @@ export class WhereverClient {
       // waits in pendingUploads and is sent once the rejoin is answered. It used
       // to be fired and forgotten here, so an upload started while
       // (re)connecting hung forever.
-      if (!this.trySendUpload(uploadId)) this.armUploadTimer(uploadId);
+      if (!this.trySendUpload(uploadId)) this.ensureUploadTimer(uploadId);
     });
   }
 
@@ -2872,7 +2899,17 @@ export class WhereverClient {
   private trySendUpload(uploadId: string): boolean {
     const pending = this.pendingUploads.get(uploadId);
     if (!pending || this.uploadsHeldForRejoin) return false;
+    if (pending.sends >= WhereverClient.MAX_UPLOAD_SENDS) {
+      // Every previous attempt lost its socket mid-transfer: stop retrying.
+      this.takePendingUpload(uploadId)?.reject(
+        new Error(
+          'Upload failed: the connection dropped during the transfer each time (the file may be too large or the connection too slow)',
+        ),
+      );
+      return true; // settled; nothing left to wait for
+    }
     if (!this.send(pending.frame)) return false;
+    pending.sends++;
     pending.sentOn = this.ws;
     // On the wire: stop the waiting clock (transmission time is not bounded).
     if (pending.timer) clearTimeout(pending.timer);
@@ -2891,7 +2928,10 @@ export class WhereverClient {
   private uploadsLostSocket() {
     for (const [id, pending] of this.pendingUploads) {
       pending.sentOn = null;
-      this.armUploadTimer(id);
+      // Arm only a clock that is not already running. Re-arming on every loss
+      // restarted the deadline on each failed reconnect attempt (at most 15 s
+      // apart), so an upload against an unreachable server waited forever.
+      this.ensureUploadTimer(id);
     }
   }
 
@@ -2920,6 +2960,12 @@ export class WhereverClient {
     this.failUnsentUploads('The session changed before the upload could be sent');
   }
 
+  // Start the waiting clock unless one is already running (keeps the deadline).
+  private ensureUploadTimer(uploadId: string) {
+    const pending = this.pendingUploads.get(uploadId);
+    if (pending && !pending.timer) this.armUploadTimer(uploadId);
+  }
+
   private armUploadTimer(uploadId: string) {
     const pending = this.pendingUploads.get(uploadId);
     if (!pending || typeof setTimeout !== 'function') return;
@@ -2945,7 +2991,7 @@ export class WhereverClient {
   private resendPendingUploads() {
     for (const [id, pending] of [...this.pendingUploads]) {
       if (this.isUploadOnWire(pending)) continue;
-      if (!this.trySendUpload(id)) this.armUploadTimer(id);
+      if (!this.trySendUpload(id)) this.ensureUploadTimer(id);
     }
   }
 

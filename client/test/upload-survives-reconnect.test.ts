@@ -313,4 +313,91 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 		vi.advanceTimersByTime(10 * 60_000 + 1);
 		await settled;
 	});
+
+	it('the waiting deadline is NOT restarted by repeated failed reconnect attempts', async () => {
+		ws.last().open();
+		joinSession();
+		ws.last().close(); // server goes away
+		const p = client.uploadFileViaWebSocket('sid-1', 'r.png', 'RRRR');
+		const settled = expect(p).rejects.toThrow(/timed out/);
+		// Every reconnect attempt opens a socket that immediately fails.
+		for (let t = 0; t < 11 * 60_000; t += 5_000) {
+			vi.advanceTimersByTime(5_000);
+			const sock = ws.last();
+			if (sock.readyState === 0) sock.close();
+		}
+		await settled;
+	});
+
+	it('an upload that loses its socket on every send gives up after MAX_UPLOAD_SENDS', async () => {
+		ws.last().open();
+		joinSession();
+		const p = client.uploadFileViaWebSocket('sid-1', 's.png', 'SSSS');
+		const settled = expect(p).rejects.toThrow(/dropped during the transfer/);
+		for (let i = 0; i < 3; i++) {
+			const sock = dropAndReconnect();
+			sock.receive({
+				type: 'session_created',
+				sessionId: 'sid-1',
+				sessionFile: '/tmp/project/session.jsonl',
+				cwd: '/tmp/project',
+				model: 'fake:model',
+			});
+		}
+		await settled;
+		expect(client.pendingUploadCount()).toBe(0);
+	});
+
+	it('refuses a payload too large for the server frame limit up front', async () => {
+		ws.last().open();
+		const huge = 'A'.repeat(96 * 1024 * 1024 + 1);
+		await expect(client.uploadFileViaWebSocket('sid-1', 'big.mp4', huge)).rejects.toThrow(
+			/too large/,
+		);
+		expect(ws.last().lastSentOfType('file_upload')).toBeUndefined();
+	});
+
+	it('a session_error tagged with a session id does not fail held uploads', () => {
+		ws.last().open();
+		joinSession();
+		void client.uploadFileViaWebSocket('sid-1', 't.png', 'TTTT').catch(() => {});
+		const second = dropAndReconnect();
+		second.receive({type: 'session_error', sessionId: 'some-other', error: 'fork failed'});
+		expect(client.pendingUploadCount()).toBe(1);
+		second.receive({
+			type: 'session_created',
+			sessionId: 'sid-1',
+			sessionFile: '/tmp/project/session.jsonl',
+			cwd: '/tmp/project',
+			model: 'fake:model',
+		});
+		expect(second.lastSentOfType('file_upload')).toMatchObject({data: 'TTTT'});
+	});
+
+	it('an upload lost twice and answered on the third send resolves (cap boundary)', async () => {
+		ws.last().open();
+		joinSession();
+		const p = client.uploadFileViaWebSocket('sid-1', 'u.png', 'UUUU');
+		let sock = ws.last();
+		for (let i = 0; i < 2; i++) {
+			sock = dropAndReconnect();
+			sock.receive({
+				type: 'session_created',
+				sessionId: 'sid-1',
+				sessionFile: '/tmp/project/session.jsonl',
+				cwd: '/tmp/project',
+				model: 'fake:model',
+			});
+		}
+		const sent = sock.lastSentOfType('file_upload');
+		expect(sent).toBeTruthy();
+		sock.receive({
+			type: 'file_uploaded',
+			uploadId: sent.uploadId,
+			sessionId: 'sid-1',
+			filename: 'u.png',
+			savedPath: '/up/u.png',
+		});
+		await expect(p).resolves.toMatchObject({savedPath: '/up/u.png'});
+	});
 });

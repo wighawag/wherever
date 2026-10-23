@@ -52,7 +52,7 @@
 	import {onMount} from 'svelte';
 	import {version} from '$app/environment';
 	import {url} from '$lib/core/utils/web/path';
-	import {isSearchActive} from '$lib/core/view-mode';
+	import {decideHashJoin, isSearchActive} from '$lib/core/view-mode';
 
 	let sidebarOpen = $state(false);
 	// Which session list the sidebar shows: the main dashboard, the separate
@@ -82,11 +82,16 @@
 		}
 
 		const handleHashChange = () => {
+			// A new hash is a new intent: forget any failed auto-join attempt.
+			hashJoinAttempt = null;
 			if (connected) {
 				const hashId = window.location.hash
 					? decodeURIComponent(window.location.hash.slice(1))
 					: '';
 				if (hashId && hashId !== currentSessionId) {
+					// Record it as this hash's attempt, so a failed load is not re-joined
+					// by the auto-join effect (a second failure per Back press).
+					hashJoinAttempt = hashId;
 					// Atomic switch (no leave -> setTimeout -> join gap that could strand
 					// the loading spinner). switchSession leaves the current session first
 					// when there is one and loads the target either way.
@@ -247,22 +252,72 @@
 	// reset was never observed, leaving the guard latched and the session never
 	// loaded, which hung the "Loading session..." spinner forever. Gating purely on
 	// the live state (active session id + loading/resync flags) instead avoids that.
+	//
+	// But it must not retry a load that already FAILED: an untagged session_error
+	// (e.g. the hash names a deleted session) clears loadingSession, which
+	// re-runs this effect with currentSessionId still null, so it used to re-join
+	// every ~300 ms forever with a flickering error and a permanent spinner.
+	// `hashJoinAttempt` remembers the id we last issued a join for; it is reset
+	// on success, on disconnect (a load cut by a dropped socket must be retried
+	// after reconnecting) and on a hash change. decideHashJoin is unit-tested.
 	let hashJoinTimer: ReturnType<typeof setTimeout> | null = null;
+	let hashJoinAttempt: string | null = null;
+	function readHashId(): string {
+		if (typeof window === 'undefined' || !window.location.hash) return '';
+		return decodeURIComponent(window.location.hash.slice(1));
+	}
 	$effect(() => {
-		if (!connected || typeof window === 'undefined' || !window.location.hash) {
+		if (!connected) {
+			hashJoinAttempt = null;
 			return;
 		}
-		const hashId = decodeURIComponent(window.location.hash.slice(1));
-		if (!hashId) return;
-		// Already on (or already loading) the hash session: nothing to do. This also
-		// covers the resume path, where the client rejoins the cached session in
-		// place via session_load in onOpen, so re-joining here would double-load.
-		if (currentSessionId === hashId || loadingSession || resyncing) return;
+		const hashId = readHashId();
+		if (hashId && currentSessionId === hashId) hashJoinAttempt = null;
+		const decision = decideHashJoin({
+			connected,
+			hashId,
+			currentSessionId,
+			loading: loadingSession,
+			resyncing,
+			attemptedHashId: hashJoinAttempt,
+		});
+		if (decision === 'failed') {
+			// Stop here. The error banner explains why; drop the hash so the URL
+			// no longer names a session that cannot be opened, and the message area
+			// falls back to the home state instead of a spinner.
+			// replaceState, NOT `location.hash = ''`: that pushed a history entry and
+			// fired hashchange, so Back returned to the dead hash, which failed
+			// again and pushed again, trapping the Back button. replaceState fires
+			// no hashchange; the non-reactive hash read is covered by loadFailed.
+			hashJoinAttempt = null;
+			if (window.location.hash) {
+				history.replaceState(
+					history.state,
+					'',
+					window.location.pathname + window.location.search,
+				);
+			}
+			return;
+		}
+		if (decision !== 'join') return;
 		if (hashJoinTimer) return; // a join is already pending
 		hashJoinTimer = setTimeout(() => {
 			hashJoinTimer = null;
-			if (currentSessionId === hashId || loadingSession || resyncing) return;
-			joinSession(hashId);
+			const id = readHashId();
+			if (
+				decideHashJoin({
+					connected,
+					hashId: id,
+					currentSessionId,
+					loading: loadingSession,
+					resyncing,
+					attemptedHashId: hashJoinAttempt,
+				}) !== 'join'
+			) {
+				return;
+			}
+			hashJoinAttempt = id;
+			joinSession(id);
 		}, 300);
 	});
 
@@ -314,6 +369,8 @@
 			loading: loadingSession,
 			resyncing,
 			hasSessionHash: typeof window !== 'undefined' && !!window.location.hash,
+			loadFailed:
+				!!sError && !loadingSession && !resyncing && !sessionInfo.sessionFile,
 		}),
 	);
 

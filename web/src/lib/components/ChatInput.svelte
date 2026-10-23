@@ -1041,9 +1041,10 @@
 							<span
 								class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-brand-blue border-t-transparent"
 							></span>
-							{#if !connected}
-								<!-- The upload is parked until the socket is back; it resumes
-								     on its own (no need to re-attach). -->
+							{#if !connected || appState.resyncing}
+								<!-- The upload is parked until the socket is back and the
+								     session has rejoined; it resumes on its own (no need to
+								     re-attach). -->
 								<span
 									class="text-[10px] text-brand-text-muted"
 									title="The upload continues once reconnected"

@@ -12,6 +12,7 @@
 		isLoadingMoreHistory,
 		isLoadingSession,
 		isResyncing,
+		sessionError,
 		resendMessage,
 		discardMessage,
 		cancelSteer,
@@ -437,6 +438,12 @@
 	// new-session / search empty-state. This is the core of "block only where it
 	// matters (this session)": a dropped socket blocks sending, not reading.
 	let hasCachedSession = $derived(!!sessionInfo.sessionFile);
+	// A load ended in an error with nothing active: a URL hash still naming that
+	// session must not keep the "Loading session..." spinner up (mirrors
+	// isSessionPendingOpen's loadFailed in +page.svelte).
+	let loadFailed = $derived(
+		!!$sessionError && !loadingSession && !resyncing && !hasCachedSession,
+	);
 
 	let shouldAutoScroll = $state(true);
 	let forceScroll = $state(false);
@@ -726,7 +733,7 @@
 				</button>
 			</div>
 		</div>
-	{:else if !hasCachedSession && (loadingSession || (typeof window !== 'undefined' && window.location.hash))}
+	{:else if !hasCachedSession && (loadingSession || (!loadFailed && typeof window !== 'undefined' && window.location.hash))}
 		<!-- Genuine fresh load of a session we do NOT yet hold. A resync of a
 		     cached session does NOT reach here (it keeps hasCachedSession true and
 		     falls through to the messages view with the parent's reconnect banner),

@@ -1104,11 +1104,22 @@ async function uploadFileViaPost(
 	return await res.json();
 }
 
+// base64 of 72 MiB is exactly 96 MiB, the client's MAX_UPLOAD_BASE64_CHARS.
+const MAX_WS_UPLOAD_FILE_BYTES = 72 * 1024 * 1024;
+
 function uploadFileViaWebSocket(
 	sessionId: string,
 	file: File,
 	signal?: AbortSignal,
 ): Promise<{savedPath: string; filename: string}> {
+	// The client refuses base64 payloads over ~96 MiB (one WS frame under the
+	// server's 100 MiB maxPayload). Check the raw size BEFORE reading, so a
+	// large video is not fully loaded and base64-encoded just to be refused.
+	if (file.size > MAX_WS_UPLOAD_FILE_BYTES) {
+		return Promise.reject(
+			new Error('File too large to upload over the WebSocket (max 72 MB)'),
+		);
+	}
 	return new Promise((resolve, reject) => {
 		try {
 			const reader = new FileReader();
