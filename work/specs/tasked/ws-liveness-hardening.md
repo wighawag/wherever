@@ -5,6 +5,8 @@ slug: ws-liveness-hardening
 
 > Launch snapshot (records intent at creation, NOT maintained). Current truth: `docs/adr/` (decisions) + the code; remaining work: the tasks sliced from this spec. (The technical-detail sections below are trimmed by `to-task` once the work is tasked.)
 
+> Tasked. The implementation and testing detail moved into the tasks in `work/tasks/` (`spec: ws-liveness-hardening`), and the durable rationale into `docs/adr/0011-websocket-liveness-probes-before-teardown-and-tolerates-a-missed-pong.md`.
+
 ## Problem Statement
 
 Both ends of the relay WebSocket decide too eagerly that a healthy connection is dead, which turns an instant return to the app into a reconnect + resync, and lets a big upload kill the socket it travels on:
@@ -29,33 +31,7 @@ Both ends of the relay WebSocket decide too eagerly that a healthy connection is
 
 - `humanOnly` and `needsAnswers` are omitted. This is small, agent-taskable work.
 
-## Implementation Decisions
-
-> Seed for tasking; trimmed once tasked.
-
-- **Probe before teardown (the core change):** whenever `silentFor` exceeds the threshold (`TURN_STALL_MS` / `STALE_SOCKET_MS`), the watchdog sends a ping and re-checks after a grace period (~5 s), tearing down only if no inbound frame arrived meanwhile. This alone covers a thaw: with 25 s ticks and a 45 s mid-turn threshold, a freeze-induced gap of 45-50 s is NOT a ">2× interval" jump, so a jump-only trigger would still kill a healthy socket.
-- **Client seam:** the client package has no `document` access. Add `client.noteVisible()`. `+page.svelte` calls it on EVERY `visibilitychange: visible` and `pageshow`, not only in today's `!connected` branch. It starts the same probe immediately, so a dead socket is detected right away rather than at the next tick. A wall-clock jump of more than 2× the tick interval is an additional proactive trigger, not the gate.
-- **Server:** let the reaper count consecutive misses per socket (reap at 2). Any `message` event (text or binary) marks the socket alive, as `pong` does. The interval is a constant inside `main()` today, and server tests run the server as a child process configured by env (`server/test/*.test.ts`). So read it from `WHEREVER_HEARTBEAT_MS`, defaulting to 30 000.
-- **Phantom-viewer window:** N=2 widens the window in which a vanished viewer still counts as present to about 3× `HEARTBEAT_MS`. Same-tab reconnects are already covered by `clientKey` eviction (`evictPreviousConnection`); a different device is a real second viewer anyway. Document this in the reaper comment.
-
-## Testing Decisions
-
-> Seed for tasking; trimmed once tasked.
-
-- Client (vitest + `client/test/harness.ts`):
-  - a fake-timer jump past the threshold followed by `noteVisible()` sends a ping and does NOT tear down;
-  - with no inbound frame within the grace period, it tears down and reconnects;
-  - a normal idle stale socket is still detected.
-- Server (child-process harness, `WHEREVER_HEARTBEAT_MS` small; the "no pongs" client is a `ws` client created with `autoPong: false`):
-  - one missed pong is tolerated and two consecutive are reaped;
-  - inbound data frames keep a socket alive with no pongs.
-
 ## Out of Scope
 
 - Keeping the socket alive while the app is in the background (not reliably possible on the mobile web; see `native-shell-capacitor-experiment`).
 - The 8 s `suspend()` policy itself.
-
-## Further Notes
-
-- This does NOT fix heartbeat starvation by a legacy single-frame upload: a multi-MB base64 frame still delays the pong until it has fully arrived. That stays exposed until `resumable-chunked-uploads` lands; meanwhile the client caps re-sends of an upload whose socket keeps dying (`MAX_UPLOAD_SENDS`).
-- Prerequisite for `resumable-chunked-uploads` (heartbeat starvation during uploads) and `instant-resume-from-cached-conversation` (thaw behaviour). Both declare `taskedAfter` on this spec.
