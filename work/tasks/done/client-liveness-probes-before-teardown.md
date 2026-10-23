@@ -4,7 +4,7 @@ slug: client-liveness-probes-before-teardown
 spec: ws-liveness-hardening
 blockedBy: []
 covers: [1, 4]
-needsAnswers: true
+needsAnswers: false
 ---
 
 ## What to build
@@ -49,3 +49,8 @@ git fetch origin && git switch -c work/client-liveness-probes-before-teardown or
 # on completion, in the work branch's PR/merge:
 git mv work/tasks/ready/client-liveness-probes-before-teardown.md work/tasks/done/client-liveness-probes-before-teardown.md
 ```
+
+## Decisions
+
+1. **A late grace check probes again instead of tearing down, with no retry cap.** If the grace timer fires more than 10 s late, the page was frozen during the grace, so the client probes again. The trade-off: in a tab hidden long enough for the browser to throttle timers, a dead socket isn't torn down until the page is visible again. Then `noteVisible()` runs a normal probe and the socket goes about 5 s later. I chose this because nobody is looking at a hidden page, and a capped retry would bring back the false teardown on thaw. The alternative was one late retry, then teardown. This only affects the client watchdog. It is recorded in a code comment at the choice site in `client/src/client.ts` (inside `startLivenessProbe`), and the `CONTEXT.md` section describes the behaviour.
+2. **`pageshow` calls `noteVisible()` unconditionally.** I don't check whether the page is visible there, because the task says "every pageshow" and `noteVisible()` already does nothing unless the socket is open. This touches `+page.svelte` only.

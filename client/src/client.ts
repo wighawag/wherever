@@ -149,6 +149,22 @@ export class WhereverClient {
   private static readonly TURN_STALL_MS = 45_000;
   // Send a keepalive well under STALE_SOCKET_MS so the pong refreshes liveness.
   private static readonly HEARTBEAT_MS = 25_000;
+  // Probe-before-teardown (docs/adr/0011): silence past the threshold never
+  // tears a socket down by itself. The watchdog pings and waits this long; ANY
+  // inbound frame in that window (onMessage) cancels the probe, and only a
+  // socket still silent when it expires is torn down. Needed because on a thaw
+  // the timers fire BEFORE the frames queued during the freeze are dispatched,
+  // so the raw silence verdict is routinely false on a phone.
+  private static readonly PROBE_GRACE_MS = 5_000;
+  // The pending probe's grace timer, and the socket it was started on. Cleared
+  // by any inbound frame, by stopLivenessWatchdog (every socket change), and
+  // ignored if the socket it belongs to is no longer current.
+  private probeTimer: ReturnType<typeof setTimeout> | null = null;
+  // Wall-clock time of the previous watchdog tick. A gap of more than 2x
+  // HEARTBEAT_MS means the page was frozen; that is an extra, PROACTIVE probe
+  // trigger, never the gate (a 45-50 s freeze gap is not a >2x jump yet still
+  // crosses TURN_STALL_MS, which is why the probe itself decides).
+  private lastLivenessTickAt = 0;
   private isInitialConnect = true;
   // When set, the next successful (re)connection should rejoin the previously
   // active session instead of starting blank. Used by resume() so a backgrounded
@@ -368,6 +384,8 @@ export class WhereverClient {
       // Any inbound frame (including the pong reply to our keepalive) proves the
       // socket is alive and resets the stale-socket watchdog.
       this.lastInboundAt = Date.now();
+      // ...and answers any pending probe, so it must not tear the socket down.
+      this.cancelLivenessProbe();
       try {
         const rawData = typeof event.data === 'string' ? event.data : event.data.toString();
         const msg = JSON.parse(rawData);
@@ -570,6 +588,7 @@ export class WhereverClient {
   private startLivenessWatchdog() {
     this.stopLivenessWatchdog();
     this.lastInboundAt = Date.now();
+    this.lastLivenessTickAt = this.lastInboundAt;
 
     const sendBeat = () => {
       // Keep a healthy connection warm so the pong refreshes lastInboundAt even
@@ -587,7 +606,17 @@ export class WhereverClient {
 
     const checkLiveness = () => {
       if (!this.ws) return;
-      const silentFor = Date.now() - this.lastInboundAt;
+      const now = Date.now();
+      const sinceLastTick = now - this.lastLivenessTickAt;
+      this.lastLivenessTickAt = now;
+      // A wall-clock jump between ticks means the page was frozen: probe now
+      // rather than waiting for the silence threshold. Only a trigger; the
+      // probe's grace period still decides.
+      if (sinceLastTick > 2 * WhereverClient.HEARTBEAT_MS) {
+        this.startLivenessProbe('clock jump');
+        return;
+      }
+      const silentFor = now - this.lastInboundAt;
       const streaming = get(this.stateStore).isStreaming;
       // Per-turn stall timeout: while a turn is in flight the heartbeat pong (and,
       // normally, tokens) should keep traffic flowing, so a shorter deadline
@@ -598,41 +627,12 @@ export class WhereverClient {
         ? WhereverClient.TURN_STALL_MS
         : WhereverClient.STALE_SOCKET_MS;
       if (silentFor < threshold) return;
-      // The socket has been silent past the threshold: treat it as dead. Tearing
-      // it down forcibly is what makes a half-open connection recover, since the
-      // OS never produced a FIN/RST to trigger the normal close path.
-      console.warn(
-        `[wherever] relay connection stale: no inbound frame for ${silentFor}ms ` +
-        `(threshold ${threshold}ms, ${streaming ? 'mid-turn' : 'idle'}); ` +
-        `tearing down dead socket and reconnecting`,
+      // Silent past the threshold: SUSPECT, not dead. Probe first (see
+      // PROBE_GRACE_MS); the teardown happens only if the probe goes unanswered.
+      this.startLivenessProbe(
+        `no inbound frame for ${silentFor}ms ` +
+        `(threshold ${threshold}ms, ${streaming ? 'mid-turn' : 'idle'})`,
       );
-      this.stopLivenessWatchdog();
-      const deadWs = this.ws;
-      this.ws = null;
-      // This path bypasses onClose (the socket is no longer current), so the
-      // uploads it carried must be marked waiting here.
-      this.uploadsLostSocket();
-      try {
-        if (typeof deadWs.terminate === 'function') {
-          deadWs.terminate();
-        } else if (typeof deadWs.close === 'function') {
-          deadWs.close();
-        }
-      } catch {}
-      this.stateStore.update(s => ({
-        ...s,
-        connected: false,
-        connecting: false,
-        loadingSession: false,
-        creatingSession: false,
-        // If a turn was in flight, surface it as a recoverable error so the UI
-        // shows "the transport stalled" rather than silently parking mid-stream.
-        sessionError: streaming
-          ? 'Connection to relay stalled mid-turn; reconnecting...'
-          : s.sessionError,
-        isStreaming: false,
-      }));
-      this.scheduleReconnect();
     };
     if (typeof setInterval === 'function') {
       this.livenessTimer = setInterval(checkLiveness, WhereverClient.HEARTBEAT_MS);
@@ -642,7 +642,103 @@ export class WhereverClient {
     }
   }
 
+  // The page just became visible again (visibilitychange: visible, pageshow).
+  // The client has no `document` access, so the page calls this. If the current
+  // socket is OPEN and watched, probe it right away instead of waiting for the
+  // next tick, and reset the stale baseline so the time the page spent frozen is
+  // not counted as silence (the probe decides whether the socket is alive).
+  // A no-op otherwise: on a CONNECTING socket the ping would be dropped by
+  // send() and the grace check would tear down a socket still handshaking.
+  public noteVisible() {
+    const ws = this.ws as any;
+    if (!ws || ws.readyState !== 1 /* OPEN */ || !this.livenessTimer) return;
+    this.lastInboundAt = Date.now();
+    this.lastLivenessTickAt = this.lastInboundAt;
+    // Restart any pending probe: its grace may have been eaten by the freeze.
+    this.cancelLivenessProbe();
+    this.startLivenessProbe('page became visible');
+  }
+
+  // Send a ping and arm the grace check. Idempotent while a probe is pending.
+  private startLivenessProbe(reason: string) {
+    if (this.probeTimer || !this.ws || typeof setTimeout !== 'function') return;
+    const probedWs = this.ws;
+    try {
+      this.ping();
+    } catch {}
+    const sentAt = Date.now();
+    this.probeTimer = setTimeout(() => {
+      this.probeTimer = null;
+      if (this.ws !== probedWs) return;
+      // The grace check itself ran far too late: the page was frozen during
+      // the grace period, so the reply may still be queued behind this timer.
+      // Probe again rather than condemn the socket on frozen time.
+      // Decision (beyond the task's letter): this has no retry cap. Under heavy
+      // background timer throttling (timers batched to ~1/min in a long-hidden
+      // tab) every grace check is late, so the verdict on a dead socket is
+      // deferred until the page is visible again, where noteVisible() restarts
+      // an unthrottled probe and a dead socket goes ~5 s later. Accepted: a
+      // hidden page has no viewer, and a capped retry would reintroduce the
+      // false teardown on thaw this probe exists to prevent.
+      if (Date.now() - sentAt > 2 * WhereverClient.PROBE_GRACE_MS) {
+        this.startLivenessProbe(reason);
+        return;
+      }
+      this.tearDownStaleSocket(reason);
+    }, WhereverClient.PROBE_GRACE_MS);
+    if (this.probeTimer && typeof (this.probeTimer as any).unref === 'function') {
+      (this.probeTimer as any).unref();
+    }
+  }
+
+  private cancelLivenessProbe() {
+    if (this.probeTimer) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = null;
+    }
+  }
+
+  // The probe went unanswered: treat the socket as dead. Tearing it down
+  // forcibly is what makes a half-open connection recover, since the OS never
+  // produced a FIN/RST to trigger the normal close path.
+  private tearDownStaleSocket(reason: string) {
+    if (!this.ws) return;
+    const streaming = get(this.stateStore).isStreaming;
+    console.warn(
+      `[wherever] relay connection stale: ${reason}; probe unanswered for ` +
+      `${WhereverClient.PROBE_GRACE_MS}ms; tearing down dead socket and reconnecting`,
+    );
+    this.stopLivenessWatchdog();
+    const deadWs = this.ws;
+    this.ws = null;
+    // This path bypasses onClose (the socket is no longer current), so the
+    // uploads it carried must be marked waiting here.
+    this.uploadsLostSocket();
+    try {
+      if (typeof deadWs.terminate === 'function') {
+        deadWs.terminate();
+      } else if (typeof deadWs.close === 'function') {
+        deadWs.close();
+      }
+    } catch {}
+    this.stateStore.update(s => ({
+      ...s,
+      connected: false,
+      connecting: false,
+      loadingSession: false,
+      creatingSession: false,
+      // If a turn was in flight, surface it as a recoverable error so the UI
+      // shows "the transport stalled" rather than silently parking mid-stream.
+      sessionError: streaming
+        ? 'Connection to relay stalled mid-turn; reconnecting...'
+        : s.sessionError,
+      isStreaming: false,
+    }));
+    this.scheduleReconnect();
+  }
+
   private stopLivenessWatchdog() {
+    this.cancelLivenessProbe();
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;

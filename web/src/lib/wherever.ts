@@ -747,6 +747,14 @@ export function resume() {
 	client.resume();
 }
 
+// The page became visible again (visibilitychange: visible, pageshow). Probes a
+// still-open socket at once instead of trusting the silence clock across the
+// freeze (docs/adr/0011). A no-op when there is no OPEN socket, so it is safe to
+// call on every return, before deciding whether to resume/connect.
+export function noteVisible() {
+	client.noteVisible();
+}
+
 // True when a session was recorded for resume (i.e. the tab was suspended with an
 // active session). Lets callers choose the resume path only when there is
 // actually something to rejoin, and otherwise do a plain connect.
