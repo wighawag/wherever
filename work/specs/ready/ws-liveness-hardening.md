@@ -57,4 +57,5 @@ Both ends of the relay WebSocket decide too eagerly that a healthy connection is
 
 ## Further Notes
 
+- This does NOT fix heartbeat starvation by a legacy single-frame upload: a multi-MB base64 frame still delays the pong until it has fully arrived. That stays exposed until `resumable-chunked-uploads` lands; meanwhile the client caps re-sends of an upload whose socket keeps dying (`MAX_UPLOAD_SENDS`).
 - Prerequisite for `resumable-chunked-uploads` (heartbeat starvation during uploads) and `instant-resume-from-cached-conversation` (thaw behaviour). Both declare `taskedAfter` on this spec.

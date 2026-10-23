@@ -13,7 +13,7 @@ Attaching a file from a phone is fragile and opaque:
 - **No progress.** The whole file goes out as ONE base64 JSON frame (`file_upload`), so the composer chip shows a spinner and nothing else. A 6 MB camera photo on a slow uplink looks identical to a hung upload.
 - **All-or-nothing.** If the connection drops mid-upload (internet cut, app switch, the file picker itself backgrounding the page), everything sent so far is lost. The interim fix re-sends the WHOLE file after the reconnect's rejoin. On a flaky link that can loop, and a re-send after a lost reply leaves an orphan duplicate in the upload dir.
 - **The upload itself can kill the socket.** A single multi-MB frame occupies the TCP stream, so the browser's heartbeat pong is queued behind it. The server reaper (30 s ping, terminate after one missed pong; being fixed in `ws-liveness-hardening`) can terminate the socket mid-upload.
-- **Overhead and limits.** Base64 adds 33% on the wire, plus a full in-memory encode/`JSON.parse` on both ends (`docs/mobile-upload-optimization.md`). `ws`'s default `maxPayload` (100 MiB) closes the socket with 1009 for files over ~75 MB.
+- **Overhead and limits.** Base64 adds 33% on the wire, plus a full in-memory encode/`JSON.parse` on both ends (`docs/mobile-upload-optimization.md`). `ws`'s default `maxPayload` (100 MiB) closes the socket with 1009 for files over ~72 MiB (the client now refuses those up front: `MAX_UPLOAD_BASE64_CHARS`).
 - **Write-gate gaps (existing).**
   - The `file_upload` gate checks the socket's `client.readOnly`, i.e. the verdict for the session the socket is attached to, but writes into `msg.sessionId`'s folder. A client on a writable session A can therefore upload into a read-only session B's folder.
   - `POST /session/upload` has no read-only gate at all.
@@ -52,17 +52,21 @@ Uploads become a small resumable protocol over the EXISTING, already-trusted Web
 
 > Seed for tasking; trimmed once tasked.
 
-**Capability negotiation.** The server advertises `capabilities: ['upload.v1']` on the `connected` frame. The client uses the chunked protocol only when it is present, and otherwise falls back to the legacy base64 `file_upload`. The protocol is chosen when the upload is SENT (after `connected` on the current socket), not when `uploadFile()` is called: an upload picked while offline does not know the capability yet. No version comparison: dev builds make that fragile. A new client never sends binary frames to an old server, which would `JSON.parse` them and answer with `session_error`.
+**Capability negotiation.** If a paused chunked upload reconnects to a server whose `connected` frame lacks `upload.v1` (a downgrade), it fails with "server no longer supports resumable uploads, retry", and Retry restarts it from zero via the legacy frame. The server advertises `capabilities: ['upload.v1']` on the `connected` frame. The client uses the chunked protocol only when it is present, and otherwise falls back to the legacy base64 `file_upload`. The protocol is chosen when the upload is SENT (after `connected` on the current socket), not when `uploadFile()` is called: an upload picked while offline does not know the capability yet. No version comparison: dev builds make that fragile. A new client never sends binary frames to an old server, which would `JSON.parse` them and answer with `session_error`.
 
 **Write gate (all upload frames, including legacy `file_upload`). DECIDED.**
 
 The server records what a socket last LOADED, not only what it is attached to. In the cold path, `session_created` (the paint) goes out seconds before `switchClientSession` runs (only after `pool.loadSession`). After an idle eviction every resumed upload therefore lands in that window, and `pool.getSession(msg.sessionId)` is null there, which today silently sends the file to tmp even with `uploads.type: 'session'`.
 
-- At paint time (`session_load`'s `session_created`, and `session_new`'s), set `client.paintedSessionFile`, `client.paintedSessionId` and `client.paintedCwd` from the meta. These are distinct from `pendingCwd`, which is a folder that two sessions can share. Clear them when the socket detaches/leaves.
+- At paint time (`session_load`'s `session_created`, and `session_new`'s), set `client.paintedSessionFile`, `client.paintedSessionId` and `client.paintedCwd` from the meta. These are distinct from `pendingCwd`, which is a folder that two sessions can share.
+- **Where they are cleared (exactly):**
+  - UNCONDITIONALLY in `session_leave`. Today that handler acts only `if (client.sessionId)`, which a leave during the cold window does not satisfy; leaving the painted fields set there would let the late-cold-attach guard pass and re-attach a session the user left.
+  - At the start of `session_new` (and overwritten by every new paint).
+  - NEVER inside `switchClientSession(null)`: the folder-missing branch calls it right after the paint, and clearing there would drop the binding so the read-only refusal loses its reason.
 - An upload frame is accepted only if `msg.sessionId` equals `client.paintedSessionId` (or resolves to `client.sessionId`, the attached file), AND `client.readOnly` is false. `readOnly` is already set to the paint-time verdict (`forcedReadOnly`) before `session_created` is sent, including `true` for a folder-missing load that never attaches, so refusals come with a reason.
 - `targetDir` comes from `client.paintedCwd` (the session's real cwd), never from `pool.getSession()`. This also fixes today's tmp fallback in the cold window.
 - Checked on begin, on every chunk, and on finish, because the verdict can flip mid-upload.
-- **Fix the late cold attach while here.** When the cold build finishes, attach only if `client.paintedSessionFile === meta.sessionFile`. Otherwise the user has loaded something else meanwhile, and the build result just gets `scheduleIdleCheck`. Today a slow A that finishes after a switch to B re-attaches the socket to A.
+- **Fix the late cold attach while here.** When the cold build finishes, proceed only if `client.paintedSessionFile === meta.sessionFile`. Otherwise the user has loaded something else (or left) meanwhile: the build result just gets `scheduleIdleCheck`, and the WHOLE tail of the cold build is suppressed, i.e. the build's `session_error`, `addClient`/`switchClientSession`, the `readOnly` re-derivation, `session_ready`, the queue snapshot and the folder-conflict verdict. Today a slow A that finishes after a switch to B re-attaches the socket to A, and a stale A build failure shows its error on B and clears B's `agentPending`.
 - **Client half.** Uploads are (re)issued only after the rejoin's `session_created`, and only those whose `sessionId` equals `msg.sessionId`; the rest fail with "session changed". Switching, creating or leaving a session fails every upload not yet on the wire. (Already the interim behaviour.)
 - Waiting for `session_ready` instead was rejected: a folder-missing load never sends one, so uploads would hang.
 
@@ -101,7 +105,7 @@ The server records what a socket last LOADED, not only what it is attached to. I
 **POST path.**
 - Switch `fetch` to `XMLHttpRequest` for `upload.onprogress`.
 - POST has no socket, so it cannot see per-viewer state (folder conflict / "Continue anyway"). The gate:
-  - if the session is not loaded in the pool, refuse with 409 ("open the session first"); this is the only way to know its cwd;
+  - resolve the cwd from the pool when the session is loaded, else from the session file's header on disk (`pool.readSessionMeta`, the same cheap read `session_load` paints from, called with a minimal history limit or via a header-only variant: only `cwd`, `readOnly` and `folderMissing` are needed). The composer is editable while a cold agent builds, so refusing non-loaded sessions with 409 would hit POST users on a session they have open. Refuse with 404 only when the session cannot be resolved at all;
   - otherwise refuse when `pool.isReadOnlyCwd(cwd)`, the folder is missing, or a restore job is running for it;
   - apply the same `uploads.maxBytes` check (via `Content-Length`, plus a running byte count).
 - Documented limitation: POST cannot enforce the folder-conflict observe-only state.
@@ -134,7 +138,8 @@ The server records what a socket last LOADED, not only what it is attached to. I
   - isolation: with `WHEREVER_STATE_DIR` set to a temp dir, the real `~/.wherever/upload-staging` is never touched;
   - a cold-window upload (idle-evicted session, before `session_ready`) is accepted and lands in the session's upload dir, not tmp;
   - an upload for a session other than the painted one is refused;
-  - a late cold attach after a switch does not re-attach;
+  - a late cold attach after a switch or a cold-window leave does not re-attach, and a stale build's `session_error` / `session_ready` is not sent;
+  - a POST to a session whose agent is still building is accepted and lands in its upload dir;
   - `/session/download` refuses a staging path;
   - legacy `file_upload` still works;
   - a large `cli_event` frame still passes.
@@ -143,7 +148,7 @@ The server records what a socket last LOADED, not only what it is attached to. I
 
 - **1a. Server write gate** (small, independent, fixes live bugs): paint-time binding, `targetDir` from `paintedCwd`, the late-cold-attach guard, and `uploads.maxBytes` on the legacy `file_upload`.
 - **1b. Server chunked protocol** (blockedBy 1a): staging dir + sidecar, begin/chunk/finish/abort, per-id serial writes, GC, download exclusion, capability.
-- **2. Client** (blockedBy 1b and `ws-liveness-hardening`'s server task): byte-source seam, state machine, pacing, resume after rejoin, capability fallback at send time.
+- **2. Client** (blockedBy 1b and `ws-liveness-hardening`'s server task): byte-source seam, state machine, pacing, resume after rejoin, capability fallback at send time. Acceptance includes keeping the interim guards on the LEGACY fallback path (new client, old server): the 72 MiB size refusal (`MAX_UPLOAD_BASE64_CHARS`, checked on `file.size` before reading) and the `MAX_UPLOAD_SENDS` re-send cap, so a fallback upload can never loop.
 - **3. Web** (blockedBy 2): chip progress / paused / cancel / retry / "pick again".
 - **4. POST** (blockedBy 1a, which owns the shared gate helper): XHR progress, read-only gate, max size.
 - **Cross-spec ordering:** tasks touching `client.ts` `onOpen` / `session_created` or `+page.svelte`'s visibility handlers (here, in `ws-liveness-hardening` and in `instant-resume-from-cached-conversation`) need explicit `blockedBy` links, so they don't run in parallel on the same code.
