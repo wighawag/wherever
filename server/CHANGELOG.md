@@ -1,5 +1,12 @@
 # wherever-dev
 
+## 0.19.0
+
+### Minor Changes
+
+- ffbadb1: Upgrade the embedded pi SDK to 1.4 and give server-created (web) sessions pi's native MCP support (#69). The SDK does not load pi's built-in extensions by itself, so the server now loads the built-in MCP, codemode and tool search extensions the way the pi CLI does: the MCP servers in `~/.pi/agent/mcp.json` (and a trusted project's `.pi/mcp.json`) connect in web sessions, `-builtin:mcp` in the `extensions` setting still turns them off, and an installed replacement such as pi-mcp-adapter still takes over. Sign in to OAuth MCP servers from a terminal (`pi mcp login <server>`); web sessions use the stored credentials. Models and auth now come from pi 1.x's shared `ModelRuntime`, and `/models` refreshes availability before answering, so a provider signed in to from a terminal shows up without restarting the server.
+- ffbadb1: Choose which pi SDK web sessions run on with `piSdk` in `~/.wherever/config.json`: the bundled SDK (default), `"auto"` for the `pi` on the server's PATH (npm global bins and Nix-style wrappers are followed), or a path to an install. Versions in the tested range (currently `>=1.4.0 <1.5.0`) are used directly; untested versions from 1.0.0 up can be allowed with `allowUntested: true` or a narrower `accept` semver range, and older ones are always refused. A refused, missing or broken install never stops the server: it falls back to the bundled SDK and logs why. The startup log and the web UI's version tooltip show the pi version in use. Using an install's own built-in extension list also brings pi's `llama.cpp` provider to web sessions.
+
 ## 0.18.5
 
 ### Patch Changes
