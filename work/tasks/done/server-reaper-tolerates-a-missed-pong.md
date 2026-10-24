@@ -4,7 +4,7 @@ slug: server-reaper-tolerates-a-missed-pong
 spec: ws-liveness-hardening
 blockedBy: []
 covers: [2, 3, 4, 5]
-needsAnswers: true
+needsAnswers: false
 ---
 
 ## What to build

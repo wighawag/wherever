@@ -349,6 +349,7 @@ Both the server and CLI bridge extension accept standard flags to customize port
 - `--host`, `PI_REMOTE_HOST` (Default: `127.0.0.1`, set to `0.0.0.0` to expose to outside/local network)
 - `--token`, `WHEREVER_TOKEN`, `WHEREVER_TOKEN_FILE`, `PI_REMOTE_TOKEN` (Optional auth token — see [Supplying the token](#supplying-the-token-argv-is-world-readable) for the precedence rules and why the flag is the wrong channel on a shared machine)
 - `--idle-timeout`, `PI_IDLE_TIMEOUT` (Idle-session eviction window, default: `1200000` = 20 minutes)
+- `WHEREVER_HEARTBEAT_MS` (WebSocket heartbeat ping interval in ms, default: `30000`. A socket is reaped after two consecutive unanswered pings; any inbound message also counts as alive. An invalid value is ignored with a warning. Mainly for tests)
 - `--ssl-key`, `WHEREVER_SSL_KEY` / `PI_REMOTE_SSL_KEY` (Path to the SSL private key for HTTPS/WSS. May be an absolute path anywhere, including outside any home directory)
 - `--ssl-cert`, `WHEREVER_SSL_CERT` / `PI_REMOTE_SSL_CERT` (Path to the SSL certificate. Resolved independently of the key, so the two can live in different places — e.g. a key from a secret manager and a certificate from ACME)
 - `--no-ssl` / `--http`, `PI_REMOTE_NO_SSL` / `PI_REMOTE_HTTP` (Disables SSL, falling back to standard HTTP/WS)

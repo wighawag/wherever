@@ -330,6 +330,33 @@ interface WSClient {
   clientKey?: string;
 }
 
+const DEFAULT_HEARTBEAT_MS = 30_000;
+
+/**
+ * Resolve the WebSocket heartbeat interval from `WHEREVER_HEARTBEAT_MS`.
+ *
+ * Decision: an unset or empty value keeps the 30 000 ms default; a value that
+ * is not a positive integer (e.g. `abc`, `0`, `-5`, `1.5`) is IGNORED with a
+ * startup warning and the default is used, rather than refusing to start. The
+ * variable exists mainly so tests can shorten the interval, so a typo should
+ * not take a production server down; the alternative (fail fast at startup)
+ * was considered and rejected for that reason. Touches nothing else: no CLI
+ * flag or config.json key mirrors it.
+ */
+function resolveHeartbeatMs(raw: string | undefined): number {
+  if (raw == null || raw.trim() === '') return DEFAULT_HEARTBEAT_MS;
+  const trimmed = raw.trim();
+  const n = Number(trimmed);
+  if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(n) || n <= 0) {
+    console.warn(
+      `[wherever] ignoring invalid WHEREVER_HEARTBEAT_MS=${JSON.stringify(raw)} ` +
+      `(expected a positive integer of milliseconds); using ${DEFAULT_HEARTBEAT_MS}`,
+    );
+    return DEFAULT_HEARTBEAT_MS;
+  }
+  return n;
+}
+
 // Retire any still-registered VIEWER connection carrying the same clientKey: it
 // is the SAME viewer's superseded socket (a reconnect), not a second viewer.
 // Detach it from its session synchronously so the very next message on the new
@@ -2187,12 +2214,27 @@ async function main(): Promise<void> {
   // a clean FIN/RST: process restart, network blip, dropped upstream) stays in
   // ESTAB and fires neither 'close' nor 'error', so the connected agent/session
   // is never reaped and hangs forever. We send a protocol-level ping frame on a
-  // fixed interval and terminate any socket that did not answer the previous
-  // ping. terminate() fires 'close', routing through the existing cleanup
-  // (unregisterCliSession / removeClient + broadcastSessionsUpdated).
+  // fixed interval and terminate any socket that stayed silent for
+  // HEARTBEAT_MAX_MISSES consecutive pings. terminate() fires 'close', routing
+  // through the existing cleanup (unregisterCliSession / removeClient +
+  // broadcastSessionsUpdated).
   // See work/observations/ws-half-open-connection-hangs-agent-no-heartbeat.md.
-  const HEARTBEAT_MS = 30_000;
-  const liveSockets = new WeakSet<WebSocket>();
+  //
+  // Why N=2 and not 1 (ADR 0011): the primary client is a phone on a flaky
+  // link, where a single late pong is routine; reaping on it turned a healthy
+  // socket into a reconnect + resync. And ANY inbound message (text or binary)
+  // counts as proof of life exactly like a pong, because a client busily
+  // sending (e.g. chunked upload frames) can have its pong queued behind that
+  // data on the same TCP stream. Trade-off: a genuinely dead socket is reaped
+  // one interval later than before, so a vanished viewer can count as present
+  // for up to ~3x HEARTBEAT_MS (up to one interval until the first unanswered
+  // ping, plus two missed intervals). Same-tab reconnects are unaffected: they
+  // are evicted immediately by clientKey (evictPreviousConnection).
+  const HEARTBEAT_MAX_MISSES = 2;
+  const HEARTBEAT_MS = resolveHeartbeatMs(process.env.WHEREVER_HEARTBEAT_MS);
+  // Consecutive pings sent with no inbound frame since. Reset to 0 on 'pong'
+  // and on any 'message'.
+  const missedPings = new WeakMap<WebSocket, number>();
 
   const upgradeHandler = (req: any, socket: any, head: any) => {
     if (req.url?.startsWith('/ws')) {
@@ -2219,7 +2261,8 @@ async function main(): Promise<void> {
     // Stable per-viewer identity (see WhereverClientConfig.clientKey). A client
     // that lost its socket silently (half-open TCP: phone sleep, network switch)
     // reconnects on a NEW socket while the old record still sits in the pool
-    // until the heartbeat reaper notices, up to 2x HEARTBEAT_MS later. That
+    // until the heartbeat reaper notices, up to ~3x HEARTBEAT_MS later (it
+    // tolerates one missed pong, see the heartbeat block above). That
     // phantom counted as "another viewer", which silently turned an explicit
     // "New Session Here" into a folder conflict (read-only attach to the folder's
     // existing session). Retiring the same key's previous connection HERE, before
@@ -2253,10 +2296,13 @@ async function main(): Promise<void> {
     clients.set(clientId, client);
 
     // Liveness: assume alive on connect; any pong (reply to the heartbeat ping
-    // frame below) re-marks the socket alive for the next interval.
-    liveSockets.add(ws);
+    // frame below) OR any inbound message resets the missed-ping count.
+    missedPings.set(ws, 0);
     ws.on('pong', () => {
-      liveSockets.add(ws);
+      missedPings.set(ws, 0);
+    });
+    ws.on('message', () => {
+      missedPings.set(ws, 0);
     });
 
     sendWS(ws, { type: 'connected', clientId, serverVersion: getVersion() });
@@ -2323,8 +2369,9 @@ async function main(): Promise<void> {
 
   const heartbeat = setInterval(() => {
     for (const ws of wss.clients) {
-      if (!liveSockets.has(ws)) {
-        // Missed the previous ping: treat as dead and reap. 'close' fires the
+      const missed = missedPings.get(ws) ?? 0;
+      if (missed >= HEARTBEAT_MAX_MISSES) {
+        // Missed HEARTBEAT_MAX_MISSES consecutive pings: treat as dead and reap. 'close' fires the
         // existing teardown so the agent's session is released, not left dangling.
         // Log with whatever client/session context we can recover so a reaped
         // (hung) agent shows up as an event rather than as silence.
@@ -2341,7 +2388,7 @@ async function main(): Promise<void> {
         try { ws.terminate(); } catch {}
         continue;
       }
-      liveSockets.delete(ws);
+      missedPings.set(ws, missed + 1);
       try { ws.ping(); } catch {}
     }
   }, HEARTBEAT_MS);
