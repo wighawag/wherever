@@ -394,6 +394,45 @@ Optionally add `&clientKey=YOUR_STABLE_KEY` (max 128 chars): a stable identity f
   "data": "data:image/png;base64,iVBORw0KGgoAAA..."
 }
 
+// Resumable chunked upload (servers advertising `capabilities: ["upload.v1"]`
+// in `connected`; rationale in docs/adr/0012). Begin is idempotent: it answers
+// `upload_offset` with the bytes already staged, so it is also how a client
+// resumes after a reconnect + rejoin. `uploadId` is client-generated and must
+// match ^[A-Za-z0-9_-]{22,64}$ (e.g. 16 random bytes, base64url). A known id
+// must repeat the same sessionId, filename and size, or it is refused; `size`
+// is checked against `uploads.maxBytes` first.
+{
+  "type": "upload_begin",
+  "uploadId": "Vb3vX0cJr8bQm1sWkq2nYA",
+  "sessionId": "abc123xyz",
+  "filename": "clip.mp4",
+  "size": 6291456,
+  "mime": "video/mp4"
+}
+
+// Then the bytes, as BINARY WebSocket frames (no JSON, no base64):
+//   [u8 kind=1][u8 version=1][u8 idLen][uploadId ascii][u64 offset BE][payload]
+// payload is at most 1 MiB. A chunk is written only if `offset` equals the
+// server's current offset; every chunk is answered with `upload_offset` (the
+// TRUE offset when it did not match, which is how a client realigns).
+
+// When the last ack reached `size`: move the file into the session's upload dir
+// (same `<timestamp>_<filename>` naming as `file_upload`) and answer the usual
+// `file_uploaded`. A repeated finish (lost reply, server restart) answers with
+// the SAME savedPath. A finish before every byte is staged is refused.
+{
+  "type": "upload_finish",
+  "uploadId": "Vb3vX0cJr8bQm1sWkq2nYA",
+  "sessionId": "abc123xyz"
+}
+
+// Cancel: delete the partial (no reply on success; a finished upload is kept).
+{
+  "type": "upload_abort",
+  "uploadId": "Vb3vX0cJr8bQm1sWkq2nYA",
+  "sessionId": "abc123xyz"
+}
+
 // "Continue anyway" on the folder-conflict warning banner: lift read-only for
 // the current session so it can send even though another session in the same
 // folder is active. Does NOT abort/take over the other session.
@@ -409,7 +448,9 @@ Optionally add `&clientKey=YOUR_STABLE_KEY` (max 128 chars): a stable identity f
 // Initial connection confirmation
 {
   "type": "connected",
-  "clientId": "r790dfb9273"
+  "clientId": "r790dfb9273",
+  "serverVersion": "0.18.4",
+  "capabilities": ["upload.v1"]   // optional features; absent on older servers
 }
 
 // Session loaded or created successfully
@@ -491,7 +532,18 @@ Optionally add `&clientKey=YOUR_STABLE_KEY` (max 128 chars): a stable identity f
   "savedPath": "/absolute/path/to/diagram.png"
 }
 
-// File upload refused or failed (wrong session, read-only, too large, write error)
+// Chunked upload progress: the bytes the server has staged for `uploadId`.
+// Answers upload_begin and every chunk. `done` + `savedPath` when a begin (or a
+// late chunk) names an upload that already finished.
+{
+  "type": "upload_offset",
+  "uploadId": "Vb3vX0cJr8bQm1sWkq2nYA",
+  "offset": 1048576
+}
+
+// File upload refused or failed (wrong session, read-only, too large, invalid
+// uploadId, chunk over 1 MiB, id already used by another session or file,
+// write error). Shared by the legacy and the chunked protocol.
 {
   "type": "file_upload_error",
   "uploadId": "upload123",

@@ -56,3 +56,16 @@ git fetch origin && git switch -c work/chunked-upload-server-protocol origin/mai
 # on completion, in the work branch's PR/merge:
 git mv work/tasks/ready/chunked-upload-server-protocol.md work/tasks/done/chunked-upload-server-protocol.md
 ```
+
+## Decisions
+
+These are choices the task didn't specify. Please link them from the done record.
+
+1. **A finish before all bytes have arrived is refused** with a `file_upload_error`, not answered with the true offset so the client can resend. A correct client only finishes after its last ack reaches `size`, and an offset reply would let a buggy one loop silently. Recorded in the JSDoc of `UploadStaging.finish`. This affects the client task `chunked-upload-client-state-machine`.
+2. **The final path is written to the sidecar before the file is moved.** If the server crashes mid-finish, the next finish completes to the same path rather than creating a second copy. Recorded in the `savedPath` JSDoc on `UploadSidecar`.
+3. **`upload_abort` is not behind the write gate and sends no reply when it succeeds.** It only deletes that upload's own unfinished partial, never a saved file, but it must still name the upload's recorded session. Aborting a finished upload does nothing. Recorded in a comment on the `upload_abort` case in `index.ts` and in `CONTEXT.md`. This affects the client's cancel behaviour.
+4. **A binary frame that doesn't start with kind byte 1 is still parsed as JSON**, so nothing that currently sends JSON as a binary frame breaks. Recorded in a comment in the message handler.
+5. **The startup GC is awaited before the server starts listening.** It is a single directory read, and awaiting it removed a test race. Recorded in a comment in `main()`.
+6. **Storage layout:** the partial is `upload-staging/<uploadId>`, which the task names, and the sidecar is `<uploadId>.json` next to it, which I chose. Upload ids can't contain a `.`, so the two names can't collide. Recorded in the module JSDoc.
+
+I made no git changes; the working tree holds only this task's files.

@@ -77,6 +77,10 @@ export interface Harness {
   /** Open a WS client and wait for the socket to open. `clientKey` is the stable
    *  per-viewer identity the server uses to retire a superseded connection. */
   connect(clientKey?: string): Promise<TestClient>;
+  /** Stop the server (and close its clients) WITHOUT deleting the tmpRoot, so a
+   *  second harness can reuse this one's session files and workspace (restart
+   *  tests). `cleanup()` still removes everything afterwards. */
+  stop(): Promise<void>;
   cleanup(): Promise<void>;
 }
 
@@ -239,6 +243,10 @@ export async function startHarness(opts?: HarnessOptions): Promise<Harness> {
       clients.push(c);
       return c;
     },
+    async stop() {
+      for (const c of clients) c.close();
+      await stopServer();
+    },
     async cleanup() {
       for (const c of clients) c.close();
       await stopServer();
@@ -287,6 +295,11 @@ export class TestClient {
 
   send(msg: unknown): void {
     this.ws.send(JSON.stringify(msg));
+  }
+
+  /** Send a raw BINARY frame (e.g. an upload chunk). */
+  sendBinary(data: Uint8Array): void {
+    this.ws.send(data, { binary: true });
   }
 
   /** Resolve when a server message matching `pred` arrives (or already arrived). */

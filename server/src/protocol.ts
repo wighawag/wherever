@@ -96,6 +96,12 @@ export type ClientMessage =
   | { type: 'restore_cancel'; targetPath: string }
   | { type: 'model_change'; model: string }
   | { type: 'file_upload'; uploadId: string; sessionId: string; filename: string; data: string }
+  // Resumable chunked uploads (`upload.v1`, docs/adr/0012). The bytes travel as
+  // BINARY chunk frames `[u8 kind=1][u8 version=1][u8 idLen][uploadId ascii]
+  // [u64 offset BE][payload]` between begin and finish (server/src/upload-staging.ts).
+  | { type: 'upload_begin'; uploadId: string; sessionId: string; filename: string; size: number; mime?: string }
+  | { type: 'upload_finish'; uploadId: string; sessionId: string }
+  | { type: 'upload_abort'; uploadId: string; sessionId: string }
   | { type: 'cli_register'; sessionFile: string; cwd: string; model?: string; isStreaming?: boolean }
   | { type: 'cli_event'; sessionFile: string; event: any }
   // Server -> CLI bridge relay of a web user message. `conversationMode` carries
@@ -118,7 +124,9 @@ export type ServerMessage =
   // `serverVersion` is the running server package version (`wherever-dev`'s
   // package.json version), sent on connect so the UI can show which server it is
   // talking to next to its own build id. Optional so older servers still parse.
-  | { type: 'connected'; clientId: string; serverVersion?: string }
+  // `capabilities` lists optional protocol features this server speaks
+  // (`'upload.v1'`: resumable chunked uploads). Absent on older servers.
+  | { type: 'connected'; clientId: string; serverVersion?: string; capabilities?: string[] }
 | { type: 'agent_start'; sessionId: string }
  | { type: 'thinking_update'; sessionId: string; delta: string }
  | { type: 'message_update'; sessionId: string; delta: string }
@@ -270,6 +278,10 @@ export type ServerMessage =
   | { type: 'model_changed'; sessionId: string; model: string }
   | { type: 'file_uploaded'; uploadId: string; sessionId: string; filename: string; savedPath: string }
   | { type: 'file_upload_error'; uploadId: string; sessionId: string; error: string }
+  // Chunked uploads: the bytes the server has durably staged for `uploadId`. The
+  // answer to `upload_begin` and to every chunk (an offset mismatch answers with
+  // the TRUE offset). `done` + `savedPath` when the upload already finished.
+  | { type: 'upload_offset'; uploadId: string; offset: number; done?: boolean; savedPath?: string }
   | { type: 'sessions_updated' }
   // Server -> client: the skill commands available for `sessionId`, for the
   // composer's `/skill:<name>` autocomplete. Each entry's `name` is the full
