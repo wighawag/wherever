@@ -1,32 +1,38 @@
 {
   "name": "@wherever-dev/pi",
   "version": "0.5.4",
-  "description": "Remote control extension for pi coding agent with HTTP/WebSocket API (wherever.dev)",
-  "homepage": "https://github.com/wighawag/wherever#readme",
+  "description": "pi coding agent extension that bridges a terminal pi session to a Wherever server, to follow and steer it from your phone or any browser (wherever.dev)",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "pi-coding-agent",
+    "coding-agent",
+    "remote-control",
+    "bridge",
+    "mobile",
+    "websocket",
+    "wherever"
+  ],
+  "homepage": "https://wherever.dev",
+  "bugs": {
+    "url": "https://github.com/wighawag/wherever/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/wighawag/wherever.git",
     "directory": "extension"
   },
-  "bugs": {
-    "url": "https://github.com/wighawag/wherever/issues"
-  },
+  "license": "AGPL-3.0-only",
+  "author": "wighawag <wighawag@gmail.com>",
   "publishConfig": {
     "access": "public"
   },
   "type": "module",
   "main": "dist/index.js",
-  "keywords": [
-    "pi-package",
-    "pi",
-    "coding-agent",
-    "remote",
-    "websocket",
-    "http"
-  ],
-  "license": "AGPL-3.0-only",
   "files": [
-    "dist"
+    "dist",
+    "CHANGELOG.md"
   ],
   "dependencies": {
     "@wherever-dev/client": "workspace:*",
