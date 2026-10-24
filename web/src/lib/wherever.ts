@@ -3,6 +3,7 @@ import {playInvitingBeep} from './core/beep';
 import {
 	WhereverClient,
 	parseSkillInvocation,
+	serverKey,
 	type ChatMessage,
 	type UploadByteSource,
 	type UploadError,
@@ -17,6 +18,19 @@ import {
 import {buildAttachmentMessage} from './core/attachments';
 import {adoptTokenFromUrlOnce} from './core/token-adoption';
 import {normalizeDrafts, type Draft} from './core/drafts';
+import {
+	createConversationCache,
+	createWriteThrottle,
+	type CachedConversation,
+} from './core/conversation-cache';
+import {
+	cacheSnapshot,
+	canLoadOlderHistory,
+	clearCacheOnDisconnect,
+	handleHydrationRejected,
+	readBootCache,
+	retainCurrentServer,
+} from './core/instant-resume';
 import {
 	setCurrentSession,
 	getBaseUrl,
@@ -551,6 +565,73 @@ export const client = new WhereverClient({
 
 export const state = client.stateStore;
 
+// --- On-device conversation cache (docs/adr/0013) ---------------------------
+// Lets a reload after the OS killed the PWA paint the last-seen conversation
+// before the socket is up. Every decision lives in core/instant-resume.ts; this
+// block only wires it to the client. The cache disables itself (every call a
+// no-op) where IndexedDB is unusable, so nothing here can fail loudly.
+const conversationCache = createConversationCache();
+
+// Writes snapshot the CURRENT store when they run, under its STAMPED key and
+// only once the history is authoritative (cacheSnapshot decides). Streaming is
+// coalesced to one write per ~5 s; the other triggers flush at once.
+const cacheWrites = createWriteThrottle(() => {
+	const snap = cacheSnapshot(get(state));
+	return snap ? conversationCache.put(snap) : undefined;
+});
+
+// The key the current hydration came from, so a `hydration_rejected` can evict
+// that record (the client has already cleared the stamp when it fires).
+let hydratedServerKey: string | null = null;
+
+function currentServerKey(): string {
+	const config = getConfig();
+	return serverKey({host: config.host, port: config.port, token: config.token});
+}
+
+// Throttled writes while a reply streams: one per changed message list.
+let prevCachedMessages: unknown = null;
+state.subscribe((s) => {
+	if (s.messages === prevCachedMessages) return;
+	prevCachedMessages = s.messages;
+	if (s.isStreaming) cacheWrites.schedule();
+});
+
+/** Write the active conversation now (page hidden, pagehide). */
+export function flushConversationCache() {
+	cacheWrites.flush();
+}
+
+/**
+ * Both Disconnect actions (and ONLY those): wipe the cache. Never called from
+ * the shared disconnect(), which Connect and Reconnect also use.
+ */
+export function clearConversationCache() {
+	void clearCacheOnDisconnect(conversationCache, cacheWrites);
+}
+
+/** Boot: the cached record for the hash session under the current key, or null. */
+export function readBootConversation(
+	hashId: string,
+): Promise<CachedConversation | null> {
+	return readBootCache({
+		cache: conversationCache,
+		serverKey: currentServerKey(),
+		hashId,
+	});
+}
+
+/**
+ * Paint a cached record into the client store. Returns whether it took (the
+ * client ignores it when a session is already active, loading or connected).
+ */
+export function hydrateFromCache(record: CachedConversation): boolean {
+	client.hydrateCachedSession(record);
+	const took = get(state).activeSessionFile === record.sessionFile;
+	if (took) hydratedServerKey = record.serverKey;
+	return took;
+}
+
 // --- Waiting-for-human beep trigger ----------------------------------------
 // Watch the streaming flag and sound the inviting chime on the true -> false
 // edge, i.e. the moment the agent stops working and is waiting for a human
@@ -689,6 +770,29 @@ client.onMessage((msg) => {
 			}
 			break;
 
+		case 'message_history':
+		case 'agent_end':
+			// Listeners run BEFORE the client's reducer applies the frame (and
+			// agent_end's isStreaming reset is itself deferred; normalization forces
+			// it off anyway), so write on the next microtask, from the updated store.
+			queueMicrotask(() => cacheWrites.flush());
+			break;
+
+		case 'hydration_rejected': {
+			// Synthesized by the client: the server refused the hydrated session's
+			// load. Clears the hash synchronously (before any await, ahead of the
+			// page's hash effect) and evicts the dead record.
+			const key = hydratedServerKey;
+			hydratedServerKey = null;
+			handleHydrationRejected({
+				sessionId: (msg as {sessionId: string}).sessionId,
+				serverKey: key,
+				win: typeof window !== 'undefined' ? window : null,
+				cache: conversationCache,
+			});
+			break;
+		}
+
 		case 'session_error':
 			// A search that failed to create a session must not leave a stale
 			// pending query that would fire on the next unrelated session.
@@ -714,23 +818,34 @@ client.onMessage((msg) => {
 	}
 });
 
-export function connect() {
+// `preserveState` keeps the store across the connect (boot over a hydrated
+// cache). Every connect keeps only this server's cached conversations, so a
+// Reconnect or a same-server Connect wipes nothing and another server wipes the
+// previous one's.
+export function connect(options: {preserveState?: boolean} = {}) {
 	const config = getConfig();
 	saveConfig(config);
+	void retainCurrentServer(
+		conversationCache,
+		serverKey({host: config.host, port: config.port, token: config.token}),
+	);
 
 	const isSecure =
 		typeof window !== 'undefined' &&
 		window.location &&
 		window.location.protocol === 'https:';
 
-	client.connect({
-		host: config.host,
-		port: config.port,
-		token: config.token,
-		secure: isSecure,
-		hideThinking: !!config.hideThinking,
-		hideTools: !!config.hideTools,
-	});
+	client.connect(
+		{
+			host: config.host,
+			port: config.port,
+			token: config.token,
+			secure: isSecure,
+			hideThinking: !!config.hideThinking,
+			hideTools: !!config.hideTools,
+		},
+		!!options.preserveState,
+	);
 }
 
 export function disconnect() {
@@ -1082,7 +1197,9 @@ export const isResyncing = derived(piState, ($s) => $s.resyncing);
 // True after a fast-first (cold) session load: the conversation is readable but
 // the live agent is still building, so sending must stay blocked until ready.
 export const isAgentPending = derived(piState, ($s) => $s.agentPending);
-export const hasMoreHistory = derived(piState, ($s) => $s.historyOffset > 0);
+// "Load older messages" stays hidden until the history is authoritative: a
+// hydrated or rejoining store's offset may be stale (ADR 0013).
+export const hasMoreHistory = derived(piState, ($s) => canLoadOlderHistory($s));
 export const isLoadingMoreHistory = derived(
 	piState,
 	($s) => $s.loadingMoreHistory,

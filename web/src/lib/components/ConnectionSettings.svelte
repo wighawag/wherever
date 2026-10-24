@@ -2,6 +2,7 @@
 	import {
 		connect,
 		disconnect,
+		clearConversationCache,
 		getConfig,
 		setConfig,
 		isConnected,
@@ -95,12 +96,17 @@
 			collapseLongReplies: localCollapseLongReplies,
 			micReopensAfterReply: localMicReopensAfterReply,
 		});
+		// No wipe here: connect() keeps only the (possibly edited) server's cached
+		// conversations, so a same-server Connect wipes nothing (ADR 0013).
 		disconnect();
 		setTimeout(() => connect(), 100);
 	}
 
+	// "Disconnect" wipes the on-device conversation cache (ADR 0013). Only here and
+	// in the page's "Disconnect Server", never in the shared disconnect().
 	function handleDisconnect() {
 		disconnect();
+		clearConversationCache();
 	}
 
 	function handleReload() {
