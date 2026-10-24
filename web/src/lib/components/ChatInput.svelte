@@ -18,6 +18,16 @@
 	import {getBaseUrl, getToken} from '$lib/session-store';
 	import {decideComposeSend} from '$lib/core/compose-send';
 	import {buildAttachmentMessage} from '$lib/core/attachments';
+	import {
+		attachmentBlocksSend,
+		canRetryUpload,
+		chipView,
+		isUploadInFlight,
+		preStartUpload,
+		uploadErrorFrom,
+		type ChipUpload,
+	} from '$lib/core/upload-chip';
+	import type {UploadProgress} from '@wherever-dev/client';
 	import {isKnobActive} from '$lib/core/conversation-mode';
 	import {decideMicReopen} from '$lib/core/hands-free';
 	import {whenTtsIdle} from '$lib/core/speak';
@@ -101,8 +111,13 @@
 	// (a parked upload would otherwise still go out on reconnect and leave an
 	// orphan file in the upload dir).
 	const uploadControllers = new Map<number, AbortController>();
-	// An attachment is either already uploaded (`path` set, chat mode) or still a
-	// local File waiting for a session to upload it to (`file` set, search mode).
+	// Chat mode: an attachment carries its upload state (`upload`, fed only by
+	// uploadFile's onProgress; see core/upload-chip.ts) and, once done, the saved
+	// `path`. Search mode: a local File waiting for a session to upload it to
+	// (`file` set). The two must stay apart: `file` is the search-mode marker
+	// (the leave-search-mode effect drops attachments that have it, search submit
+	// collects it), so a chat upload keeps the File it may retry from under
+	// `retryFile` instead.
 	let attachments = $state<
 		{
 			// Stable identity: an upload resolves long after it starts (it may wait
@@ -111,8 +126,12 @@
 			id: number;
 			name: string;
 			path?: string;
-			error?: string;
-			uploading: boolean;
+			upload?: ChipUpload;
+			// The picked File, kept so Retry needs no re-pick. Dropped once done,
+			// and on a `not_readable` failure (the OS invalidated it).
+			retryFile?: File;
+			// /health diagnostics link shown with a failure.
+			url?: string;
 			file?: File;
 		}[]
 	>([]);
@@ -203,7 +222,7 @@
 		effectivelyDisabled || sendDisabled || (!searchMode && !connected),
 	);
 
-	let isAnyUploading = $derived(attachments.some((a) => a.uploading));
+	let isAnyUploading = $derived(attachments.some(attachmentBlocksSend));
 	let canSend = $derived(
 		!sendBlocked &&
 			!isAnyUploading &&
@@ -616,7 +635,6 @@
 				...files.map((f) => ({
 					id: nextAttachmentId++,
 					name: f.name,
-					uploading: false,
 					file: f,
 				})),
 			];
@@ -629,59 +647,138 @@
 		// commonly costs the socket on mobile; that must not cost the upload.
 		const sessionId = sessionInfo.sessionId;
 		const entries = files.map((f) => ({file: f, id: nextAttachmentId++}));
+		// Later files of a multi-pick wait for earlier ones (one upload at a time),
+		// so they start in the local pre-start state.
 		attachments = [
 			...attachments,
-			...entries.map(({file, id}) => ({id, name: file.name, uploading: true})),
+			...entries.map(({file, id}) => ({
+				id,
+				name: file.name,
+				upload: preStartUpload(file.size),
+				retryFile: file,
+			})),
 		];
 
 		for (const {file, id} of entries) {
-			// Removed by the user while earlier files were uploading: skip it.
-			if (!attachments.some((a) => a.id === id)) continue;
-			try {
-				if (!sessionId) {
-					throw new Error('No active session');
-				}
-				const controller = new AbortController();
-				uploadControllers.set(id, controller);
-				const res = await uploadFile(sessionId, file, {
-					signal: controller.signal,
-				}).finally(() => uploadControllers.delete(id));
-				attachments = attachments.map((a) =>
-					a.id === id
-						? {id, name: file.name, path: res.savedPath, uploading: false}
-						: a,
-				);
-			} catch (err) {
-				const errMsg = (err as Error).message || 'Failed to upload';
-				console.error('File upload error details:', err);
-
-				// Build a diagnostics target URL (/health)
-				let targetUrl = '';
-				try {
-					const baseUrl = getBaseUrl();
-					const token = getToken();
-					targetUrl = `${baseUrl}/health${token ? `?token=${encodeURIComponent(token)}` : ''}`;
-				} catch (e) {}
-
-				attachments = attachments.map((a) =>
-					a.id === id
-						? ({
-								id,
-								name: file.name,
-								error: errMsg,
-								url: targetUrl,
-								uploading: false,
-							} as any)
-						: a,
-				);
-			}
+			await runUpload(id, file, sessionId);
 		}
 	}
 
-	function removeAttachment(index: number) {
-		const removed = attachments[index];
-		if (removed) uploadControllers.get(removed.id)?.abort();
-		attachments = attachments.filter((_, idx) => idx !== index);
+	function updateAttachment(
+		id: number,
+		update: (a: (typeof attachments)[number]) => (typeof attachments)[number],
+	) {
+		attachments = attachments.map((a) => (a.id === id ? update(a) : a));
+	}
+
+	function dropAttachment(id: number) {
+		attachments = attachments.filter((a) => a.id !== id);
+	}
+
+	function diagnosticsUrl(): string {
+		try {
+			const baseUrl = getBaseUrl();
+			const token = getToken();
+			return `${baseUrl}/health${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+		} catch {
+			return '';
+		}
+	}
+
+	// Upload one attachment's File and drive its chip from onProgress. Each
+	// attempt owns its AbortController; callbacks and results from an attempt that
+	// is no longer the current one for this id (removed, or superseded by a
+	// Retry) are ignored.
+	async function runUpload(
+		id: number,
+		file: File,
+		sessionId: string | null | undefined,
+	) {
+		// Removed by the user while earlier files were uploading: skip it.
+		if (!attachments.some((a) => a.id === id)) return;
+		const controller = new AbortController();
+		uploadControllers.set(id, controller);
+		const isCurrent = () => uploadControllers.get(id) === controller;
+		const onProgress = (p: UploadProgress) => {
+			if (!isCurrent()) return;
+			if (p.state === 'aborted') {
+				dropAttachment(id);
+				return;
+			}
+			updateAttachment(id, (a) => ({
+				...a,
+				upload: {...p},
+				...(p.state === 'failed' && !canRetryUpload(p.error)
+					? {retryFile: undefined}
+					: {}),
+			}));
+		};
+		try {
+			if (!sessionId) {
+				throw new Error('No active session');
+			}
+			const res = await uploadFile(sessionId, file, {
+				signal: controller.signal,
+				onProgress,
+			});
+			if (!isCurrent()) return;
+			updateAttachment(id, (a) => ({
+				id,
+				name: a.name,
+				path: res.savedPath,
+				upload: {state: 'done', acked: file.size, size: file.size},
+			}));
+		} catch (err) {
+			if (!isCurrent()) return;
+			if (controller.signal.aborted) {
+				dropAttachment(id);
+				return;
+			}
+			console.error('File upload error details:', err);
+			const error = uploadErrorFrom(err);
+			updateAttachment(id, (a) => ({
+				id,
+				name: a.name,
+				upload: {
+					state: 'failed',
+					acked: a.upload?.acked ?? 0,
+					size: file.size,
+					error,
+				},
+				retryFile: canRetryUpload(error) ? file : undefined,
+				url: diagnosticsUrl(),
+			}));
+		} finally {
+			if (isCurrent()) uploadControllers.delete(id);
+		}
+	}
+
+	// Cancel an in-flight upload. The aborted upload reports `aborted`, which
+	// removes its chip; a pre-start chip has no upload yet, so it goes directly.
+	function cancelUpload(id: number) {
+		const controller = uploadControllers.get(id);
+		if (controller) controller.abort();
+		else dropAttachment(id);
+	}
+
+	// Restart a failed upload from the File picked originally (no re-pick),
+	// into the session that is current NOW, not the one at pick time.
+	function retryUpload(id: number) {
+		const attachment = attachments.find((a) => a.id === id);
+		const file = attachment?.retryFile;
+		if (!file || uploadControllers.has(id)) return;
+		updateAttachment(id, (a) => ({
+			id,
+			name: a.name,
+			upload: preStartUpload(file.size),
+			retryFile: file,
+		}));
+		void runUpload(id, file, sessionInfo.sessionId);
+	}
+
+	function removeAttachment(id: number) {
+		uploadControllers.get(id)?.abort();
+		dropAttachment(id);
 	}
 
 	function handleSend() {
@@ -1027,9 +1124,17 @@
 	{:else}
 		{#if attachments.length > 0}
 			<div class="mb-3 flex flex-wrap gap-2">
-				{#each attachments as attachment, index (attachment.id)}
+				{#each attachments as attachment (attachment.id)}
+					<!-- Chip state comes ONLY from uploadFile's onProgress, mapped by
+					     core/upload-chip.ts (chipView); a search-held file has no upload. -->
+					{@const view = attachment.upload ? chipView(attachment.upload) : null}
+					{@const inFlight = attachment.upload
+						? isUploadInFlight(attachment.upload.state)
+						: false}
 					<div
-						class="flex items-center gap-2 rounded border border-brand-border bg-brand-surface-2 px-2.5 py-1.5 text-xs"
+						class="flex items-center gap-2 rounded border bg-brand-surface-2 px-2.5 py-1.5 text-xs {inFlight
+							? 'border-brand-blue'
+							: 'border-brand-border'}"
 					>
 						<span
 							class="max-w-[150px] truncate font-medium text-brand-text"
@@ -1037,37 +1142,63 @@
 						>
 							{attachment.name}
 						</span>
-						{#if attachment.uploading}
-							<span
-								class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-brand-blue border-t-transparent"
-							></span>
-							{#if !connected || appState.resyncing}
-								<!-- The upload is parked until the socket is back and the
-								     session has rejoined; it resumes on its own (no need to
-								     re-attach). -->
-								<span
-									class="text-[10px] text-brand-text-muted"
-									title="The upload continues once reconnected"
-									>waiting for connection</span
-								>
-							{/if}
-						{:else if attachment.file}
+						{#if attachment.file}
 							<!-- Search mode: held locally, uploaded when the search creates
 							     its session. -->
 							<span
 								class="text-brand-text-muted"
 								title="Will be uploaded with the search">📎</span
 							>
-						{:else if attachment.error}
+						{:else if view?.kind === 'pending' || view?.kind === 'indeterminate'}
+							<span
+								class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-brand-blue border-t-transparent"
+							></span>
+						{:else if view?.kind === 'waiting'}
+							<!-- Queued or paused: the upload continues on its own once the
+							     socket is back and the session has rejoined (no re-attach). -->
+							<span
+								class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-brand-text-muted border-t-transparent"
+							></span>
+							<span
+								class="text-[10px] text-brand-text-muted"
+								title="The upload continues once reconnected"
+								>Paused, waiting for connection</span
+							>
+						{:else if view?.kind === 'progress' || view?.kind === 'finishing'}
+							<span
+								class="h-1.5 w-16 overflow-hidden rounded-full bg-brand-surface-3"
+								role="progressbar"
+								aria-valuemin={0}
+								aria-valuemax={100}
+								aria-valuenow={view.percent}
+							>
+								<span
+									class="block h-full rounded-full bg-brand-blue transition-[width]"
+									style="width: {view.percent}%"
+								></span>
+							</span>
+							<span class="text-[10px] text-brand-text-muted tabular-nums"
+								>{view.percent}%</span
+							>
+							{#if view.kind === 'finishing'}
+								<span
+									class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-brand-blue border-t-transparent"
+									title="Finishing"
+								></span>
+							{/if}
+						{:else if view?.kind === 'failed'}
 							<span
 								class="flex items-center gap-1 text-[10px] font-medium text-rose-400"
-								title={attachment.error}
+								title={view.message}
 							>
-								<span class="max-w-[120px] truncate">⚠️ {attachment.error}</span
-								>
-								{#if (attachment as any).url}
+								<span class="max-w-[120px] truncate">⚠️ {view.message}</span>
+								{#if view.pickAgain}
+									<span class="shrink-0 text-brand-text-muted"
+										>Pick the file again</span
+									>
+								{:else if attachment.url}
 									<a
-										href={(attachment as any).url}
+										href={attachment.url}
 										target="_blank"
 										class="ml-1 shrink-0 font-semibold text-brand-blue underline hover:opacity-80"
 									>
@@ -1075,13 +1206,32 @@
 									</a>
 								{/if}
 							</span>
+							{#if view.retry && attachment.retryFile}
+								<button
+									type="button"
+									onclick={() => retryUpload(attachment.id)}
+									class="rounded bg-brand-surface-3 px-1.5 py-0.5 text-[10px] font-medium text-brand-text hover:bg-brand-surface-3/70"
+								>
+									Retry
+								</button>
+							{/if}
 						{:else}
 							<span class="text-emerald-400">✓</span>
 						{/if}
+						{#if inFlight}
+							<button
+								type="button"
+								onclick={() => cancelUpload(attachment.id)}
+								class="rounded bg-brand-surface-3 px-1.5 py-0.5 text-[10px] font-medium text-brand-text-muted hover:text-brand-text"
+							>
+								Cancel
+							</button>
+						{/if}
 						<button
 							type="button"
-							onclick={() => removeAttachment(index)}
+							onclick={() => removeAttachment(attachment.id)}
 							class="ml-1 font-bold text-brand-text-muted hover:text-brand-text"
+							title="Remove"
 						>
 							×
 						</button>

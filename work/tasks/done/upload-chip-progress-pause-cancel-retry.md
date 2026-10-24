@@ -50,3 +50,14 @@ git fetch origin && git switch -c work/upload-chip-progress-pause-cancel-retry o
 # on completion, in the work branch's PR/merge:
 git mv work/tasks/ready/upload-chip-progress-pause-cancel-retry.md work/tasks/done/upload-chip-progress-pause-cancel-retry.md
 ```
+
+## Decisions
+
+Please link these from the done record:
+1. **"Not started yet" is a separate state (`pre-start`), not a reuse of the client's `queued`.** `queued` means the connection is down and shows "Paused, waiting for connection", which would be wrong for a file that simply hasn't had its turn. Recorded in the module comment of `upload-chip.ts`.
+2. **A finished upload keeps Send disabled until its saved path arrives.** The "done" callback fires just before `uploadFile` resolves with the path, and the message needs the path. Recorded in `upload-chip.ts`.
+3. **Percentages round down**, so 100% only shows once every byte is acknowledged. Recorded in `upload-chip.ts`.
+4. **Each upload attempt has its own abort controller**, and updates from an attempt that has been removed or replaced by a Retry are ignored. Recorded at `runUpload` in `ChatInput.svelte`.
+5. **Cancel and × both stay on an in-progress chip.** Cancel only aborts and lets the "cancelled" report remove the chip; × aborts and removes at once. The task asks for both; the alternative was showing only one of them while uploading. Recorded at `cancelUpload` in `ChatInput.svelte`.
+6. **Retry starts immediately**, even if other files from the same pick are still uploading one at a time. The alternative was queueing it behind them. Recorded at `retryUpload` in `ChatInput.svelte`.
+7. **The existing `[Test Link]` diagnostics link stays on ordinary failures**, but is hidden on a "pick the file again" failure. Recorded in the chip markup.
