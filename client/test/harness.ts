@@ -6,6 +6,31 @@
 
 export type WSListener = (event: any) => void;
 
+/** A decoded `upload.v1` chunk frame (see docs/USAGE.md). */
+export interface BinaryChunk {
+	kind: number;
+	version: number;
+	uploadId: string;
+	offset: number;
+	payload: Uint8Array;
+}
+
+// [u8 kind][u8 version][u8 idLen][uploadId ascii][u64 offset BE][payload]
+export function decodeChunkFrame(bytes: Uint8Array): BinaryChunk {
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const idLen = bytes[2];
+	const uploadId = String.fromCharCode(...bytes.subarray(3, 3 + idLen));
+	const at = 3 + idLen;
+	const offset = view.getUint32(at) * 2 ** 32 + view.getUint32(at + 4);
+	return {
+		kind: bytes[0],
+		version: bytes[1],
+		uploadId,
+		offset,
+		payload: bytes.slice(at + 8),
+	};
+}
+
 export class FakeWebSocket {
 	// WHATWG readyState constants.
 	static CONNECTING = 0;
@@ -16,6 +41,9 @@ export class FakeWebSocket {
 	url: string;
 	readyState = FakeWebSocket.CONNECTING;
 	sent: any[] = [];
+	// Binary frames (upload.v1 chunks), decoded, in send order. Kept apart from
+	// `sent` because they are not JSON.
+	binary: BinaryChunk[] = [];
 	private listeners: Record<string, Set<WSListener>> = {
 		open: new Set(),
 		message: new Set(),
@@ -41,8 +69,16 @@ export class FakeWebSocket {
 		}
 	}
 
-	send(data: string) {
-		this.sent.push(JSON.parse(data));
+	send(data: string | ArrayBufferView | ArrayBuffer) {
+		if (typeof data === 'string') {
+			this.sent.push(JSON.parse(data));
+			return;
+		}
+		const bytes =
+			data instanceof ArrayBuffer
+				? new Uint8Array(data)
+				: new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+		this.binary.push(decodeChunkFrame(bytes));
 	}
 
 	close() {

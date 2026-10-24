@@ -10,6 +10,21 @@ import {makeWSFactory} from './harness.js';
 //    rejected or retried it.
 // Either way the composer's "uploading" chip spun forever and Send stayed
 // disabled. An upload must survive a reconnect and must always settle.
+//
+// These cover the LEGACY one-frame protocol: every socket here announces no
+// `upload.v1` capability (see chunked-upload.test.ts for the chunked one).
+
+// A byte source whose bytes base64-encode back to `b64` (4 base64 chars = 3
+// bytes, so the legacy frame's `data` is exactly `b64`).
+function src(b64: string) {
+	const bytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+	return {size: bytes.length, read: async (o: number, l: number) => bytes.slice(o, o + l)};
+}
+
+// Let the async byte-source read (and the send after it) run.
+async function flush() {
+	for (let i = 0; i < 20; i++) await Promise.resolve();
+}
 
 describe('WebSocket upload is independent of the socket it started on', () => {
 	let ws: ReturnType<typeof makeWSFactory>;
@@ -57,20 +72,28 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 		const second = ws.last();
 		expect(second).not.toBe(first);
 		second.open();
+		connected(second);
 		return second;
+	}
+
+	// A server without upload.v1: uploads on this socket use the legacy frame.
+	function connected(sock: ReturnType<typeof ws.last>) {
+		sock.receive({type: 'connected', clientId: 'c1', serverVersion: 'x'});
 	}
 
 	it('an upload started while the socket is down is sent once reconnected and rejoined', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
 		ws.last().close(); // dropped; the reconnect is pending
-		const p = client.uploadFileViaWebSocket('sid-1', 'a.png', 'AAAA');
+		const p = client.uploadFileViaWebSocket('sid-1', 'a.png', src('AAAA'));
 		vi.advanceTimersByTime(5000);
 		const next = ws.last();
 		// Still CONNECTING: nothing could be sent.
 		expect(next.lastSentOfType('file_upload')).toBeUndefined();
 
 		next.open();
+		connected(next);
 		next.receive({
 			type: 'session_created',
 			sessionId: 'sid-1',
@@ -78,6 +101,7 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 			cwd: '/tmp/project',
 			model: 'fake:model',
 		});
+		await flush();
 		const frame = next.lastSentOfType('file_upload');
 		expect(frame).toMatchObject({sessionId: 'sid-1', filename: 'a.png', data: 'AAAA'});
 
@@ -94,8 +118,10 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 
 	it('an upload whose socket dies is re-sent only AFTER the rejoin is answered', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
-		const p = client.uploadFileViaWebSocket('sid-1', 'b.pdf', 'BBBB');
+		const p = client.uploadFileViaWebSocket('sid-1', 'b.pdf', src('BBBB'));
+		await flush();
 		const sent = ws.last().lastSentOfType('file_upload');
 		expect(sent).toBeTruthy();
 
@@ -127,11 +153,13 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 		await expect(p).resolves.toMatchObject({savedPath: '/up/2_b.pdf'});
 	});
 
-	it('an upload started mid-rejoin waits for session_created', () => {
+	it('an upload started mid-rejoin waits for session_created', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
 		const second = dropAndReconnect();
-		void client.uploadFileViaWebSocket('sid-1', 'f.png', 'FFFF').catch(() => {});
+		void client.uploadFileViaWebSocket('sid-1', 'f.png', src('FFFF')).catch(() => {});
+		await flush();
 		expect(second.lastSentOfType('file_upload')).toBeUndefined();
 		second.receive({
 			type: 'session_created',
@@ -140,21 +168,25 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 			cwd: '/tmp/project',
 			model: 'fake:model',
 		});
+		await flush();
 		expect(second.lastSentOfType('file_upload')).toMatchObject({data: 'FFFF'});
 	});
 
 	it('a reconnect with no session to rejoin fails parked uploads', async () => {
 		ws.last().open();
-		const p = client.uploadFileViaWebSocket('sid-1', 'g.png', 'GGGG');
+		connected(ws.last());
+		const p = client.uploadFileViaWebSocket('sid-1', 'g.png', src('GGGG'));
 		const settled = expect(p).rejects.toThrow(/session was closed/);
 		dropAndReconnect();
 		await settled;
 	});
 
-	it('a sent upload is not timed out while in transmission', () => {
+	it('a sent upload is not timed out while in transmission', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
-		const p = client.uploadFileViaWebSocket('sid-1', 'h.mp4', 'HHHH');
+		const p = client.uploadFileViaWebSocket('sid-1', 'h.mp4', src('HHHH'));
+		await flush();
 		let settled = false;
 		p.then(
 			() => (settled = true),
@@ -174,7 +206,7 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 
 	it('aborting drops a parked upload so it is never sent', async () => {
 		const controller = new AbortController();
-		const p = client.uploadFileViaWebSocket('sid-1', 'i.png', 'IIII', {
+		const p = client.uploadFileViaWebSocket('sid-1', 'i.png', src('IIII'), {
 			signal: controller.signal,
 		});
 		const settled = expect(p).rejects.toThrow(/cancelled/);
@@ -182,12 +214,15 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 		await settled;
 		expect(client.pendingUploadCount()).toBe(0);
 		ws.last().open();
+		connected(ws.last());
 		expect(ws.last().lastSentOfType('file_upload')).toBeUndefined();
 	});
 
 	it('a server error rejects the upload', async () => {
 		ws.last().open();
-		const p = client.uploadFileViaWebSocket('sid-1', 'c.txt', 'CCCC');
+		connected(ws.last());
+		const p = client.uploadFileViaWebSocket('sid-1', 'c.txt', src('CCCC'));
+		await flush();
 		const sent = ws.last().lastSentOfType('file_upload');
 		ws.last().receive({
 			type: 'file_upload_error',
@@ -200,7 +235,7 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 	});
 
 	it('an upload that never gets a connection eventually rejects (never hangs)', async () => {
-		const p = client.uploadFileViaWebSocket('sid-1', 'd.png', 'DDDD');
+		const p = client.uploadFileViaWebSocket('sid-1', 'd.png', src('DDDD'));
 		const settled = expect(p).rejects.toThrow(/timed out/);
 		vi.advanceTimersByTime(10 * 60_000 + 1);
 		await settled;
@@ -208,7 +243,7 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 	});
 
 	it('an explicit full disconnect rejects pending uploads', async () => {
-		const p = client.uploadFileViaWebSocket('sid-1', 'e.png', 'EEEE');
+		const p = client.uploadFileViaWebSocket('sid-1', 'e.png', src('EEEE'));
 		const settled = expect(p).rejects.toThrow(/Disconnected/);
 		client.disconnect(true);
 		await settled;
@@ -217,22 +252,27 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 
 	it('a failed rejoin (session_error) fails held uploads and stops holding', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
-		const p = client.uploadFileViaWebSocket('sid-1', 'j.png', 'JJJJ');
+		const p = client.uploadFileViaWebSocket('sid-1', 'j.png', src('JJJJ'));
+		await flush();
 		const second = dropAndReconnect();
 		const settled = expect(p).rejects.toThrow(/Could not rejoin/);
 		second.receive({type: 'session_error', error: 'Session not found'});
 		await settled;
 		expect(client.pendingUploadCount()).toBe(0);
 		// No longer holding: a new upload goes straight out.
-		void client.uploadFileViaWebSocket('sid-1', 'k.png', 'KKKK').catch(() => {});
+		void client.uploadFileViaWebSocket('sid-1', 'k.png', src('KKKK')).catch(() => {});
+		await flush();
 		expect(second.lastSentOfType('file_upload')).toMatchObject({data: 'KKKK'});
 	});
 
 	it('a rejoin that times out (load watchdog) fails held uploads', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
-		const p = client.uploadFileViaWebSocket('sid-1', 'l.png', 'LLLL');
+		const p = client.uploadFileViaWebSocket('sid-1', 'l.png', src('LLLL'));
+		await flush();
 		dropAndReconnect();
 		const settled = expect(p).rejects.toThrow(/Could not rejoin/);
 		vi.advanceTimersByTime(13_000); // past LOAD_WATCHDOG_MS
@@ -241,8 +281,10 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 
 	it('switching session mid-hold fails the parked upload instead of releasing it to the new session', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
-		const p = client.uploadFileViaWebSocket('sid-1', 'm.png', 'MMMM');
+		const p = client.uploadFileViaWebSocket('sid-1', 'm.png', src('MMMM'));
+		await flush();
 		const second = dropAndReconnect();
 		const settled = expect(p).rejects.toThrow(/session changed/);
 		client.switchSession('/tmp/other/session.jsonl');
@@ -259,8 +301,10 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 
 	it('a rejoin answered for a DIFFERENT session releases only matching uploads', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
-		const p = client.uploadFileViaWebSocket('sid-1', 'n.png', 'NNNN');
+		const p = client.uploadFileViaWebSocket('sid-1', 'n.png', src('NNNN'));
+		await flush();
 		const second = dropAndReconnect();
 		const settled = expect(p).rejects.toThrow(/session changed/);
 		second.receive({
@@ -276,8 +320,10 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 
 	it('suspend with an upload on the wire re-arms its timer and re-sends after resume', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
-		const p = client.uploadFileViaWebSocket('sid-1', 'o.png', 'OOOO');
+		const p = client.uploadFileViaWebSocket('sid-1', 'o.png', src('OOOO'));
+		await flush();
 		const first = ws.last();
 		const sent = first.lastSentOfType('file_upload');
 		client.suspend();
@@ -285,6 +331,7 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 		const second = ws.last();
 		expect(second).not.toBe(first);
 		second.open();
+		connected(second);
 		second.receive({
 			type: 'session_created',
 			sessionId: 'sid-1',
@@ -306,8 +353,10 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 
 	it('suspend while an upload is on the wire, never resumed: it eventually times out', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
-		const p = client.uploadFileViaWebSocket('sid-1', 'q.png', 'QQQQ');
+		const p = client.uploadFileViaWebSocket('sid-1', 'q.png', src('QQQQ'));
+		await flush();
 		const settled = expect(p).rejects.toThrow(/timed out/);
 		client.suspend();
 		vi.advanceTimersByTime(10 * 60_000 + 1);
@@ -316,9 +365,10 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 
 	it('the waiting deadline is NOT restarted by repeated failed reconnect attempts', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
 		ws.last().close(); // server goes away
-		const p = client.uploadFileViaWebSocket('sid-1', 'r.png', 'RRRR');
+		const p = client.uploadFileViaWebSocket('sid-1', 'r.png', src('RRRR'));
 		const settled = expect(p).rejects.toThrow(/timed out/);
 		// Every reconnect attempt opens a socket that immediately fails.
 		for (let t = 0; t < 11 * 60_000; t += 5_000) {
@@ -331,8 +381,10 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 
 	it('an upload that loses its socket on every send gives up after MAX_UPLOAD_SENDS', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
-		const p = client.uploadFileViaWebSocket('sid-1', 's.png', 'SSSS');
+		const p = client.uploadFileViaWebSocket('sid-1', 's.png', src('SSSS'));
+		await flush();
 		const settled = expect(p).rejects.toThrow(/dropped during the transfer/);
 		for (let i = 0; i < 3; i++) {
 			const sock = dropAndReconnect();
@@ -348,19 +400,44 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 		expect(client.pendingUploadCount()).toBe(0);
 	});
 
-	it('refuses a payload too large for the server frame limit up front', async () => {
+	it('refuses a file too large for the server frame limit before reading it', async () => {
 		ws.last().open();
-		const huge = 'A'.repeat(96 * 1024 * 1024 + 1);
+		connected(ws.last());
+		let reads = 0;
+		const huge = {
+			size: 72 * 1024 * 1024 + 1,
+			read: async () => {
+				reads++;
+				return new Uint8Array(0);
+			},
+		};
 		await expect(client.uploadFileViaWebSocket('sid-1', 'big.mp4', huge)).rejects.toThrow(
+			/too large/,
+		);
+		expect(reads).toBe(0);
+		expect(ws.last().lastSentOfType('file_upload')).toBeUndefined();
+	});
+
+	it('the base64 size backstop refuses a source that yields more bytes than its size', async () => {
+		ws.last().open();
+		connected(ws.last());
+		// Claims 3 bytes, delivers enough for more than 96 MiB of base64.
+		const liar = {
+			size: 3,
+			read: async () => new Uint8Array(72 * 1024 * 1024 + 3),
+		};
+		await expect(client.uploadFileViaWebSocket('sid-1', 'liar.bin', liar)).rejects.toThrow(
 			/too large/,
 		);
 		expect(ws.last().lastSentOfType('file_upload')).toBeUndefined();
 	});
 
-	it('a session_error tagged with a session id does not fail held uploads', () => {
+	it('a session_error tagged with a session id does not fail held uploads', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
-		void client.uploadFileViaWebSocket('sid-1', 't.png', 'TTTT').catch(() => {});
+		void client.uploadFileViaWebSocket('sid-1', 't.png', src('TTTT')).catch(() => {});
+		await flush();
 		const second = dropAndReconnect();
 		second.receive({type: 'session_error', sessionId: 'some-other', error: 'fork failed'});
 		expect(client.pendingUploadCount()).toBe(1);
@@ -376,8 +453,10 @@ describe('WebSocket upload is independent of the socket it started on', () => {
 
 	it('an upload lost twice and answered on the third send resolves (cap boundary)', async () => {
 		ws.last().open();
+		connected(ws.last());
 		joinSession();
-		const p = client.uploadFileViaWebSocket('sid-1', 'u.png', 'UUUU');
+		const p = client.uploadFileViaWebSocket('sid-1', 'u.png', src('UUUU'));
+		await flush();
 		let sock = ws.last();
 		for (let i = 0; i < 2; i++) {
 			sock = dropAndReconnect();

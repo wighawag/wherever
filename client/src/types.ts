@@ -390,3 +390,57 @@ export function skillInvocationIdentity(content: string): string | null {
 	if (!parsed) return null;
 	return `skill:${parsed.skillName}\u0000${parsed.args}`;
 }
+
+// --- Uploads ---------------------------------------------------------------
+
+/**
+ * The bytes of a file to upload, without any platform type (`File` / `Blob`):
+ * the client package is platform-neutral, so the web implements this over
+ * `File.slice().arrayBuffer()`. `read` may throw a `NotReadableError` (iOS and
+ * Android can invalidate a picked file once the page was backgrounded); the
+ * upload then fails with code `not_readable` ("pick it again").
+ */
+export interface UploadByteSource {
+	size: number;
+	read(offset: number, length: number): Promise<Uint8Array>;
+}
+
+/**
+ * Lifecycle of one upload. `queued` (not sent yet: no socket, held for a rejoin,
+ * or the socket's capabilities are not known yet) -> `sending` -> `paused`
+ * (its socket was lost; it waits for the next one) -> `finishing` (chunked only:
+ * every byte acked, `upload_finish` sent) -> `done` | `failed` | `aborted`.
+ */
+export type UploadState =
+	| 'queued'
+	| 'sending'
+	| 'paused'
+	| 'finishing'
+	| 'done'
+	| 'failed'
+	| 'aborted';
+
+/** `code` lets a UI react without matching on text. */
+export interface UploadError {
+	message: string;
+	code?: 'not_readable';
+}
+
+/**
+ * Progress of one upload: the store entry (`WhereverClient.uploadsStore`, keyed
+ * by uploadId) and the `onProgress` payload share this shape. `acked` is the
+ * byte count the SERVER acknowledged (never what was merely sent); the legacy
+ * one-frame protocol reports 0 until done.
+ */
+export interface UploadProgress {
+	acked: number;
+	size: number;
+	state: UploadState;
+	error?: UploadError;
+}
+
+export interface UploadOptions {
+	signal?: AbortSignal;
+	mime?: string;
+	onProgress?: (progress: UploadProgress) => void;
+}
