@@ -4,7 +4,7 @@ import { createServer as createHttpsServer, request as httpRequest } from 'node:
 import { connect as netConnect } from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import { SessionPool, RELOADING_REFUSAL, getWhereverConfig, getWhereverCertsDir, detectRemoteRepo, normalizePath, invalidateFolderExistence, type WhereverConfig } from './session-pool.js';
+import { SessionPool, RELOADING_REFUSAL, getWhereverConfig, getWhereverCertsDir, getWhereverStateDir, detectRemoteRepo, normalizePath, invalidateFolderExistence, type WhereverConfig } from './session-pool.js';
 import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.js';
 import { searchConversations } from './conversation-search.js';
 import { matchRemoteRepoRule, resolveRemoteCandidates } from './remote-candidates.js';
@@ -12,6 +12,7 @@ import { RestoreJobRegistry, type RestoreJobSnapshot, type RestoreRequest } from
 import type { ClientMessage, ServerMessage, ToolImage } from './protocol.js';
 import { INITIAL_HISTORY_LIMIT, HISTORY_PAGE_SIZE } from './protocol.js';
 import { gateUploadWrite, uploadMaxBytes, uploadTooLarge } from './upload-gate.js';
+import { UploadStaging, UPLOAD_CAPABILITY, isValidUploadId, parseChunkFrame, CHUNK_FRAME_KIND, type Authorize } from './upload-staging.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -187,7 +188,17 @@ function resolveDownloadRoots(config: WhereverConfig, cwd?: string): string[] {
   if (cwd) add(cwd);
   add(resolveUploadDir(config, cwd));
   for (const r of config.downloads?.roots || []) add(r);
-  return Array.from(roots);
+  // The upload staging dir holds PARTIAL uploads and is never a download root,
+  // whatever the config says (docs/adr/0012).
+  const staging = getUploadStaging();
+  return Array.from(roots).filter((r) => !staging.contains(r));
+}
+
+let uploadStaging: UploadStaging | undefined;
+/** The one staging area for chunked uploads: `<state dir>/upload-staging` (created lazily). */
+function getUploadStaging(): UploadStaging {
+  if (!uploadStaging) uploadStaging = new UploadStaging({ dir: path.join(getWhereverStateDir(), 'upload-staging') });
+  return uploadStaging;
 }
 
 /**
@@ -221,6 +232,9 @@ function resolveSafeDownloadPath(requested: string, cwd: string | undefined, roo
     return null;
   }
   if (!stat.isFile()) return null; // never serve directories/devices
+  // Partial uploads are never downloadable, even when a root (a session cwd at
+  // the state dir's parent, a configured root) happens to contain the staging dir.
+  if (getUploadStaging().contains(real)) return null;
 
   const withinRoot = roots.some((root) => {
     if (real === root) return true;
@@ -1009,6 +1023,20 @@ async function main(): Promise<void> {
   debugEnabled = debug;
   const sessionPool = new SessionPool(idleTimeout);
   await sessionPool.initialize();
+
+  // Abandoned partial uploads (untouched for 24 h) are collected at startup and
+  // then hourly. A no-op when the staging dir was never created. The startup
+  // pass is awaited (one readdir) so it is done before the first upload arrives.
+  const runUploadGc = () =>
+    getUploadStaging()
+      .gc()
+      .then((n) => {
+        if (n > 0) console.log(`[wherever] removed ${n} stale upload staging entr${n === 1 ? 'y' : 'ies'}`);
+      })
+      .catch((err) => console.warn('[wherever] upload staging GC failed:', (err as Error).message));
+  await runUploadGc();
+  const uploadGcTimer = setInterval(runUploadGc, 60 * 60 * 1000);
+  uploadGcTimer.unref?.();
 
   const clients = new Map<string, WSClient>();
 
@@ -2324,9 +2352,24 @@ async function main(): Promise<void> {
       missedPings.set(ws, 0);
     });
 
-    sendWS(ws, { type: 'connected', clientId, serverVersion: getVersion() });
+    sendWS(ws, { type: 'connected', clientId, serverVersion: getVersion(), capabilities: [UPLOAD_CAPABILITY] });
 
-    ws.on('message', async (data) => {
+    ws.on('message', async (data, isBinary) => {
+      // Binary frames are upload chunks (`upload.v1`), routed BEFORE any
+      // JSON.parse: a chunk is raw bytes, never text. A binary frame that does not
+      // start with the chunk kind byte is treated as JSON text as before, so a
+      // client that happened to send JSON as binary keeps working.
+      if (isBinary) {
+        const buf = Buffer.isBuffer(data)
+          ? data
+          : Array.isArray(data)
+            ? Buffer.concat(data)
+            : Buffer.from(data as ArrayBuffer);
+        if (buf.length > 0 && buf[0] === CHUNK_FRAME_KIND) {
+          handleUploadChunk(buf, client, sessionPool);
+          return;
+        }
+      }
       let msg: ClientMessage;
       try {
         msg = JSON.parse(data.toString());
@@ -3788,7 +3831,136 @@ async function handleWSMessage(
       }
       break;
     }
+
+    // Resumable chunked uploads (`upload.v1`, docs/adr/0012). index.ts only
+    // routes: staging, sidecars, the per-id serial queue and GC live in
+    // server/src/upload-staging.ts. Each call below reaches the staging queue
+    // SYNCHRONOUSLY (no await before it), so frames for one id are queued in the
+    // order they arrived on the socket.
+    case 'upload_begin': {
+      const { uploadId, sessionId, filename, size, mime } = msg as any;
+      const replyId = typeof uploadId === 'string' ? uploadId.slice(0, 128) : '';
+      const replySession = typeof sessionId === 'string' ? sessionId : '';
+      const refuse = (error: string) =>
+        sendWS(client.ws, { type: 'file_upload_error', uploadId: replyId, sessionId: replySession, error });
+      if (!isValidUploadId(uploadId)) {
+        refuse('Invalid uploadId (expected 22 to 64 characters of A-Z, a-z, 0-9, _ or -).');
+        break;
+      }
+      if (!replySession || typeof filename !== 'string' || !filename || !Number.isSafeInteger(size) || size < 0) {
+        refuse('Missing or invalid parameters for upload_begin.');
+        break;
+      }
+      const config = getWhereverConfig();
+      const tooLarge = uploadTooLarge(size, uploadMaxBytes(config));
+      if (tooLarge) {
+        refuse(tooLarge);
+        break;
+      }
+      let gateCwd: string | undefined;
+      const authorize: Authorize = (s) => {
+        const gate = gateUploadWrite(client, pool, s.sessionId);
+        if (!gate.ok) return gate.reason;
+        gateCwd = gate.cwd;
+        return null;
+      };
+      const result = await getUploadStaging().begin(
+        {
+          uploadId,
+          sessionId: replySession,
+          filename,
+          size,
+          mime: typeof mime === 'string' ? mime : undefined,
+          // Resolved ONCE, here, from the painted cwd the gate just approved.
+          targetDir: () => resolveUploadDir(config, gateCwd),
+        },
+        authorize,
+      ).catch((err) => ({ ok: false as const, sessionId: replySession, error: (err as Error).message || 'Failed to start upload' }));
+      if (!result.ok) {
+        refuse(result.error);
+        break;
+      }
+      sendWS(client.ws, {
+        type: 'upload_offset',
+        uploadId,
+        offset: result.offset,
+        ...(result.done ? { done: true, savedPath: result.savedPath } : {}),
+      });
+      break;
+    }
+
+    case 'upload_finish': {
+      const { uploadId, sessionId } = msg as any;
+      const replyId = typeof uploadId === 'string' ? uploadId.slice(0, 128) : '';
+      const replySession = typeof sessionId === 'string' ? sessionId : '';
+      if (!isValidUploadId(uploadId) || !replySession) {
+        sendWS(client.ws, { type: 'file_upload_error', uploadId: replyId, sessionId: replySession, error: 'Invalid uploadId or sessionId for upload_finish.' });
+        break;
+      }
+      const result = await getUploadStaging()
+        .finish(uploadId, replySession, uploadAuthorizer(client, pool))
+        .catch((err) => ({ ok: false as const, sessionId: replySession, error: (err as Error).message || 'Failed to save file' }));
+      if (!result.ok) {
+        sendWS(client.ws, { type: 'file_upload_error', uploadId, sessionId: replySession, error: result.error });
+        break;
+      }
+      // The same frame the legacy path answers with, so completion looks alike.
+      sendWS(client.ws, { type: 'file_uploaded', uploadId, sessionId: replySession, filename: result.filename, savedPath: result.savedPath });
+      break;
+    }
+
+    case 'upload_abort': {
+      // Not behind the write gate: it only deletes this upload's own staging
+      // entry (never a saved file), and it must work from a socket that has
+      // since become read-only. It is still bound to the recorded sessionId.
+      const { uploadId, sessionId } = msg as any;
+      const replySession = typeof sessionId === 'string' ? sessionId : '';
+      if (!isValidUploadId(uploadId) || !replySession) {
+        sendWS(client.ws, { type: 'file_upload_error', uploadId: typeof uploadId === 'string' ? uploadId.slice(0, 128) : '', sessionId: replySession, error: 'Invalid uploadId or sessionId for upload_abort.' });
+        break;
+      }
+      const refused = await getUploadStaging().abort(uploadId, replySession).catch((err) => (err as Error).message || 'Failed to abort upload');
+      if (refused) sendWS(client.ws, { type: 'file_upload_error', uploadId, sessionId: replySession, error: refused });
+      break;
+    }
   }
+}
+
+/** The write gate as a staging `Authorize`, judged against the sidecar's sessionId. */
+function uploadAuthorizer(client: WSClient, pool: SessionPool): Authorize {
+  return (s) => {
+    const gate = gateUploadWrite(client, pool, s.sessionId);
+    return gate.ok ? null : gate.reason;
+  };
+}
+
+/**
+ * A binary upload chunk (`upload.v1`). Parsed and handed to the staging queue in
+ * the same tick it arrived, so per-socket order is preserved; the gate and the
+ * offset check run inside the queue. Every chunk is acked with `upload_offset`
+ * (the TRUE offset on a mismatch), every refusal is a `file_upload_error`.
+ */
+function handleUploadChunk(buf: Buffer, client: WSClient, pool: SessionPool): void {
+  const frame = parseChunkFrame(buf);
+  if (!frame.ok) {
+    sendWS(client.ws, { type: 'file_upload_error', uploadId: frame.uploadId, sessionId: '', error: frame.error });
+    return;
+  }
+  getUploadStaging()
+    .writeChunk(frame.uploadId, frame.offset, frame.payload, uploadAuthorizer(client, pool))
+    .catch((err) => ({ ok: false as const, sessionId: '', error: (err as Error).message || 'Failed to write upload chunk' }))
+    .then((result) => {
+      if (!result.ok) {
+        sendWS(client.ws, { type: 'file_upload_error', uploadId: frame.uploadId, sessionId: result.sessionId, error: result.error });
+        return;
+      }
+      sendWS(client.ws, {
+        type: 'upload_offset',
+        uploadId: frame.uploadId,
+        offset: result.offset,
+        ...(result.done ? { done: true, savedPath: result.savedPath } : {}),
+      });
+    });
 }
 
 /**
