@@ -21,7 +21,8 @@
  *   the user both mean "it will continue once the connection is back". This
  *   replaces the old label derived from `!connected || resyncing`.
  * - Sending with nothing acked yet is INDETERMINATE, not 0%: the legacy WS
- *   frame and POST only ever report acked 0, and a bar stuck at 0% would read
+ *   frame only ever reports acked 0 (POST too, until its first
+ *   `upload.onprogress`), and a bar stuck at 0% would read
  *   as a hung upload, which is what story 1 is about.
  * - The percentage rounds DOWN, so 100% only shows once every byte is acked.
  * - `done` blocks Send until the resolved `savedPath` is on the attachment:

@@ -11,7 +11,7 @@ import { matchRemoteRepoRule, resolveRemoteCandidates } from './remote-candidate
 import { RestoreJobRegistry, type RestoreJobSnapshot, type RestoreRequest } from './restore-jobs.js';
 import type { ClientMessage, ServerMessage, ToolImage } from './protocol.js';
 import { INITIAL_HISTORY_LIMIT, HISTORY_PAGE_SIZE } from './protocol.js';
-import { gateUploadWrite, uploadMaxBytes, uploadTooLarge } from './upload-gate.js';
+import { gateUploadFolder, gateUploadWrite, uploadMaxBytes, uploadTooLarge } from './upload-gate.js';
 import { UploadStaging, UPLOAD_CAPABILITY, isValidUploadId, parseChunkFrame, CHUNK_FRAME_KIND, type Authorize } from './upload-staging.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -950,6 +950,18 @@ function resolveUploadDir(config: WhereverConfig, cwd?: string): string {
 
   // Default to tmp
   return os.tmpdir();
+}
+
+/**
+ * Answer an upload refusal while the client may still be sending its body: the
+ * reply carries `Connection: close` and the rest of the body is drained rather
+ * than parsed, so the client reads the reason instead of a reset mid-send, and a
+ * huge refused body is not buffered.
+ */
+function refuseUpload(req: IncomingMessage, res: ServerResponse, status: number, error: string): void {
+  res.writeHead(status, { 'Content-Type': 'application/json', Connection: 'close' });
+  res.end(JSON.stringify({ error }));
+  req.resume();
 }
 
 function sendJSON(res: ServerResponse, status: number, data: unknown): void {
@@ -1997,12 +2009,41 @@ async function main(): Promise<void> {
           return;
         }
 
-        const tracked = sessionPool.getSession(qSessionId);
-        const cwd = tracked?.cwd;
+        // The session's folder, from the pool when it is loaded, else from the
+        // session file's HEADER: the composer stays editable while a cold agent
+        // builds, so a not-yet-loaded session must be accepted (and must not fall
+        // back to tmp, which `pool.getSession()` alone used to do). Only a
+        // session that cannot be resolved at all is a 404.
+        const meta = await sessionPool.readSessionFolderMeta(qSessionId);
+        if ('error' in meta) {
+          refuseUpload(req, res, 404, meta.error);
+          return;
+        }
+        // The hard read-only reasons (gateUploadFolder). The per-viewer
+        // folder-conflict lock is a socket's state, which a POST does not have.
+        const gate = gateUploadFolder({
+          cwd: meta.cwd,
+          readOnly: meta.readOnly,
+          folderMissing: meta.folderMissing,
+          restoring: restoreJobs.get(meta.cwd)?.state === 'running',
+        });
+        if (!gate.ok) {
+          refuseUpload(req, res, 403, gate.reason);
+          return;
+        }
 
         const config = getWhereverConfig();
-        const targetDir = resolveUploadDir(config, cwd);
+        const maxBytes = uploadMaxBytes(config);
+        const declared = Number(req.headers['content-length']);
+        if (Number.isFinite(declared)) {
+          const tooLarge = uploadTooLarge(declared, maxBytes);
+          if (tooLarge) {
+            refuseUpload(req, res, 413, tooLarge);
+            return;
+          }
+        }
 
+        const targetDir = resolveUploadDir(config, gate.cwd);
         fs.mkdirSync(targetDir, { recursive: true });
 
         const timestamp = Date.now();
@@ -2010,9 +2051,39 @@ async function main(): Promise<void> {
         const destPath = path.join(targetDir, safeFilename);
 
         const writeStream = fs.createWriteStream(destPath);
+        // Settle exactly once. Every failure path destroys the write stream and
+        // unlinks the partial file BEFORE answering, so a refused or broken
+        // upload never leaves a truncated file in the upload dir.
+        let settled = false;
+        const fail = (status: number, error: string) => {
+          if (settled) return;
+          settled = true;
+          req.unpipe(writeStream);
+          writeStream.destroy();
+          const answer = () => {
+            fs.promises.unlink(destPath).catch(() => {}).finally(() => {
+              if (!res.headersSent && !res.destroyed) refuseUpload(req, res, status, error);
+            });
+          };
+          if (writeStream.closed) answer();
+          else writeStream.once('close', answer);
+        };
+
+        // A running count, for a body without Content-Length (chunked), which
+        // the header check above cannot see.
+        let received = 0;
+        req.on('data', (chunk: Buffer) => {
+          received += chunk.length;
+          const tooLarge = uploadTooLarge(received, maxBytes);
+          if (tooLarge) fail(413, tooLarge);
+        });
+        req.on('aborted', () => fail(400, 'Upload aborted by the client'));
+        req.on('error', (err) => fail(400, `Upload failed: ${err.message}`));
         req.pipe(writeStream);
 
         writeStream.on('finish', () => {
+          if (settled) return;
+          settled = true;
           sendJSON(res, 200, {
             status: 'uploaded',
             filename: qFilename,
@@ -2020,9 +2091,7 @@ async function main(): Promise<void> {
           });
         });
 
-        writeStream.on('error', (err) => {
-          sendJSON(res, 500, { error: `Failed to write file: ${err.message}` });
-        });
+        writeStream.on('error', (err) => fail(500, `Failed to write file: ${err.message}`));
       } catch (err) {
         sendJSON(res, 500, { error: `Upload error: ${(err as Error).message}` });
       }
