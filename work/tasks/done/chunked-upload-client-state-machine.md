@@ -56,3 +56,13 @@ git fetch origin && git switch -c work/chunked-upload-client-state-machine origi
 # on completion, in the work branch's PR/merge:
 git mv work/tasks/ready/chunked-upload-client-state-machine.md work/tasks/done/chunked-upload-client-state-machine.md
 ```
+
+## Decisions
+
+Please link these from the done record. Each is recorded in a comment at the code it governs.
+1. **The protocol stays fixed after the first send.** A legacy upload is not switched to chunked on a newer server, because the old server may already have saved it and the frame is already built. A chunked upload never falls back to legacy, and fails with the retry message instead. See the `PendingUpload` comment in `client.ts`.
+2. **Finished uploads stay in `uploadsStore`** until a new `forgetUpload(id)` is called, so a late subscriber still sees how an upload ended. The alternative was dropping entries as they settle. This affects `upload-chip-progress-pause-cancel-retry`. See the `uploadsStore` comment.
+3. **Pacing starts at the 64 KiB minimum** until the first timed ack, uses a moving average (weight 0.3), and reads one chunk at a time. See the `UPLOAD_WINDOW_*` comment.
+4. **A read that returns fewer bytes than asked counts as unreadable** (`not_readable`, "pick it again"). Other read errors fail with "Failed to read the file: …". The POST path in the web also maps `NotReadableError` to that code. See `shortReadError` and `uploadReadError`, and `uploadFileViaPost`.
+5. **Cancel is best effort:** `upload_abort` is sent only once an `upload_begin` has gone out. With no socket open, the partial file is left to the server's 24 h cleanup. See `abortUpload`.
+6. **If Web Crypto is missing, the upload id falls back to `Math.random`** so the client keeps working outside a browser. See `generateUploadId`.

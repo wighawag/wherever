@@ -4,6 +4,10 @@ import {
 	WhereverClient,
 	parseSkillInvocation,
 	type ChatMessage,
+	type UploadByteSource,
+	type UploadError,
+	type UploadProgress,
+	type UploadState,
 	type WhereverState,
 } from '@wherever-dev/client';
 import {
@@ -1087,75 +1091,63 @@ export const isLoadingMoreHistory = derived(
 async function uploadFileViaPost(
 	sessionId: string,
 	file: File,
-	signal?: AbortSignal,
+	signal: AbortSignal | undefined,
+	report: (state: UploadState, error?: UploadError) => void,
 ): Promise<{savedPath: string; filename: string}> {
 	const baseUrl = getBaseUrl();
 	const token = getToken();
 	const url = `${baseUrl}/session/upload?sessionId=${encodeURIComponent(sessionId)}&filename=${encodeURIComponent(file.name)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
 
-	const fileData = await file.arrayBuffer();
+	// No byte progress on POST yet (post-upload-progress-and-gate): acked stays 0.
+	report('sending');
+	try {
+		const fileData = await file.arrayBuffer();
 
-	const res = await fetch(url, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'text/plain',
-		},
-		body: fileData,
-		signal,
-	});
+		const res = await fetch(url, {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'text/plain',
+			},
+			body: fileData,
+			signal,
+		});
 
-	if (!res.ok) {
-		const errData = await res.json().catch(() => ({}));
-		throw new Error(errData.error || `Upload failed with status ${res.status}`);
+		if (!res.ok) {
+			const errData = await res.json().catch(() => ({}));
+			throw new Error(
+				errData.error || `Upload failed with status ${res.status}`,
+			);
+		}
+
+		const result = await res.json();
+		report('done');
+		return result;
+	} catch (err) {
+		if (signal?.aborted) {
+			report('aborted');
+		} else if ((err as Error)?.name === 'NotReadableError') {
+			const message = 'The file is no longer readable, pick it again';
+			report('failed', {message, code: 'not_readable'});
+			throw Object.assign(new Error(message), {code: 'not_readable'});
+		} else {
+			report('failed', {message: (err as Error)?.message || 'Upload failed'});
+		}
+		throw err;
 	}
-
-	return await res.json();
 }
 
-// base64 of 72 MiB is exactly 96 MiB, the client's MAX_UPLOAD_BASE64_CHARS.
-const MAX_WS_UPLOAD_FILE_BYTES = 72 * 1024 * 1024;
-
-function uploadFileViaWebSocket(
-	sessionId: string,
-	file: File,
-	signal?: AbortSignal,
-): Promise<{savedPath: string; filename: string}> {
-	// The client refuses base64 payloads over ~96 MiB (one WS frame under the
-	// server's 100 MiB maxPayload). Check the raw size BEFORE reading, so a
-	// large video is not fully loaded and base64-encoded just to be refused.
-	if (file.size > MAX_WS_UPLOAD_FILE_BYTES) {
-		return Promise.reject(
-			new Error('File too large to upload over the WebSocket (max 72 MB)'),
-		);
-	}
-	return new Promise((resolve, reject) => {
-		try {
-			const reader = new FileReader();
-			reader.onload = () => {
-				try {
-					const result = reader.result as string;
-					const base64Data = result.split(',')[1] || '';
-
-					client
-						.uploadFileViaWebSocket(sessionId, file.name, base64Data, {
-							signal,
-						})
-						.then(resolve)
-						.catch(reject);
-				} catch (err) {
-					reject(
-						new Error(`Failed to process file data: ${(err as Error).message}`),
-					);
-				}
-			};
-			reader.onerror = () => {
-				reject(new Error('Failed to read file contents'));
-			};
-			reader.readAsDataURL(file);
-		} catch (err) {
-			reject(err);
-		}
-	});
+/**
+ * A picked File as the client's platform-neutral byte source. `File.slice()`
+ * reads only the requested range, so a chunked upload never holds the whole
+ * file in memory; a `NotReadableError` (the OS invalidated the pick) passes
+ * through for the client to turn into "pick it again".
+ */
+export function fileByteSource(file: File): UploadByteSource {
+	return {
+		size: file.size,
+		read: async (offset, length) =>
+			new Uint8Array(await file.slice(offset, offset + length).arrayBuffer()),
+	};
 }
 
 /**
@@ -1179,17 +1171,46 @@ export function downloadFileUrl(path: string): string | null {
 	);
 }
 
+/**
+ * Upload a composer attachment. `onProgress` receives every state change,
+ * `{acked, size, state, error?}` (the same shape as the client's
+ * `uploadsStore` entries), on EVERY path, so it can be the chip's single source
+ * of truth. Over the WebSocket the client picks the protocol (chunked with real
+ * acked progress on servers with `upload.v1`, else the legacy one-frame upload:
+ * `queued` -> `sending` (acked 0) -> `paused` while its socket is lost ->
+ * `done` / `failed`). POST reports `sending` (acked 0) -> `done` / `failed`. A
+ * cancel through `signal` reports `aborted`.
+ */
 export async function uploadFile(
 	sessionId: string,
 	file: File,
-	options?: {signal?: AbortSignal},
+	options?: {
+		signal?: AbortSignal;
+		onProgress?: (progress: UploadProgress) => void;
+	},
 ): Promise<{savedPath: string; filename: string}> {
 	const method = get(uploadMethodStore);
+	const onProgress = options?.onProgress;
 	if (method === 'post') {
-		return uploadFileViaPost(sessionId, file, options?.signal);
-	} else {
-		return uploadFileViaWebSocket(sessionId, file, options?.signal);
+		return uploadFileViaPost(sessionId, file, options?.signal, (state, error) =>
+			onProgress?.({
+				acked: state === 'done' ? file.size : 0,
+				size: file.size,
+				state,
+				...(error ? {error} : {}),
+			}),
+		);
 	}
+	return client.uploadFileViaWebSocket(
+		sessionId,
+		file.name,
+		fileByteSource(file),
+		{
+			signal: options?.signal,
+			mime: file.type || undefined,
+			onProgress,
+		},
+	);
 }
 
 // --- Saved drafts -------------------------------------------------------

@@ -4,6 +4,10 @@ import {
   type HydrationSnapshot,
   type RestoreInfo,
   type RestoreJobInfo,
+  type UploadByteSource,
+  type UploadOptions,
+  type UploadProgress,
+  type UploadState,
   type WhereverState,
   skillInvocationIdentity,
 } from "./types.js";
@@ -52,6 +56,152 @@ export interface WhereverClientConfig {
 // which is exactly the lifetime across which reconnects happen.
 function generateClientKey(): string {
   return `ck-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
+}
+
+// --- Uploads (docs/adr/0012, frames in docs/USAGE.md) ----------------------
+
+/** The capability a server advertises in `connected` for chunked uploads. */
+export const UPLOAD_CAPABILITY = 'upload.v1';
+
+const KiB = 1024;
+/**
+ * Chunked-upload pacing. The window is the number of BYTES in flight (sent, not
+ * yet acked): about UPLOAD_WINDOW_SECONDS worth at the throughput measured from
+ * acks, clamped to [UPLOAD_WINDOW_MIN, UPLOAD_WINDOW_MAX]. Before any ack has
+ * been timed it is the minimum, so a slow uplink is never flooded (a queue of
+ * bytes ahead of the heartbeat pong is what used to kill the socket). Each chunk
+ * is `min(window, UPLOAD_CHUNK_MAX)`, well under the server's 1 MiB cap.
+ */
+const UPLOAD_WINDOW_MIN = 64 * KiB;
+const UPLOAD_WINDOW_MAX = 1024 * KiB;
+const UPLOAD_CHUNK_MAX = 256 * KiB;
+const UPLOAD_WINDOW_SECONDS = 2;
+// Weight of the newest throughput sample in the moving average.
+const UPLOAD_RATE_ALPHA = 0.3;
+// Legacy base64 is built from reads of this many bytes: a multiple of 3, so
+// each piece encodes without `=` padding and the pieces simply concatenate.
+const LEGACY_READ_BYTES = 3 * 256 * KiB;
+
+const NOT_READABLE_MESSAGE = 'The file is no longer readable, pick it again';
+
+/**
+ * One upload in flight. The PROTOCOL is chosen when the upload is first SENT,
+ * from that socket's `connected.capabilities` (never at creation: the socket
+ * may change before then), and then stays fixed:
+ *
+ * - `chunked` (`upload.v1`): `upload_begin` -> binary chunks, each acked with
+ *   `upload_offset` -> `upload_finish` -> `file_uploaded`. Every (re)send starts
+ *   with a begin, whose offset says where to continue, so nothing acked is ever
+ *   re-sent. Reconnecting to a server WITHOUT the capability fails it ("retry"):
+ *   switching it to legacy would silently re-send the whole file.
+ * - `legacy`: one base64 `file_upload` frame, built once at the first send and
+ *   re-sent whole after a lost socket (capped by MAX_UPLOAD_SENDS). A legacy
+ *   upload is NOT upgraded to chunked on a newer server: the old server may
+ *   already have saved it, and the frame is already built.
+ */
+interface PendingUpload {
+  uploadId: string;
+  sessionId: string;
+  filename: string;
+  mime?: string;
+  source: UploadByteSource;
+  onProgress?: (progress: UploadProgress) => void;
+  resolve: (val: {savedPath: string; filename: string}) => void;
+  reject: (err: any) => void;
+  // The waiting clock (UPLOAD_TIMEOUT_MS); running only while not on the wire.
+  timer: ReturnType<typeof setTimeout> | null;
+  // The socket the upload was last handed to (null = never sent / lost). It
+  // only counts as sent for the socket that is still current.
+  sentOn: any;
+  protocol: 'legacy' | 'chunked' | null;
+  state: UploadState;
+  acked: number;
+  // Legacy: the frame once built, whether its read is running, and how many
+  // times it has been handed to a socket.
+  frame: any | null;
+  preparing: boolean;
+  sends: number;
+  // Chunked: an upload_begin has been sent at least once (so cancel must tell
+  // the server); waiting for the current begin's answer; the next byte to send;
+  // the chunks sent and not yet acked, in order (acks come back in order).
+  begun: boolean;
+  awaitingBegin: boolean;
+  nextOffset: number;
+  inFlight: Array<{offset: number; length: number; sentAt: number}>;
+  // An ack did not match its chunk: send nothing until every in-flight chunk is
+  // answered, then continue from the last (true) offset.
+  realigning: boolean;
+  finishing: boolean;
+  // A source read is running; readGen invalidates its result when the socket
+  // or the alignment changed meanwhile.
+  reading: boolean;
+  readGen: number;
+  // Measured throughput in bytes/ms (null until the first timed ack).
+  rate: number | null;
+  lastAckAt: number;
+}
+
+/** `[u8 kind=1][u8 version=1][u8 idLen][uploadId ascii][u64 offset BE][payload]` */
+export function encodeChunkFrame(uploadId: string, offset: number, payload: Uint8Array): Uint8Array {
+  const head = 3 + uploadId.length;
+  const frame = new Uint8Array(head + 8 + payload.length);
+  frame[0] = 1;
+  frame[1] = 1;
+  frame[2] = uploadId.length;
+  for (let i = 0; i < uploadId.length; i++) frame[3 + i] = uploadId.charCodeAt(i);
+  const view = new DataView(frame.buffer);
+  view.setUint32(head, Math.floor(offset / 2 ** 32));
+  view.setUint32(head + 4, offset >>> 0);
+  frame.set(payload, head + 8);
+  return frame;
+}
+
+function bytesToBinaryString(bytes: Uint8Array): string {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    out += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000) as unknown as number[]);
+  }
+  return out;
+}
+
+/**
+ * 128 random bits, base64url without padding (22 characters, matching the
+ * server's `^[A-Za-z0-9_-]{22,64}$`). The id is what makes a resume
+ * unguessable, so it comes from `crypto.getRandomValues`; Math.random is only a
+ * last resort for a runtime without Web Crypto.
+ */
+function generateUploadId(): string {
+  const bytes = new Uint8Array(16);
+  const c = (globalThis as any).crypto;
+  if (c && typeof c.getRandomValues === 'function') {
+    c.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return btoa(bytesToBinaryString(bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+class UploadReadError extends Error {
+  code?: 'not_readable';
+}
+
+// The error an upload fails with when its byte source cannot be read.
+function uploadReadError(err: any): UploadReadError {
+  if (err instanceof UploadReadError) return err;
+  if (err && err.name === 'NotReadableError') {
+    const e = new UploadReadError(NOT_READABLE_MESSAGE);
+    e.code = 'not_readable';
+    return e;
+  }
+  return new UploadReadError(`Failed to read the file: ${(err && err.message) || err}`);
+}
+
+// A read that returned fewer (or other) bytes than asked: the file changed or
+// was invalidated under us, which to the user is the same as unreadable.
+function shortReadError(): UploadReadError {
+  const e = new UploadReadError(NOT_READABLE_MESSAGE);
+  e.code = 'not_readable';
+  return e;
 }
 
 // The host as it goes on the socket URL: a pasted `http(s)://` prefix is dropped.
@@ -228,40 +378,40 @@ export class WhereverClient {
   // hydratedFile) means the cached session is dead: see hydration_rejected.
   private hydratedFile: string | null = null;
   private listeners = new Set<(msg: any) => void>();
-  // In-flight WebSocket uploads, keyed by uploadId. Each keeps its full frame so
-  // it can be (re)sent: an upload is NOT bound to the socket it started on. On
-  // mobile, picking a file backgrounds the page and the socket is often lost
-  // within seconds; the upload then waits for the next connection (onOpen
-  // re-sends every pending frame, since a reply owed by a dead socket never
-  // arrives). Without a server reply an upload is settled by: a full teardown
-  // (disconnect(true)), UPLOAD_TIMEOUT_MS of waiting, MAX_UPLOAD_SENDS
-  // attempts each lost with its socket, cancellation, or a session change.
-  // The one unbounded case is by design: a frame on the wire of a socket that
-  // stays open is left to its reply (the server's handler always answers), so
-  // a slow but healthy transfer is never cut off.
-  private pendingUploads = new Map<
-    string,
-    {
-      frame: any;
-      resolve: (val: any) => void;
-      reject: (err: any) => void;
-      timer: ReturnType<typeof setTimeout> | null;
-      // The socket the frame was last handed to (null = never sent / parked).
-      // A frame only counts as sent for the socket that is still current.
-      sentOn: any;
-      // How many times the frame has been handed to a socket.
-      sends: number;
-    }
-  >();
+  // In-flight WebSocket uploads, keyed by uploadId. An upload is NOT bound to
+  // the socket it started on. On mobile, picking a file backgrounds the page and
+  // the socket is often lost within seconds; the upload then waits for the next
+  // connection (it is (re)sent once the rejoin is answered, since a reply owed
+  // by a dead socket never arrives). Without a server reply an upload is
+  // settled by: a full teardown (disconnect(true)), UPLOAD_TIMEOUT_MS of
+  // waiting, MAX_UPLOAD_SENDS attempts each lost with its socket (legacy only),
+  // cancellation, or a session change. The one unbounded case is by design: an
+  // upload on the wire of a socket that stays open is left to its replies (the
+  // server's handlers always answer), so a slow but healthy transfer is never
+  // cut off. Two protocols share this machinery (see PendingUpload).
+  private pendingUploads = new Map<string, PendingUpload>();
+  // Progress of every upload this client started, keyed by uploadId: the same
+  // value each upload's onProgress receives. Settled entries (done / failed /
+  // aborted) stay until forgetUpload(), so a late subscriber still sees how an
+  // upload ended.
+  public uploadsStore: Writable<Record<string, UploadProgress>> = writable({});
+  // `connected.capabilities` of the CURRENT socket; null until its `connected`
+  // frame arrives. Uploads are HELD while null: sending one as legacy to a
+  // server that would have taken it chunked would throw resumability away.
+  private socketCapabilities: string[] | null = null;
   // An upload whose socket dies under it on every attempt (a frame too large
   // for the server's maxPayload, which closes with 1009; or a slow uplink where
   // the multi-MB frame starves the heartbeat) would otherwise be re-sent
   // forever, kicking the live session into a resync each time. After this many
-  // sends lost with their socket, it fails.
+  // sends lost with their socket, it fails. LEGACY frame only: a chunked upload
+  // resumes from the server's offset, so a lost socket costs it nothing.
   private static readonly MAX_UPLOAD_SENDS = 3;
   // `ws`'s default maxPayload is 100 MiB per frame; leave room for the JSON
-  // envelope. Larger base64 payloads are refused up front (~72 MB files).
+  // envelope. Larger base64 payloads are refused (~72 MB files). A backstop:
+  // the legacy path refuses `size > MAX_LEGACY_UPLOAD_BYTES` before reading.
   private static readonly MAX_UPLOAD_BASE64_CHARS = 96 * 1024 * 1024;
+  // base64 of 72 MiB is exactly 96 MiB, MAX_UPLOAD_BASE64_CHARS.
+  private static readonly MAX_LEGACY_UPLOAD_BYTES = 72 * 1024 * 1024;
   // Bounds the time an upload spends WAITING to be sent (no socket, or held for
   // a rejoin), not its transmission: the clock is cleared whenever the frame
   // actually goes out on an open socket, and re-armed when that socket closes.
@@ -358,6 +508,8 @@ export class WhereverClient {
       return;
     }
 
+    // A new socket: its capabilities are unknown until its `connected` frame.
+    this.socketCapabilities = null;
     try {
       const wsOptions = this.config.secure && this.config.WebSocketCtor ? { rejectUnauthorized: false } : undefined;
       this.ws = wsOptions ? new WebSocketImpl(wsUrl, wsOptions) : new WebSocketImpl(wsUrl);
@@ -982,6 +1134,12 @@ export class WhereverClient {
           serverVersion: msg.serverVersion ?? null,
           error: null,
         }));
+        // Uploads held for unknown capabilities can now choose their protocol
+        // (still subject to the rejoin hold).
+        this.socketCapabilities = Array.isArray(msg.capabilities)
+          ? msg.capabilities.filter((c: unknown) => typeof c === 'string')
+          : [];
+        this.resendPendingUploads();
         break;
 
       case 'connection_superseded':
@@ -999,21 +1157,17 @@ export class WhereverClient {
         }
         break;
 
-      case 'file_uploaded': {
-        const pending = this.takePendingUpload(msg.uploadId);
-        if (pending) {
-          pending.resolve({savedPath: msg.savedPath, filename: msg.filename});
-        }
+      case 'file_uploaded':
+        this.completeUpload(msg.uploadId, {savedPath: msg.savedPath, filename: msg.filename});
         break;
-      }
 
-      case 'file_upload_error': {
-        const pending = this.takePendingUpload(msg.uploadId);
-        if (pending) {
-          pending.reject(new Error(msg.error));
-        }
+      case 'file_upload_error':
+        this.failUpload(msg.uploadId, msg.error);
         break;
-      }
+
+      case 'upload_offset':
+        this.handleUploadOffset(msg);
+        break;
 
       case 'agent_start':
         if (this.agentEndTimeout) {
@@ -3115,45 +3269,70 @@ export class WhereverClient {
     };
   }
 
+  /**
+   * Upload a file over the WebSocket. Resolves with the server's saved path;
+   * rejects on failure (an `Error`, with `code: 'not_readable'` when the byte
+   * source can no longer be read) or with "Upload cancelled" when
+   * `options.signal` aborts. Progress (`{acked, size, state, error?}`) goes to
+   * `options.onProgress` and to `uploadsStore`.
+   *
+   * The protocol is chosen when the upload is SENT, from that socket's
+   * `connected.capabilities`: chunked (`upload.v1`) when advertised, else the
+   * legacy base64 `file_upload` frame (see PendingUpload). The legacy path
+   * refuses files over 72 MiB from `source.size`, before reading anything.
+   */
   public uploadFileViaWebSocket(
     sessionId: string,
     filename: string,
-    base64Data: string,
-    options?: {signal?: AbortSignal},
+    source: UploadByteSource,
+    options?: UploadOptions,
   ): Promise<{savedPath: string; filename: string}> {
     return new Promise((resolve, reject) => {
       const signal = options?.signal;
       if (signal?.aborted) {
+        options?.onProgress?.({acked: 0, size: source.size, state: 'aborted'});
         reject(new Error('Upload cancelled'));
         return;
       }
-      if (base64Data.length > WhereverClient.MAX_UPLOAD_BASE64_CHARS) {
-        reject(
-          new Error(
-            'File too large to upload over the WebSocket (max 72 MB)',
-          ),
-        );
-        return;
-      }
-      const uploadId = this.generateId();
-      const frame = {
-        type: 'file_upload',
+      const uploadId = generateUploadId();
+      const upload: PendingUpload = {
         uploadId,
         sessionId,
         filename,
-        data: base64Data,
+        mime: options?.mime || undefined,
+        source,
+        onProgress: options?.onProgress,
+        resolve,
+        reject,
+        timer: null,
+        sentOn: null,
+        protocol: null,
+        state: 'queued',
+        acked: 0,
+        frame: null,
+        preparing: false,
+        sends: 0,
+        begun: false,
+        awaitingBegin: false,
+        nextOffset: 0,
+        inFlight: [],
+        realigning: false,
+        finishing: false,
+        reading: false,
+        readGen: 0,
+        rate: null,
+        lastAckAt: 0,
       };
-      this.pendingUploads.set(uploadId, {frame, resolve, reject, timer: null, sentOn: null, sends: 0});
+      this.pendingUploads.set(uploadId, upload);
+      this.reportUpload(upload);
       // Cancelling (e.g. the chip was removed) settles the promise and drops
-      // the parked frame so it is not re-sent on the next reconnect. A frame
+      // the upload so it is not re-sent on the next reconnect. A chunked upload
+      // the server knows about is told to drop its partial; a legacy frame
       // already handed to the socket cannot be recalled.
-      signal?.addEventListener('abort', () => {
-        this.takePendingUpload(uploadId)?.reject(new Error('Upload cancelled'));
-      });
-      // Sent now when the socket is OPEN and not mid-rejoin. Otherwise the frame
-      // waits in pendingUploads and is sent once the rejoin is answered. It used
-      // to be fired and forgotten here, so an upload started while
-      // (re)connecting hung forever.
+      signal?.addEventListener('abort', () => this.abortUpload(uploadId), {once: true});
+      // Sent now when the socket is OPEN, its capabilities are known and it is
+      // not mid-rejoin. Otherwise the upload waits in pendingUploads and is
+      // sent once those hold.
       if (!this.trySendUpload(uploadId)) this.ensureUploadTimer(uploadId);
     });
   }
@@ -3163,25 +3342,301 @@ export class WhereverClient {
     return this.pendingUploads.size;
   }
 
+  /** Drop a SETTLED upload's entry from uploadsStore (in-flight ones stay). */
+  public forgetUpload(uploadId: string) {
+    if (this.pendingUploads.has(uploadId)) return;
+    this.uploadsStore.update((all) => {
+      if (!(uploadId in all)) return all;
+      const next = {...all};
+      delete next[uploadId];
+      return next;
+    });
+  }
+
+  // Hand the upload to the current socket if it can go now. True when it is on
+  // the wire (or settled: nothing left to wait for), false when it waits.
   private trySendUpload(uploadId: string): boolean {
-    const pending = this.pendingUploads.get(uploadId);
-    if (!pending || this.uploadsHeldForRejoin) return false;
-    if (pending.sends >= WhereverClient.MAX_UPLOAD_SENDS) {
-      // Every previous attempt lost its socket mid-transfer: stop retrying.
-      this.takePendingUpload(uploadId)?.reject(
-        new Error(
-          'Upload failed: the connection dropped during the transfer each time (the file may be too large or the connection too slow)',
-        ),
-      );
-      return true; // settled; nothing left to wait for
+    const upload = this.pendingUploads.get(uploadId);
+    if (!upload || this.uploadsHeldForRejoin) return false;
+    if (!this.ws || this.ws.readyState !== 1 /* OPEN */) return false;
+    // Capabilities unknown: HOLD (see socketCapabilities).
+    if (this.socketCapabilities === null) return false;
+    const chunked = this.socketCapabilities.includes(UPLOAD_CAPABILITY);
+    if (upload.protocol === null) upload.protocol = chunked ? 'chunked' : 'legacy';
+    if (upload.protocol === 'chunked') {
+      if (!chunked) {
+        this.failUpload(uploadId, 'The server no longer supports resumable uploads, retry');
+        return true;
+      }
+      return this.beginChunkedUpload(upload);
     }
-    if (!this.send(pending.frame)) return false;
-    pending.sends++;
-    pending.sentOn = this.ws;
+    return this.sendLegacyUpload(upload);
+  }
+
+  private sendLegacyUpload(upload: PendingUpload): boolean {
+    if (upload.sends >= WhereverClient.MAX_UPLOAD_SENDS) {
+      // Every previous attempt lost its socket mid-transfer: stop retrying.
+      this.failUpload(
+        upload.uploadId,
+        'Upload failed: the connection dropped during the transfer each time (the file may be too large or the connection too slow)',
+      );
+      return true;
+    }
+    if (!upload.frame) {
+      // Checked from the size BEFORE reading, so a huge video is never loaded
+      // and encoded just to be refused (and never crashes the tab).
+      if (upload.source.size > WhereverClient.MAX_LEGACY_UPLOAD_BYTES) {
+        this.failUpload(upload.uploadId, 'File too large to upload over the WebSocket (max 72 MB)');
+        return true;
+      }
+      if (!upload.preparing) {
+        upload.preparing = true;
+        this.prepareLegacyFrame(upload);
+      }
+      return false;
+    }
+    if (!this.send(upload.frame)) return false;
+    upload.sends++;
+    upload.sentOn = this.ws;
     // On the wire: stop the waiting clock (transmission time is not bounded).
-    if (pending.timer) clearTimeout(pending.timer);
-    pending.timer = null;
+    this.stopUploadTimer(upload);
+    this.reportUpload(upload, 'sending');
     return true;
+  }
+
+  // Read and base64-encode the whole file once, then send it if still wanted.
+  private prepareLegacyFrame(upload: PendingUpload) {
+    this.readLegacyBase64(upload.source).then(
+      (data) => {
+        if (this.pendingUploads.get(upload.uploadId) !== upload) return;
+        upload.preparing = false;
+        upload.frame = {
+          type: 'file_upload',
+          uploadId: upload.uploadId,
+          sessionId: upload.sessionId,
+          filename: upload.filename,
+          data,
+        };
+        if (!this.trySendUpload(upload.uploadId)) this.ensureUploadTimer(upload.uploadId);
+      },
+      (err) => {
+        if (this.pendingUploads.get(upload.uploadId) !== upload) return;
+        const e = err instanceof UploadReadError ? err : uploadReadError(err);
+        this.failUpload(upload.uploadId, e.message, e.code);
+      },
+    );
+  }
+
+  // base64 over reads of LEGACY_READ_BYTES (a multiple of 3, so no padding in
+  // the middle), platform-neutral (btoa). MAX_UPLOAD_BASE64_CHARS is a
+  // backstop for a source that yields more than its size claimed.
+  private async readLegacyBase64(source: UploadByteSource): Promise<string> {
+    const parts: string[] = [];
+    let chars = 0;
+    for (let offset = 0; offset < source.size; offset += LEGACY_READ_BYTES) {
+      const length = Math.min(LEGACY_READ_BYTES, source.size - offset);
+      let bytes: Uint8Array;
+      try {
+        bytes = await source.read(offset, length);
+      } catch (err) {
+        throw uploadReadError(err);
+      }
+      chars += 4 * Math.ceil(bytes.length / 3);
+      if (chars > WhereverClient.MAX_UPLOAD_BASE64_CHARS) {
+        throw new UploadReadError('File too large to upload over the WebSocket (max 72 MB)');
+      }
+      if (bytes.length !== length) throw shortReadError();
+      parts.push(btoa(bytesToBinaryString(bytes)));
+    }
+    return parts.join('');
+  }
+
+  // (Re)start a chunked upload on the current socket: the begin's answer says
+  // where to continue (or that it is already done).
+  private beginChunkedUpload(upload: PendingUpload): boolean {
+    const sent = this.send({
+      type: 'upload_begin',
+      uploadId: upload.uploadId,
+      sessionId: upload.sessionId,
+      filename: upload.filename,
+      size: upload.source.size,
+      ...(upload.mime ? {mime: upload.mime} : {}),
+    });
+    if (!sent) return false;
+    upload.begun = true;
+    upload.sentOn = this.ws;
+    upload.awaitingBegin = true;
+    upload.inFlight = [];
+    upload.realigning = false;
+    upload.finishing = false;
+    upload.readGen++;
+    // Transmitting: the waiting clock stops (it bounds waiting, not sending).
+    this.stopUploadTimer(upload);
+    this.reportUpload(upload, 'sending');
+    return true;
+  }
+
+  // `upload_offset`: the server's offset for a chunked upload, answering a begin
+  // or a chunk. Progress is ONLY ever this value, never what was sent.
+  private handleUploadOffset(msg: any) {
+    const upload = this.pendingUploads.get(msg.uploadId);
+    if (!upload || upload.protocol !== 'chunked' || !this.isUploadOnWire(upload)) return;
+    if (msg.done) {
+      this.completeUpload(upload.uploadId, {savedPath: msg.savedPath, filename: upload.filename});
+      return;
+    }
+    const offset = msg.offset;
+    const size = upload.source.size;
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > size) return;
+    const now = Date.now();
+    if (upload.awaitingBegin) {
+      upload.awaitingBegin = false;
+      upload.nextOffset = offset;
+      upload.lastAckAt = now;
+    } else {
+      const chunk = upload.inFlight.shift();
+      if (!chunk) return; // nothing of ours is awaiting an answer
+      if (!upload.realigning && offset === chunk.offset + chunk.length) {
+        // Time this chunk from when it could start being serviced: its send, or
+        // the previous ack if it was queued behind that one.
+        const elapsed = Math.max(1, now - Math.max(chunk.sentAt, upload.lastAckAt));
+        const sample = chunk.length / elapsed;
+        upload.rate =
+          upload.rate === null ? sample : upload.rate * (1 - UPLOAD_RATE_ALPHA) + sample * UPLOAD_RATE_ALPHA;
+        upload.lastAckAt = now;
+      } else if (!upload.realigning) {
+        // Out of step with the server: discard any read meant for the old
+        // position and wait for the rest of the in-flight acks.
+        upload.realigning = true;
+        upload.readGen++;
+      }
+      if (upload.realigning && upload.inFlight.length === 0) {
+        upload.realigning = false;
+        upload.nextOffset = offset;
+        upload.lastAckAt = now;
+      }
+    }
+    upload.acked = offset;
+    this.reportUpload(upload);
+    this.pumpUpload(upload);
+  }
+
+  private uploadWindow(upload: PendingUpload): number {
+    if (upload.rate === null) return UPLOAD_WINDOW_MIN;
+    const bytes = upload.rate * 1000 * UPLOAD_WINDOW_SECONDS;
+    return Math.min(UPLOAD_WINDOW_MAX, Math.max(UPLOAD_WINDOW_MIN, Math.floor(bytes)));
+  }
+
+  // Send the next chunk if the window allows, or finish once every byte is
+  // acked. One source read at a time; each completed send pumps again.
+  private pumpUpload(upload: PendingUpload) {
+    if (this.pendingUploads.get(upload.uploadId) !== upload) return;
+    if (upload.reading || upload.awaitingBegin || upload.realigning || upload.finishing) return;
+    if (!this.isUploadOnWire(upload)) return;
+    const size = upload.source.size;
+    if (upload.acked === size && upload.inFlight.length === 0) {
+      if (!this.send({type: 'upload_finish', uploadId: upload.uploadId, sessionId: upload.sessionId})) return;
+      upload.finishing = true;
+      this.reportUpload(upload, 'finishing');
+      return;
+    }
+    if (upload.nextOffset >= size) return;
+    const window = this.uploadWindow(upload);
+    const length = Math.min(window, UPLOAD_CHUNK_MAX, size - upload.nextOffset);
+    const inFlightBytes = upload.inFlight.reduce((n, c) => n + c.length, 0);
+    if (inFlightBytes + length > window) return;
+    const offset = upload.nextOffset;
+    const gen = upload.readGen;
+    const socket = this.ws;
+    upload.reading = true;
+    Promise.resolve()
+      .then(() => upload.source.read(offset, length))
+      .then(
+        (bytes) => {
+          if (this.pendingUploads.get(upload.uploadId) !== upload) return;
+          upload.reading = false;
+          // The socket or the alignment changed while reading: drop the bytes.
+          if (gen !== upload.readGen || socket !== this.ws || !this.isUploadOnWire(upload)) {
+            this.pumpUpload(upload);
+            return;
+          }
+          if (bytes.length !== length) {
+            const e = shortReadError();
+            this.failUpload(upload.uploadId, e.message, e.code);
+            return;
+          }
+          // A socket that refuses the frame is closing; its close handler
+          // pauses the upload.
+          if (!this.sendBinary(encodeChunkFrame(upload.uploadId, offset, bytes))) return;
+          upload.inFlight.push({offset, length, sentAt: Date.now()});
+          upload.nextOffset = offset + length;
+          this.pumpUpload(upload);
+        },
+        (err) => {
+          if (this.pendingUploads.get(upload.uploadId) !== upload) return;
+          const e = uploadReadError(err);
+          this.failUpload(upload.uploadId, e.message, e.code);
+        },
+      );
+  }
+
+  private sendBinary(bytes: Uint8Array): boolean {
+    if (this.ws && this.ws.readyState === 1 /* OPEN */) {
+      try {
+        this.ws.send(bytes);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  // Record (and announce) an upload's progress. `state` defaults to the current.
+  private reportUpload(upload: PendingUpload, state?: UploadState, error?: {message: string; code?: 'not_readable'}) {
+    if (state) upload.state = state;
+    const progress: UploadProgress = {
+      acked: upload.acked,
+      size: upload.source.size,
+      state: upload.state,
+      ...(error ? {error} : {}),
+    };
+    this.uploadsStore.update((all) => ({...all, [upload.uploadId]: progress}));
+    if (upload.onProgress) {
+      try {
+        upload.onProgress({...progress});
+      } catch (err) {
+        console.error('Upload onProgress failed:', err);
+      }
+    }
+  }
+
+  private completeUpload(uploadId: string, result: {savedPath: string; filename: string}) {
+    const upload = this.takePendingUpload(uploadId);
+    if (!upload) return;
+    upload.acked = upload.source.size;
+    this.reportUpload(upload, 'done');
+    upload.resolve(result);
+  }
+
+  private failUpload(uploadId: string, message: string, code?: 'not_readable') {
+    const upload = this.takePendingUpload(uploadId);
+    if (!upload) return;
+    const err: Error & {code?: string} = new Error(message);
+    if (code) err.code = code;
+    this.reportUpload(upload, 'failed', code ? {message, code} : {message});
+    upload.reject(err);
+  }
+
+  private abortUpload(uploadId: string) {
+    const upload = this.takePendingUpload(uploadId);
+    if (!upload) return;
+    // Best effort: with no open socket the partial is left to the server's GC.
+    if (upload.protocol === 'chunked' && upload.begun) {
+      this.send({type: 'upload_abort', uploadId, sessionId: upload.sessionId});
+    }
+    this.reportUpload(upload, 'aborted');
+    upload.reject(new Error('Upload cancelled'));
   }
 
   private isUploadOnWire(pending: {sentOn: any}): boolean {
@@ -3189,12 +3644,22 @@ export class WhereverClient {
   }
 
   // The socket carrying uploads went away (by close, suspend, or the liveness
-  // teardown, the latter two bypassing onClose). Every pending frame is waiting
-  // again: forget where it was sent and restart its waiting clock, so no upload
-  // can be left without a timer.
+  // teardown, the latter two bypassing onClose). Every upload is waiting again:
+  // forget where it was sent, pause it, and restart its waiting clock, so no
+  // upload can be left without a timer. A chunked upload forgets its in-flight
+  // chunks: the next begin tells it what the server really has.
   private uploadsLostSocket() {
-    for (const [id, pending] of this.pendingUploads) {
-      pending.sentOn = null;
+    for (const [id, upload] of this.pendingUploads) {
+      const wasOnWire = upload.sentOn !== null;
+      upload.sentOn = null;
+      if (upload.protocol === 'chunked') {
+        upload.awaitingBegin = false;
+        upload.inFlight = [];
+        upload.realigning = false;
+        upload.finishing = false;
+        upload.readGen++;
+      }
+      if (wasOnWire && upload.state !== 'paused') this.reportUpload(upload, 'paused');
       // Arm only a clock that is not already running. Re-arming on every loss
       // restarted the deadline on each failed reconnect attempt (at most 15 s
       // apart), so an upload against an unreachable server waited forever.
@@ -3205,10 +3670,10 @@ export class WhereverClient {
   // Fail uploads that have not reached the current socket (parked or held),
   // optionally sparing those aimed at `keepSessionId`.
   private failUnsentUploads(reason: string, keepSessionId?: string) {
-    for (const [id, pending] of [...this.pendingUploads]) {
-      if (this.isUploadOnWire(pending)) continue;
-      if (keepSessionId && pending.frame.sessionId === keepSessionId) continue;
-      this.takePendingUpload(id)?.reject(new Error(reason));
+    for (const [id, upload] of [...this.pendingUploads]) {
+      if (this.isUploadOnWire(upload)) continue;
+      if (keepSessionId && upload.sessionId === keepSessionId) continue;
+      this.failUpload(id, reason);
     }
   }
 
@@ -3233,14 +3698,17 @@ export class WhereverClient {
     if (pending && !pending.timer) this.armUploadTimer(uploadId);
   }
 
+  private stopUploadTimer(upload: PendingUpload) {
+    if (upload.timer) clearTimeout(upload.timer);
+    upload.timer = null;
+  }
+
   private armUploadTimer(uploadId: string) {
     const pending = this.pendingUploads.get(uploadId);
     if (!pending || typeof setTimeout !== 'function') return;
     if (pending.timer) clearTimeout(pending.timer);
     pending.timer = setTimeout(() => {
-      this.takePendingUpload(uploadId)?.reject(
-        new Error('Upload timed out (no connection to the server)'),
-      );
+      this.failUpload(uploadId, 'Upload timed out (no connection to the server)');
     }, WhereverClient.UPLOAD_TIMEOUT_MS);
     if (pending.timer && typeof (pending.timer as any).unref === 'function') {
       (pending.timer as any).unref();
@@ -3264,7 +3732,7 @@ export class WhereverClient {
 
   private rejectPendingUploads(reason: string) {
     for (const id of [...this.pendingUploads.keys()]) {
-      this.takePendingUpload(id)?.reject(new Error(reason));
+      this.failUpload(id, reason);
     }
   }
 

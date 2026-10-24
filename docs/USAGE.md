@@ -433,6 +433,14 @@ Optionally add `&clientKey=YOUR_STABLE_KEY` (max 128 chars): a stable identity f
   "sessionId": "abc123xyz"
 }
 
+// How @wherever-dev/client drives this: it waits for the socket's `connected`
+// frame, then uses the chunked protocol if `capabilities` has "upload.v1" and
+// the legacy `file_upload` frame otherwise (files over 72 MiB are refused on
+// that path). It keeps about 2 s of measured throughput in flight (64 KiB to
+// 1 MiB, chunks of at most 256 KiB), reports progress from `upload_offset`
+// only, and after a reconnect + rejoin re-sends `upload_begin` and continues
+// from the returned offset.
+
 // "Continue anyway" on the folder-conflict warning banner: lift read-only for
 // the current session so it can send even though another session in the same
 // folder is active. Does NOT abort/take over the other session.
