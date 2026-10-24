@@ -1,5 +1,24 @@
 # @wherever-dev/client
 
+## 0.8.0
+
+### Minor Changes
+
+- 18696b8: Uploads over the WebSocket are now resumable and report real progress when the server supports it (`upload.v1`). The client sends the file as binary chunks, counts progress only from the server's acknowledgements, pauses on a dropped connection and, after the reconnect rejoins the session, continues from where the server got to instead of starting over. Cancelling an upload now tells the server to drop the partial file. Against an older server the client falls back to the previous single-frame upload, with the same limits as before (72 MB, three attempts). A file the phone can no longer read fails with "The file is no longer readable, pick it again".
+
+  Breaking for `@wherever-dev/client`: `uploadFileViaWebSocket(sessionId, filename, source, options)` now takes a byte source (`{size, read(offset, length)}`) instead of a base64 string, and gains `options.onProgress` and `options.mime`. The client also exposes `uploadsStore` (progress per upload id) and `forgetUpload(id)`. In the web app, `uploadFile()` accepts an `onProgress` callback that reports `{acked, size, state, error?}` for every upload method.
+
+### Patch Changes
+
+- bdafbcc: Client groundwork for showing a cached conversation instantly after a reload. `@wherever-dev/client` now exports `serverKey(config)` (a synchronous `host:port` plus token-hash identity) and `WhereverClient.hydrateCachedSession(snapshot)`, which paints a cached conversation before the socket is up and lets the normal reconnect rejoin replace it with the server's history. The store gains `serverKey` (the server that actually delivered the active session) and `historyAuthoritative` (gates `loadMoreHistory()` until the real history has arrived). A reconnect after the host, port or token were edited no longer preserves or rejoins the previous server's session. When the server refuses the load of a hydrated session outright, the client clears it and emits a synthesized `hydration_rejected` event to `onMessage` listeners. `resume()` no longer arms a load watchdog that was immediately cleared.
+- 338a3c0: Returning to the app after the file picker, the camera or a short app switch no longer tears down a healthy connection and resyncs the session. The client's liveness watchdog now treats a silent socket as suspect, not dead: it sends a ping and waits a 5 s grace period, and only reconnects if nothing at all arrives. The page also probes the socket on every return to visibility (`client.noteVisible()`), and a detected freeze (a wall-clock jump between watchdog ticks) triggers the same probe. A genuinely dead socket is still torn down and reconnected, about 5 s later than before.
+- 3da6573: Mobile resilience fixes for loading sessions, reconnecting and uploading files:
+  - Opening a session no longer flashes "New Session Started" while its history is still arriving. A "Loading conversation..." spinner is shown until the history lands.
+  - While disconnected or resyncing, the composer stays editable: you can keep reading, typing and attaching. Only sending (Send/Steer, Enter, dictation auto-send) waits for the connection and the resync.
+  - A WebSocket file upload is no longer tied to the socket it started on. If the socket drops (e.g. the file picker or camera backgrounds the page on mobile), the upload waits and is sent again automatically once the session has rejoined (after the server re-applies its read-only verdict). The chip shows "waiting for connection" in the meantime. Uploads always settle: they used to hang forever, leaving Send disabled. They now complete, fail, or time out after 10 minutes of waiting for a connection (time spent actually transferring does not count).
+  - Removing an attachment chip cancels its pending upload, and no longer updates the wrong chip.
+  - Uploads that waited for an unreachable server now time out after 10 minutes as intended (the clock used to restart on every reconnect attempt). An upload whose connection drops during the transfer on 3 consecutive attempts now fails with a clear message instead of retrying forever, and files too large for a single WebSocket frame (over 72 MB) are refused before being read.
+
 ## 0.7.0
 
 ### Minor Changes
