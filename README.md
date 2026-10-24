@@ -450,6 +450,13 @@ The configuration file is located at `~/.wherever/config.json` on the server mac
   - `method` (string, optional, Default: `'websocket'`): File transport method. Set to `'websocket'` for secure Base64 WebSocket transfer or `'post'` to fallback to HTTP multipart POST.
   - `maxBytes` (number, optional, Default: `1073741824`, i.e. 1 GiB): Maximum size of one uploaded file, in bytes. Larger uploads are refused with a reason.
 
+- **`piSdk`** (object, Default: `{ "source": "bundled" }`):
+  Which pi SDK the server runs its (web) sessions on. By default it is the one bundled with wherever, which its test suite runs against. Point it at the pi you use in a terminal instead and web and terminal sessions run the same pi: same built-in MCP, same extensions behaviour, same session format. Read once at startup (restart the server after changing it); the startup log and the web UI's version tooltip show which pi is in use.
+  - `source` (string, optional, Default: `'bundled'`): `'bundled'`; `'auto'` for the `pi` on the server's PATH (symlinked npm bins and shell wrappers such as Nix's are followed; note a systemd service has its own PATH); or a path to an install: the `@earendil-works/pi-coding-agent` package directory, a directory whose `node_modules` holds it, or a global npm prefix (e.g. `~/.npm-global`, which holds `lib/node_modules/...`).
+  - `allowUntested` (boolean, optional, Default: `false`): wherever runs on pi versions in its tested range without asking, and refuses others (falling back to the bundled SDK, with the reason in the log). Set `true` to use any version from 1.0.0 up anyway, at your own risk: pi does not follow semver strictly, so an untested version can break in ways the tests would have caught.
+  - `accept` (string, optional): a narrower opt-in than `allowUntested`: a semver range of untested versions to accept, e.g. `">=1.3.0 <1.6.0"`.
+  Versions older than 1.0.0 are always refused. A refused, missing or broken install never stops the server: it falls back to the bundled SDK. The environment variables `WHEREVER_PI_SDK`, `WHEREVER_PI_SDK_ALLOW_UNTESTED` and `WHEREVER_PI_SDK_ACCEPT` override these fields.
+
 - **`speech`** (object, optional):
   Configuration for cloud speech-to-text transcription:
   - `apiKey` (string, optional): API Key for the cloud transcription provider. Can also be set via the `SPEECH_API_KEY` environment variable.

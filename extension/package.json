@@ -30,17 +30,18 @@
   ],
   "dependencies": {
     "@wherever-dev/client": "workspace:*",
-    "typebox": "^1.1.38",
     "ws": "^8.18.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.80.3",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.0",
+    "typebox": "^1.1.38",
     "typescript": "^5.7.0"
   },
   "pi": {

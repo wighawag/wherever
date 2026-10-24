@@ -126,7 +126,9 @@ export type ServerMessage =
   // talking to next to its own build id. Optional so older servers still parse.
   // `capabilities` lists optional protocol features this server speaks
   // (`'upload.v1'`: resumable chunked uploads). Absent on older servers.
-  | { type: 'connected'; clientId: string; serverVersion?: string; capabilities?: string[] }
+  // `piVersion` is the version of the pi SDK the server runs its sessions on
+  // (bundled, or the install `piSdk` in config.json chose; see pi-sdk.ts).
+  | { type: 'connected'; clientId: string; serverVersion?: string; capabilities?: string[]; piVersion?: string }
 | { type: 'agent_start'; sessionId: string }
  | { type: 'thinking_update'; sessionId: string; delta: string }
  | { type: 'message_update'; sessionId: string; delta: string }

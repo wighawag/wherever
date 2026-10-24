@@ -251,6 +251,7 @@ const defaultState: WhereverState = {
 	messages: [],
 	clientId: null,
 	serverVersion: null,
+	piVersion: null,
 	folderConflict: null,
 	folderMissing: null,
 	restore: null,
@@ -1132,6 +1133,7 @@ export class WhereverClient {
           connecting: false,
           clientId: msg.clientId,
           serverVersion: msg.serverVersion ?? null,
+          piVersion: msg.piVersion ?? null,
           error: null,
         }));
         // Uploads held for unknown capabilities can now choose their protocol

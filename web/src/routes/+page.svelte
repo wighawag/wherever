@@ -640,7 +640,7 @@
 					<span
 						class="ml-auto font-mono text-xs text-brand-text-muted"
 						title={appState.serverVersion
-							? `App build ${version} · server ${appState.serverVersion}`
+							? `App build ${version} · server ${appState.serverVersion}${appState.piVersion ? ` · pi ${appState.piVersion}` : ''}`
 							: `App build ${version}`}
 					>
 						v{version}{#if appState.serverVersion}<span

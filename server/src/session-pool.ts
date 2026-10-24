@@ -123,6 +123,13 @@ export interface AppearanceConfig {
 
 export interface WhereverConfig {
   gitInitDefault?: boolean;
+  /**
+   * Which pi SDK server sessions run on (bundled, `auto` = the `pi` on PATH,
+   * or a path) and the version opt-ins. Read ONCE at startup by pi-sdk.ts,
+   * straight from config.json (this module loads after the choice is made);
+   * typed here so the config shape has one description. See pi-sdk-policy.ts.
+   */
+  piSdk?: PiSdkConfig;
   remoteRepoRules?: RemoteRepoRule[];
   commonFolders?: string[];
   /** Visual identity of THIS server instance in the web dashboard. */
@@ -695,17 +702,8 @@ async function runDiskScan(
   return infos;
 }
 
-/**
- * Directory holding `config.json`. `WHEREVER_CONFIG_DIR` overrides the default
- * `~/.wherever` so a test server can run in FULL isolation (ADR 0001): without
- * it, an isolated harness still reads the developer's real config, so e.g. a
- * personal `sessions.ignore: ["/tmp/**"]` silently hid the harness's own
- * temp-dir sessions from /sessions.
- */
-export function getWhereverConfigDir(): string {
-  const override = process.env.WHEREVER_CONFIG_DIR;
-  return override && override.trim() ? path.resolve(override.trim()) : path.join(os.homedir(), '.wherever');
-}
+export { getWhereverConfigDir } from './config-dir.js';
+import { getWhereverConfigDir } from './config-dir.js';
 
 /**
  * Directory holding everything the RUNNING SERVER WRITES (drafts, generated
@@ -931,7 +929,9 @@ export function detectRemoteRepo(rule: RemoteRepoRule, repoName: string): Remote
 // by the remote-CREATION path (a brand new repository); the registry configures
 // tracking for a clone itself.
 
-import { createAgentSession, AuthStorage, ModelRegistry, DefaultResourceLoader, SettingsManager, getAgentDir, SessionManager } from '@earendil-works/pi-coding-agent';
+// Runtime SDK values come from pi-sdk.ts (the SDK chosen at startup), never
+// from the package directly; types may still be imported from the package.
+import { createAgentSession, ModelRuntime, ModelRegistry, DefaultResourceLoader, SettingsManager, getAgentDir, SessionManager } from './pi-sdk.js';
 import type { CreateAgentSessionOptions } from '@earendil-works/pi-coding-agent';
 import type { BashOperations } from '@earendil-works/pi-coding-agent';
 import { spawn } from 'node:child_process';
@@ -940,6 +940,8 @@ import { createAttachFileTool } from './attach-file-tool.js';
 import { createSayTool } from './say-tool.js';
 import { createConversationModeSignal, type ConversationModeSignal } from './conversation-mode-hint.js';
 import { withoutCliBridgeExtension } from './cli-bridge-extension.js';
+import { serverBuiltinExtensions } from './builtin-extensions.js';
+import type { PiSdkConfig } from './pi-sdk-policy.js';
 import { markWhereverServerProcess } from './server-process-marker.js';
 import {
   bindServerSessionExtensions,
@@ -1040,8 +1042,16 @@ export class SessionPool {
   private sessions = new Map<string, TrackedSession>();
   private pendingSessions = new Map<string, Promise<{ tracked: TrackedSession; error?: string }>>();
   private pendingCreateSessions = new Map<string, Promise<{ tracked: TrackedSession; error?: string; sessionFile?: string }>>();
-  private authStorage: AuthStorage;
-  private modelRegistry: ModelRegistry;
+  /**
+   * The model/auth runtime shared by every server session (auth.json +
+   * models.json in the agent dir), and the registry view over it. pi creates
+   * the runtime asynchronously, so it is started in the constructor and every
+   * path that needs it awaits `ensureModels()` (a pool used without
+   * `initialize()`, as the tests do, still works).
+   */
+  private modelRuntime?: ModelRuntime;
+  private modelRegistry?: ModelRegistry;
+  private modelsReady: Promise<ModelRegistry>;
   private agentDir: string;
   private idleTimeoutMs: number;
 
@@ -1090,13 +1100,29 @@ export class SessionPool {
     this.extensionShutdownTimeoutMs = options.extensionShutdownTimeoutMs ?? EXTENSION_SHUTDOWN_TIMEOUT_MS;
     this.extensionBindWarnAfterMs = options.extensionBindWarnAfterMs ?? EXTENSION_BIND_WARN_AFTER_MS;
     this.agentDir = getAgentDir();
-    this.authStorage = AuthStorage.create();
-    this.modelRegistry = ModelRegistry.create(this.authStorage);
+    this.modelsReady = ModelRuntime.create({
+      authPath: path.join(this.agentDir, 'auth.json'),
+      modelsPath: path.join(this.agentDir, 'models.json'),
+    }).then((runtime) => {
+      this.modelRuntime = runtime;
+      this.modelRegistry = new ModelRegistry(runtime);
+      return this.modelRegistry;
+    });
+    // Observed here so a failure is never an unhandled rejection; every caller
+    // of ensureModels() still sees it.
+    this.modelsReady.catch((err) => {
+      console.error(`[wherever] could not load models/auth: ${err instanceof Error ? err.message : String(err)}`);
+    });
     this.idleTimeoutMs = idleTimeoutMs;
   }
 
+  /** The shared model registry, once pi's model runtime has loaded. */
+  private ensureModels(): Promise<ModelRegistry> {
+    return this.modelsReady;
+  }
+
   async initialize(): Promise<void> {
-    this.modelRegistry.refresh();
+    await this.ensureModels();
     // Bounded: an extension that talks to something slow while loading must
     // not hold the server's startup hostage. Past the bound the discovery keeps
     // going in the background and still registers what it finds.
@@ -1131,11 +1157,11 @@ export class SessionPool {
    * the shared registry for the life of the process (they survive `refresh()`),
    * which is what the other sessions and `/models` need.
    */
-  private registerExtensionProviders(resourceLoader: DefaultResourceLoader, label: string): void {
+  private registerExtensionProviders(models: ModelRegistry, resourceLoader: DefaultResourceLoader, label: string): void {
     const runtime = resourceLoader.getExtensions().runtime;
     for (const { name, config, extensionPath } of runtime.pendingProviderRegistrations) {
       try {
-        this.modelRegistry.registerProvider(name, config);
+        models.registerProvider(name, config);
       } catch (err) {
         console.error(
           `[wherever] ${label}: extension ${extensionPath} failed to register provider "${name}": ${
@@ -1173,7 +1199,7 @@ export class SessionPool {
         extensionsOverride: withoutCliBridgeExtension,
       });
       await resourceLoader.reload();
-      this.registerExtensionProviders(resourceLoader, 'startup discovery');
+      this.registerExtensionProviders(await this.ensureModels(), resourceLoader, 'startup discovery');
     } catch (err) {
       console.error(
         `[wherever] could not discover extension providers at startup: ${err instanceof Error ? err.message : String(err)}`,
@@ -1229,12 +1255,29 @@ export class SessionPool {
   }
 
   /**
+   * The models that have working auth right now. pi keeps availability as a
+   * snapshot it refreshes asynchronously, so this asks for a fresh pass first:
+   * a provider the user signed in to from a terminal pi since (auth.json
+   * changed) then shows up without restarting the server. If the pass fails,
+   * the last snapshot is still a better answer than nothing.
+   */
+  private async availableModels(): Promise<{ registry: ModelRegistry; available: readonly Model<Api>[] }> {
+    const registry = await this.ensureModels();
+    try {
+      return { registry, available: await this.modelRuntime!.getAvailable() };
+    } catch (err) {
+      console.error(`[wherever] model availability refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+      return { registry, available: registry.getAvailable() };
+    }
+  }
+
+  /**
    * List available models. `isDefault` is resolved against `cwd` (falling back to
    * the server's process cwd), so a folder-local harness/pi config default is
    * honored, not just the server global default.
    */
-  getAvailableModels(cwd?: string): ModelInfo[] {
-    const available = this.modelRegistry.getAvailable();
+  async getAvailableModels(cwd?: string): Promise<ModelInfo[]> {
+    const { registry, available } = await this.availableModels();
     const settings = SettingsManager.create(cwd || process.cwd(), this.agentDir);
     const defaultProvider = settings.getDefaultProvider();
     const defaultModel = settings.getDefaultModel();
@@ -1244,7 +1287,7 @@ export class SessionPool {
       return {
         provider: m.provider,
         modelId: m.id,
-        label: `${this.modelRegistry.getProviderDisplayName(m.provider)}: ${m.name}`,
+        label: `${registry.getProviderDisplayName(m.provider)}: ${m.name}`,
         isDefault,
       };
     });
@@ -1256,19 +1299,18 @@ export class SessionPool {
    * server global). Returns null when no default is configured or the resolved
    * model is not among the available models.
    */
-  getDefaultModelFor(cwd: string): string | null {
+  async getDefaultModelFor(cwd: string): Promise<string | null> {
     const settings = SettingsManager.create(cwd, this.agentDir);
     const defaultProvider = settings.getDefaultProvider();
     const defaultModel = settings.getDefaultModel();
     if (!defaultProvider || !defaultModel) return null;
-    const found = this.modelRegistry
-      .getAvailable()
-      .some((m: Model<Api>) => m.provider === defaultProvider && m.id === defaultModel);
+    const { available } = await this.availableModels();
+    const found = available.some((m: Model<Api>) => m.provider === defaultProvider && m.id === defaultModel);
     return found ? `${defaultProvider}:${defaultModel}` : null;
   }
 
   findModel(provider: string, modelId: string): Model<Api> | undefined {
-    return this.modelRegistry.find(provider, modelId);
+    return this.modelRegistry?.find(provider, modelId);
   }
 
   /**
@@ -1491,7 +1533,7 @@ export class SessionPool {
           const parsed = this.parseModelStr(modelStr);
           if (parsed) {
             modelRef = parsed;
-            model = this.modelRegistry.find(parsed.provider, parsed.id);
+            model = (await this.ensureModels()).find(parsed.provider, parsed.id);
           }
         }
 
@@ -1510,7 +1552,7 @@ export class SessionPool {
             if (e.type !== 'model_change') continue;
             if ('provider' in e && 'modelId' in e) {
               modelRef ??= { provider: e.provider, id: e.modelId };
-              model = this.modelRegistry.find(e.provider, e.modelId);
+              model = (await this.ensureModels()).find(e.provider, e.modelId);
             }
             break;
           }
@@ -1736,7 +1778,7 @@ export class SessionPool {
           const parsed = this.parseModelStr(modelStr);
           if (parsed) {
             modelRef = parsed;
-            model = this.modelRegistry.find(parsed.provider, parsed.id);
+            model = (await this.ensureModels()).find(parsed.provider, parsed.id);
           }
         }
 
@@ -2453,7 +2495,7 @@ export class SessionPool {
       if (tracked.reloading) return { error: RELOADING_REFUSAL };
       const parsed = this.parseModelStr(modelStr);
       if (!parsed) return { error: `Invalid model format: ${modelStr}` };
-      const model = this.modelRegistry.find(parsed.provider, parsed.id);
+      const model = (await this.ensureModels()).find(parsed.provider, parsed.id);
       if (!model) return { error: `Model not found: ${modelStr}` };
 
       try {
@@ -2768,7 +2810,9 @@ export class SessionPool {
       cwd: opts.cwd,
       agentDir: this.agentDir,
       settingsManager,
-      extensionFactories: [conversationSignal.inlineExtension, ...this.extraExtensionFactories],
+      // pi's built-in MCP, codemode and tool search come first, as in the CLI
+      // (see builtin-extensions.ts: the SDK does not load them by itself).
+      extensionFactories: [...serverBuiltinExtensions, conversationSignal.inlineExtension, ...this.extraExtensionFactories],
       // Never the CLI bridge (`@wherever-dev/pi`) in a server session: in-process
       // it registers this very session as a CLI and loops takeover/handback. The
       // identification rule is documented at isCliBridgeExtensionPath.
@@ -2776,7 +2820,8 @@ export class SessionPool {
     });
     await resourceLoader.reload();
     // Before createAgentSession picks the model: see registerExtensionProviders.
-    this.registerExtensionProviders(resourceLoader, opts.label);
+    const models = await this.ensureModels();
+    this.registerExtensionProviders(models, resourceLoader, opts.label);
     // A model handed in was looked up BEFORE this build re-registered its
     // provider (a reload keeps the old session's model object), so take the
     // registry's current one: an extension edit picked up by /reload (a new
@@ -2785,12 +2830,11 @@ export class SessionPool {
     // is now ours, so the refresh is too.
     // The name asked for wins; otherwise the model object handed in (a reload).
     const ref = opts.modelRef ?? (opts.model && { provider: opts.model.provider, id: opts.model.id });
-    const model = (ref && this.modelRegistry.find(ref.provider, ref.id)) ?? opts.model;
+    const model = (ref && models.find(ref.provider, ref.id)) ?? opts.model;
 
     const { session: agentSession } = await createAgentSession({
       cwd: opts.cwd,
-      authStorage: this.authStorage,
-      modelRegistry: this.modelRegistry,
+      modelRuntime: this.modelRuntime,
       model,
       thinkingLevel: opts.thinkingLevel,
       sessionManager: opts.sessionManager,

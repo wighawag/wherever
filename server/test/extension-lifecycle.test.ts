@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { AgentSession, type ExtensionAPI, type InlineExtension } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI, InlineExtension } from '@earendil-works/pi-coding-agent';
+import { AgentSession } from '../src/pi-sdk.ts';
 import { SessionPool } from '../src/session-pool.ts';
 import { serverExtensionBindings } from '../src/extension-lifecycle.ts';
 

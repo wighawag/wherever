@@ -62,7 +62,10 @@ export async function startFakeLlmServer(
   const requests: Array<Record<string, any>> = [];
 
   const server = createServer((req, res) => {
-    if (!req.url?.endsWith('/v1/messages') || req.method !== 'POST') {
+    // Match the PATH only: pi >= 1.x's Anthropic client posts to
+    // `/v1/messages?beta=true`.
+    const pathname = new URL(req.url ?? '/', 'http://fake').pathname;
+    if (!pathname.endsWith('/v1/messages') || req.method !== 'POST') {
       res.writeHead(404).end('not found');
       return;
     }

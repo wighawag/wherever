@@ -6,6 +6,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { SessionPool, RELOADING_REFUSAL, getWhereverConfig, getWhereverCertsDir, getWhereverStateDir, detectRemoteRepo, normalizePath, invalidateFolderExistence, type WhereverConfig } from './session-pool.js';
 import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.js';
+import { piSdkInfo } from './pi-sdk.js';
 import { searchConversations } from './conversation-search.js';
 import { matchRemoteRepoRule, resolveRemoteCandidates } from './remote-candidates.js';
 import { RestoreJobRegistry, type RestoreJobSnapshot, type RestoreRequest } from './restore-jobs.js';
@@ -1033,6 +1034,10 @@ function sendThenTerminate(ws: WebSocket, msg: ServerMessage, flushTimeoutMs = 1
 async function main(): Promise<void> {
   const { port, host, socket, token, tokenSource, idleTimeout, sslKey, sslCert, noSsl, httpLocalhostFallbackPort, debug } = parseArgs();
   debugEnabled = debug;
+  console.log(
+    `[wherever] pi SDK ${piSdkInfo.version}: ` +
+      (piSdkInfo.tier === 'bundled' ? `bundled (${piSdkInfo.why})` : `${piSdkInfo.tier}, from ${piSdkInfo.root} (${piSdkInfo.why})`),
+  );
   const sessionPool = new SessionPool(idleTimeout);
   await sessionPool.initialize();
 
@@ -1452,7 +1457,7 @@ async function main(): Promise<void> {
     }
 
     if (pathname === '/models' && req.method === 'GET') {
-      const models = sessionPool.getAvailableModels();
+      const models = await sessionPool.getAvailableModels();
       sendJSON(res, 200, { models });
       return;
     }
@@ -1535,7 +1540,7 @@ async function main(): Promise<void> {
       // (folder-local harness/pi config wins), so the search composer can seed its
       // model picker with the folder default rather than the server global.
       const searchDefaultModel = searchFolder
-        ? sessionPool.getDefaultModelFor(searchFolder)
+        ? await sessionPool.getDefaultModelFor(searchFolder)
         : null;
       // The label defaults to the machine hostname so two servers sharing the
       // same sessions over cloned folders are distinguishable with zero config.
@@ -2421,7 +2426,7 @@ async function main(): Promise<void> {
       missedPings.set(ws, 0);
     });
 
-    sendWS(ws, { type: 'connected', clientId, serverVersion: getVersion(), capabilities: [UPLOAD_CAPABILITY] });
+    sendWS(ws, { type: 'connected', clientId, serverVersion: getVersion(), capabilities: [UPLOAD_CAPABILITY], piVersion: piSdkInfo.version });
 
     ws.on('message', async (data, isBinary) => {
       // Binary frames are upload chunks (`upload.v1`), routed BEFORE any

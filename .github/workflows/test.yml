@@ -51,6 +51,51 @@ jobs:
       - name: Run server tests
         run: pnpm --filter ./server test
 
+  # The server can run on a pi SDK other than the one it bundles (`piSdk` in
+  # config.json, see server/src/pi-sdk.ts). TESTED_PI_RANGE in
+  # server/src/pi-sdk-policy.ts is the promise that this works without opt-in,
+  # so the suite runs on the NEWEST release in that range, installed separately
+  # like a user's own pi. (The bottom of the range is the bundled SDK, which the
+  # `server` job above already runs on.) pi does not follow semver strictly, so
+  # a new patch release can break this job: that is the signal to fix the server
+  # or narrow the range, before users meet it.
+  # pi-sdk-guard.test.ts fails the job if the install was refused and the suite
+  # silently fell back to the bundled SDK. Keep `pi` in sync with TESTED_PI_RANGE.
+  server-pi-sdk:
+    name: server suite on pi ${{ matrix.pi }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pi: ['~1.4.0']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Install pi ${{ matrix.pi }} separately
+        run: |
+          mkdir -p "$RUNNER_TEMP/pi"
+          cd "$RUNNER_TEMP/pi"
+          echo '{"private":true}' > package.json
+          npm install --no-audit --no-fund "@earendil-works/pi-coding-agent@${{ matrix.pi }}"
+          node -p "'pi ' + require('./node_modules/@earendil-works/pi-coding-agent/package.json').version"
+
+      - name: Run server tests on it
+        run: pnpm --filter ./server test
+        env:
+          WHEREVER_PI_SDK: ${{ runner.temp }}/pi
+
   web:
     name: web suite
     runs-on: ubuntu-latest

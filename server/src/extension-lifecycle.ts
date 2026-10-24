@@ -1,4 +1,7 @@
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { AgentSession, ExtensionError } from '@earendil-works/pi-coding-agent';
+import { piSdkInfo } from './pi-sdk.js';
 
 /**
  * The pi EXTENSION LIFECYCLE for server-created sessions.
@@ -33,16 +36,17 @@ import type { AgentSession, ExtensionError } from '@earendil-works/pi-coding-age
  * rebuilds with a FRESH loader (see SessionPool.reloadSession), whose first
  * `reload()` does not clear, so without this the rebuilt agent silently runs the
  * old code. `clearExtensionCache` is not in the package's `exports` map, so it is
- * reached through the module file next to the resolved entry point; it is the
- * same module instance the SDK uses (same URL). If a future SDK moves it, reload
+ * reached through the module file inside the package the server runs on
+ * (`piSdkInfo.root`, see pi-sdk.ts); it is the same module instance that SDK
+ * uses (same URL). If a future SDK moves it, reload
  * still works for settings, skills, prompts and context files, and this logs
  * why extension edits were not picked up. Pinned by test/session-reload-ws.test.ts.
  * Clearing is safe for other sessions: their next build just reloads from disk.
  */
 export async function clearPiExtensionCache(): Promise<void> {
   try {
-    const entry = import.meta.resolve('@earendil-works/pi-coding-agent');
-    const loader = (await import(new URL('./core/extensions/loader.js', entry).href)) as {
+    const loaderFile = path.join(piSdkInfo.root, 'dist', 'core', 'extensions', 'loader.js');
+    const loader = (await import(pathToFileURL(loaderFile).href)) as {
       clearExtensionCache?: () => void;
     };
     if (typeof loader.clearExtensionCache !== 'function') throw new Error('clearExtensionCache not found');

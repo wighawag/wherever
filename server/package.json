@@ -25,14 +25,16 @@
     "public"
   ],
   "dependencies": {
-    "@earendil-works/pi-ai": "0.80.6",
-    "@earendil-works/pi-coding-agent": "0.80.6",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
     "memonaut": "^0.1.0",
+    "semver": "^7.7.0",
     "typebox": "^1.1.38",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/semver": "^7.7.0",
     "@types/ws": "^8.5.13",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",

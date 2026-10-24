@@ -132,11 +132,11 @@ describe('providers registered by extensions', () => {
   it('the model list and the default know the extension provider at startup, before any session', async () => {
     const pool = new SessionPool(300_000);
     await pool.initialize();
-    const models = pool.getAvailableModels(freshCwd());
+    const models = await pool.getAvailableModels(freshCwd());
     expect(models).toContainEqual(
       expect.objectContaining({ provider: 'ext-local', modelId: 'ext-model', isDefault: true }),
     );
-    expect(pool.getDefaultModelFor(freshCwd())).toBe('ext-local:ext-model');
+    expect(await pool.getDefaultModelFor(freshCwd())).toBe('ext-local:ext-model');
     await pool.disposeAll();
   }, 30_000);
 });

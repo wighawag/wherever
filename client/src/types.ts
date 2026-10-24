@@ -227,6 +227,9 @@ export interface WhereverState {
 	// version), as reported in its `connected` message. null until connected, or
 	// when talking to a server old enough not to report it.
 	serverVersion: string | null;
+	// Version of the pi SDK that server runs its sessions on. null until
+	// connected, or when the server is too old to report it.
+	piVersion: string | null;
 	folderConflict: FolderConflictInfo | null;
 	// The active session's working folder is gone from this machine (see
 	// FolderMissingInfo). Non-null implies `readOnly`, and no `session_ready` is
