@@ -15,3 +15,7 @@ New data point: `pnpm_config_strict_dep_builds=false` in the environment makes t
 ## Evidence that the built branches are good
 
 In a throwaway clone, with `pnpm_config_strict_dep_builds=false` and the two files above formatted (neither committed), `pnpm format:check && pnpm build:all && pnpm run -r test` was green on each of the four stuck branches: `work/task-server-reaper-tolerates-a-missed-pong`, `work/task-upload-write-gate-binds-to-painted-session`, `work/task-client-liveness-probes-before-teardown`, `work/task-conversation-cache-indexeddb-module`. `nix/check-pnpm-deps-hash.sh` also passes on the conversation-cache branch (its lockfile change came with a regenerated `pnpmDepsHash`).
+
+## Resolved (2026-10-24)
+
+Fixed on `main`: build-script approval moved to `allowBuilds` in `pnpm-workspace.yaml` (esbuild `true`, the rest `false`) and the dead `pnpm` field removed from `package.json`; verified under pnpm 11.25 (gate `prepare` + `verify` green, no stub written) and pnpm 10.34.5 (esbuild postinstall runs, nothing ignored); `pnpmDepsHash` unchanged (`nix/check-pnpm-deps-hash.sh` OK). The two `view-mode` files were Prettier-formatted in the same commit. See CONTEXT.md (the paragraph after `pnpmDepsHash`).

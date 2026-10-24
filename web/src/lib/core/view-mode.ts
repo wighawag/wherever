@@ -79,10 +79,12 @@ export interface HashJoinInputs {
  */
 export function decideHashJoin(i: HashJoinInputs): 'skip' | 'join' | 'failed' {
 	if (!i.connected || !i.hashId) return 'skip';
-	if (i.currentSessionId === i.hashId || i.loading || i.resyncing) return 'skip';
+	if (i.currentSessionId === i.hashId || i.loading || i.resyncing)
+		return 'skip';
 	// Only a failure when nothing is active: a session that IS active (e.g. the
 	// hash names it by file path rather than id, so the ids never match) must
 	// not be treated as a failed load, which would clear the hash and leave it.
-	if (i.attemptedHashId === i.hashId) return i.currentSessionId ? 'skip' : 'failed';
+	if (i.attemptedHashId === i.hashId)
+		return i.currentSessionId ? 'skip' : 'failed';
 	return 'join';
 }

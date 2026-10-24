@@ -40,3 +40,7 @@ Note the values are the literal string `set this to true or false`, i.e. a stub 
 The fix is presumably migrating `pnpm.onlyBuiltDependencies` from `package.json` to whatever pnpm 11 reads (the `allowBuilds` key it is trying to write, with real booleans), then regenerating `pnpmDepsHash` if the lockfile moves. That is a maintenance decision with a Nix consequence, not a thing to slip into an unrelated spike, so it is recorded rather than done.
 
 **Workaround meanwhile:** invoke the tool directly (`./node_modules/.bin/vite build`) and check `git status` afterwards.
+
+## Resolved (2026-10-24)
+
+Fixed on `main`: build-script approval moved to `allowBuilds` in `pnpm-workspace.yaml` (esbuild `true`, the rest `false`) and the dead `pnpm` field removed from `package.json`; verified under pnpm 11.25 (gate `prepare` + `verify` green, no stub written) and pnpm 10.34.5 (esbuild postinstall runs, nothing ignored); `pnpmDepsHash` unchanged (`nix/check-pnpm-deps-hash.sh` OK). The two `view-mode` files were Prettier-formatted in the same commit. See CONTEXT.md (the paragraph after `pnpmDepsHash`).

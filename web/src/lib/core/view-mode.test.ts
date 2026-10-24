@@ -1,5 +1,9 @@
 import {describe, it, expect} from 'vitest';
-import {decideHashJoin, isSearchActive, isSessionPendingOpen} from './view-mode.js';
+import {
+	decideHashJoin,
+	isSearchActive,
+	isSessionPendingOpen,
+} from './view-mode.js';
 
 // Regression: the composer showed the search input + "Search" button while the
 // message area showed "Loading session..." because searchActive only checked
@@ -59,12 +63,18 @@ describe('isSessionPendingOpen', () => {
 
 describe('isSessionPendingOpen with a failed load', () => {
 	it('a hash is no longer a pending open once its load has failed', () => {
-		expect(isSessionPendingOpen({...base, hasSessionHash: true, loadFailed: true})).toBe(false);
-		expect(isSearchActive({...base, hasSessionHash: true, loadFailed: true})).toBe(true);
+		expect(
+			isSessionPendingOpen({...base, hasSessionHash: true, loadFailed: true}),
+		).toBe(false);
+		expect(
+			isSearchActive({...base, hasSessionHash: true, loadFailed: true}),
+		).toBe(true);
 	});
 
 	it('loading still counts as pending even if a stale error is set', () => {
-		expect(isSessionPendingOpen({...base, loading: true, loadFailed: true})).toBe(true);
+		expect(
+			isSessionPendingOpen({...base, loading: true, loadFailed: true}),
+		).toBe(true);
 	});
 });
 
@@ -90,16 +100,25 @@ describe('decideHashJoin', () => {
 
 	it('does not report failure while some session is active (hash naming it by path)', () => {
 		expect(
-			decideHashJoin({...h, hashId: '/x/s.jsonl', currentSessionId: 'sid-x', attemptedHashId: '/x/s.jsonl'}),
+			decideHashJoin({
+				...h,
+				hashId: '/x/s.jsonl',
+				currentSessionId: 'sid-x',
+				attemptedHashId: '/x/s.jsonl',
+			}),
 		).toBe('skip');
 	});
 
 	it('joins again when the hash changed to a different session', () => {
-		expect(decideHashJoin({...h, hashId: 'sid-2', attemptedHashId: 'sid-1'})).toBe('join');
+		expect(
+			decideHashJoin({...h, hashId: 'sid-2', attemptedHashId: 'sid-1'}),
+		).toBe('join');
 	});
 
 	it('skips while the load is in flight, resyncing, or already active', () => {
-		expect(decideHashJoin({...h, attemptedHashId: 'sid-1', loading: true})).toBe('skip');
+		expect(
+			decideHashJoin({...h, attemptedHashId: 'sid-1', loading: true}),
+		).toBe('skip');
 		expect(decideHashJoin({...h, resyncing: true})).toBe('skip');
 		expect(decideHashJoin({...h, currentSessionId: 'sid-1'})).toBe('skip');
 	});

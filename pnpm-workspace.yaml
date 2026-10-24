@@ -5,3 +5,16 @@ packages:
   - "server"
   - "client"
   - "vscode"
+
+# Which dependencies may run install (build) scripts. Only esbuild needs its
+# postinstall; the rest are explicitly denied. pnpm 11 no longer reads the
+# old `pnpm.onlyBuiltDependencies` field in package.json and FAILS the install
+# (ERR_PNPM_IGNORED_BUILDS) on any unlisted build script, so every package with
+# one must be named here. pnpm 10 (package.nix, the nix dev shell) reads the
+# same key.
+allowBuilds:
+  esbuild: true
+  "@google/genai": false
+  protobufjs: false
+  sharp: false
+  svelte-preprocess: false
