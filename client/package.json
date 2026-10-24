@@ -1,6 +1,6 @@
 {
   "name": "@wherever-dev/client",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Framework-agnostic TypeScript client (browser and Node.js) for the Wherever server's pi coding agent WebSocket API",
   "keywords": [
     "wherever",
