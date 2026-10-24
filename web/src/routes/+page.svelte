@@ -25,6 +25,7 @@
 		disconnect,
 		suspend,
 		resume,
+		noteVisible,
 		leaveSession,
 		dismissSessionError,
 		dismissNotice,
@@ -141,6 +142,10 @@
 					clearTimeout(hiddenTimer);
 					hiddenTimer = null;
 				}
+				// On EVERY return, probe a socket that is still open: timers fire
+				// before the frames queued during the freeze, so the silence clock
+				// alone would tear a healthy socket down (docs/adr/0011).
+				noteVisible();
 				if (!connected) {
 					// Prefer the preserve-cache resume() path whenever we still hold an
 					// active session -- from an explicit suspend OR an unsolicited drop that
@@ -165,6 +170,8 @@
 				clearTimeout(hiddenTimer);
 				hiddenTimer = null;
 			}
+			// Probe a still-open socket on every pageshow too (see handleVisibility).
+			noteVisible();
 			if (document.visibilityState !== 'hidden' && !connected) {
 				if (hasActiveSession()) {
 					resume();
