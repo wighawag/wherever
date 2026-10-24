@@ -41,6 +41,10 @@
 		endFilePicker,
 		runSearch,
 		hasActiveSession,
+		readBootConversation,
+		hydrateFromCache,
+		flushConversationCache,
+		clearConversationCache,
 	} from '$lib/wherever';
 	import {
 		fetchSessions,
@@ -54,6 +58,7 @@
 	import {version} from '$app/environment';
 	import {url} from '$lib/core/utils/web/path';
 	import {decideHashJoin, isSearchActive} from '$lib/core/view-mode';
+	import {decideReturn, runBoot} from '$lib/core/instant-resume';
 
 	let sidebarOpen = $state(false);
 	// Which session list the sidebar shows: the main dashboard, the separate
@@ -77,9 +82,32 @@
 	let interruptedTimeout: ReturnType<typeof setTimeout> | null = null;
 	let chatList: {forceScrollToBottom: () => void};
 
+	// True until boot has ISSUED its own connect() (not until the socket opens,
+	// or an offline cache miss would hold the handlers off forever). While set,
+	// pageshow / visibilitychange do not connect: on a fresh load pageshow always
+	// fires, and its plain connect() would reset a hydration in progress.
+	let booting = true;
+
 	onMount(() => {
 		if (autoConnect) {
-			setTimeout(() => connect(), 200);
+			// Instant resume (docs/adr/0013): when the hash names a session, start
+			// reading its cached copy now (capped at ~300 ms), alongside the existing
+			// 200 ms boot delay. A hit is painted and connected with the store
+			// preserved, so the conversation shows before the socket opens; a miss
+			// boots exactly as before.
+			const cached = readBootConversation(readHashId());
+			setTimeout(() => {
+				void runBoot({
+					cached,
+					hydrate: hydrateFromCache,
+					connect: (opts) => {
+						booting = false;
+						connect(opts);
+					},
+				});
+			}, 200);
+		} else {
+			booting = false;
 		}
 
 		const handleHashChange = () => {
@@ -118,6 +146,9 @@
 
 		const handleVisibility = () => {
 			if (document.visibilityState === 'hidden') {
+				// The OS may kill a hidden PWA without another event: save the
+				// conversation now so a reload can paint it at once.
+				flushConversationCache();
 				// A native file picker / camera backgrounds the page. Don't schedule a
 				// suspend in that window, or a slow file selection (e.g. taking a
 				// photo) would tear down the session and make the upload fail with
@@ -146,20 +177,21 @@
 				// before the frames queued during the freeze, so the silence clock
 				// alone would tear a healthy socket down (docs/adr/0011).
 				noteVisible();
-				if (!connected) {
-					// Prefer the preserve-cache resume() path whenever we still hold an
-					// active session -- from an explicit suspend OR an unsolicited drop that
-					// happened while hidden (before the 8s suspend). resume() rejoins in
-					// place and keeps the conversation visible; a plain connect() would wipe
-					// the session and re-show the search / new-session empty-state. Only a
-					// truly empty client (no session at all) falls back to connect(), where
-					// the hash auto-join drives the load.
-					if (hasActiveSession()) {
-						resume();
-					} else {
-						connect();
-					}
-				}
+				// Prefer the preserve-cache resume() path whenever we still hold an
+				// active session -- from an explicit suspend OR an unsolicited drop that
+				// happened while hidden (before the 8s suspend). resume() rejoins in
+				// place and keeps the conversation visible; a plain connect() would wipe
+				// the session and re-show the search / new-session empty-state. Only a
+				// truly empty client (no session at all) falls back to connect(), where
+				// the hash auto-join drives the load. Nothing while booting (see
+				// `booting`): boot issues its own connect.
+				const action = decideReturn({
+					booting,
+					connected,
+					hasActiveSession: hasActiveSession(),
+				});
+				if (action === 'resume') resume();
+				else if (action === 'connect') connect();
 			}
 		};
 
@@ -172,22 +204,28 @@
 			}
 			// Probe a still-open socket on every pageshow too (see handleVisibility).
 			noteVisible();
-			if (document.visibilityState !== 'hidden' && !connected) {
-				if (hasActiveSession()) {
-					resume();
-				} else {
-					connect();
-				}
-			}
+			if (document.visibilityState === 'hidden') return;
+			const action = decideReturn({
+				booting,
+				connected,
+				hasActiveSession: hasActiveSession(),
+			});
+			if (action === 'resume') resume();
+			else if (action === 'connect') connect();
 		};
+
+		// Last chance to save the conversation before the page goes away.
+		const handlePageHide = () => flushConversationCache();
 
 		document.addEventListener('visibilitychange', handleVisibility);
 		window.addEventListener('pageshow', handlePageShow);
+		window.addEventListener('pagehide', handlePageHide);
 
 		return () => {
 			window.removeEventListener('hashchange', handleHashChange);
 			document.removeEventListener('visibilitychange', handleVisibility);
 			window.removeEventListener('pageshow', handlePageShow);
+			window.removeEventListener('pagehide', handlePageHide);
 			if (hiddenTimer) clearTimeout(hiddenTimer);
 		};
 	});
@@ -196,9 +234,13 @@
 		connect();
 	}
 
+	// "Disconnect Server" wipes the on-device cache (ADR 0013). Only here and in
+	// ConnectionSettings' Disconnect, never in the shared disconnect(), which
+	// Reconnect below also calls.
 	function handleDisconnect() {
 		leaveSession();
 		disconnect();
+		clearConversationCache();
 	}
 
 	function handleReconnect() {
