@@ -264,6 +264,18 @@ export interface WhereverState {
 	historyTotalCount: number;
 	historyOffset: number;
 	loadingMoreHistory: boolean;
+	// True once the server's `message_history` for the active session has landed.
+	// False at hydration (the messages came from the on-device cache) and on every
+	// reconnect rejoin, so `historyTotalCount` / `historyOffset` may be stale:
+	// `loadMoreHistory()` is a no-op while false (ADR 0013).
+	historyAuthoritative: boolean;
+	// The STAMPED identity (`serverKey(config)`) of the server that delivered the
+	// active session: set on `session_created` from the key captured when that
+	// socket was opened, and at hydration from the cached record. Never
+	// re-derived from the current settings (they can be edited without a
+	// reconnect). The web writes its conversation cache under exactly this key.
+	// null when there is no stamped session.
+	serverKey: string | null;
 	// Context-window usage for the active session (drives the "11.3% / 1.0M"
 	// indicator). null when unknown (no model, no usage yet, or just compacted).
 	contextUsage: ContextUsage | null;
@@ -281,6 +293,34 @@ export interface WhereverState {
 	// replaced outright by each skills_list; empty for CLI bridges or before the
 	// list arrives.
 	skills: SkillCommand[];
+}
+
+/**
+ * A conversation read back from the web's on-device cache, handed to
+ * `WhereverClient.hydrateCachedSession()` so it can be shown before the socket
+ * is up (ADR 0013). Structurally a subset of the web cache's record, so a record
+ * can be passed as-is.
+ */
+export interface HydrationSnapshot {
+	/** The stamp the record was written under. Defaults to `serverKey(config)`. */
+	serverKey?: string;
+	sessionId: string;
+	sessionFile: string;
+	cwd: string | null;
+	model: string | null;
+	messages: ChatMessage[];
+	historyTotalCount?: number;
+	historyOffset?: number;
+}
+
+/**
+ * Synthesized by the client (never sent by the server) and delivered to
+ * `onMessage` listeners when the server refused the load of a HYDRATED session
+ * outright: the cached record is dead and should be evicted.
+ */
+export interface HydrationRejectedMessage {
+	type: 'hydration_rejected';
+	sessionId: string;
 }
 
 export interface SkillCommand {
