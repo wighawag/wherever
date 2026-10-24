@@ -1,6 +1,7 @@
 import { writable, get, type Writable } from "sveltore";
 import {
   type ChatMessage,
+  type HydrationSnapshot,
   type RestoreInfo,
   type RestoreJobInfo,
   type WhereverState,
@@ -53,6 +54,39 @@ function generateClientKey(): string {
   return `ck-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
 }
 
+// The host as it goes on the socket URL: a pasted `http(s)://` prefix is dropped.
+function socketHost(host: string): string {
+  return host.startsWith('http') ? host.replace(/^https?:\/\//, '') : host;
+}
+
+// 32-bit FNV-1a over the UTF-16 code units, as 8 hex digits. NOT a security
+// hash: it only keeps the raw token out of the key (and out of IndexedDB keys)
+// while still telling two tokens apart.
+function fnv1a(input: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * The identity of the server a config points at: `host:port#<fnv1a(token)>`.
+ * Two configured servers (or one server with a rotated token) never share a
+ * key, so the web's conversation cache can never show one server's
+ * conversation for another (ADR 0013).
+ *
+ * Synchronous and pure on purpose: `connect()` is synchronous and must compare
+ * it with the stamp before deciding whether to preserve the store, and
+ * `crypto.subtle` is both async and missing on plain-http LAN origins. The
+ * scheme (`secure`) is deliberately NOT part of the key: ws vs wss to the same
+ * host:port is the same server.
+ */
+export function serverKey(config: Pick<WhereverClientConfig, 'host' | 'port' | 'token'>): string {
+  return `${socketHost(config.host)}:${config.port}#${fnv1a(config.token ?? '')}`;
+}
+
 const defaultState: WhereverState = {
 	connected: false,
 	connecting: false,
@@ -83,6 +117,8 @@ const defaultState: WhereverState = {
 	historyTotalCount: 0,
 	historyOffset: 0,
 	loadingMoreHistory: false,
+	historyAuthoritative: false,
+	serverKey: null,
 	contextUsage: null,
 	pendingSteering: [],
 	skills: [],
@@ -181,6 +217,16 @@ export class WhereverClient {
   // null means "accept any" (e.g. session_new, whose target file is not known
   // until the reply). The latest tap always wins.
   private pendingLoadFile: string | null = null;
+  // serverKey(config) of the socket currently open (captured by connect() next
+  // to the socket it opens). session_created stamps it on the store, so the
+  // stamp names the server that actually DELIVERED the session even if the
+  // settings are edited afterwards.
+  private socketServerKey: string | null = null;
+  // The sessionFile painted by hydrateCachedSession(), until the server answers
+  // its rejoin with a session_created (or the hydration is abandoned). While
+  // set, an untagged session_error answering that load (pendingLoadFile ===
+  // hydratedFile) means the cached session is dead: see hydration_rejected.
+  private hydratedFile: string | null = null;
   private listeners = new Set<(msg: any) => void>();
   // In-flight WebSocket uploads, keyed by uploadId. Each keeps its full frame so
   // it can be (re)sent: an upload is NOT bound to the socket it started on. On
@@ -259,6 +305,25 @@ export class WhereverClient {
 
     this.disconnect(false);
 
+    // A store stamped by ANOTHER server (host/port/token edited in Connection
+    // Settings, which saves without reconnecting, then this connect, including
+    // the automatic one from scheduleReconnect) must not be preserved or
+    // rejoined: it would paint, and the web would re-cache, one server's
+    // conversation under another's key, and the rejoin would ask the new
+    // server for a session it does not have. Wipe instead (which clears the
+    // stamp too), and drop every pending rejoin source.
+    const key = serverKey(this.config);
+    const stamped = get(this.stateStore).serverKey;
+    if (stamped !== null && stamped !== key) {
+      preserveState = false;
+      this.resumeSessionFile = null;
+      this.resumeCwd = undefined;
+      this.resumeModel = undefined;
+      this.pendingLoadFile = null;
+      this.hydratedFile = null;
+    }
+    this.socketServerKey = key;
+
     // preserveState keeps the cached session/messages in the store across a
     // reconnect (resume path), so the previous conversation stays visible while
     // we reconnect and resync. The default (fresh connect) clears to a blank
@@ -273,9 +338,7 @@ export class WhereverClient {
         });
 
     const protocol = this.config.secure ? "wss" : "ws";
-    const host = this.config.host.startsWith('http')
-      ? this.config.host.replace(/^https?:\/\//, '')
-      : this.config.host;
+    const host = socketHost(this.config.host);
     // clientKey rides on the URL (not a post-connect frame) so the server can
     // evict this viewer's previous connection BEFORE any session traffic is
     // handled, closing the phantom-viewer window entirely.
@@ -370,7 +433,13 @@ export class WhereverClient {
         // "Reconnecting and syncing session..." banner shows and sending is
         // blocked until fresh history lands. resyncing is cleared by
         // message_history (or an error/conflict) via the reducer.
-        this.stateStore.update(s => (s.resyncing ? s : {...s, resyncing: true}));
+        // The history in the store (cached, or from the dropped socket) may be
+        // stale until this rejoin's message_history lands.
+        this.stateStore.update(s =>
+          s.resyncing && !s.historyAuthoritative
+            ? s
+            : {...s, resyncing: true, historyAuthoritative: false},
+        );
         this.pendingLoadFile = rejoinFile;
         this.send({type: 'session_load', sessionFile: rejoinFile, cwd: rejoinCwd, model: rejoinModel});
         this.armLoadWatchdog();
@@ -498,6 +567,7 @@ export class WhereverClient {
       // otherwise be re-sent to whatever server is connected next).
       this.rejectPendingUploads('Disconnected before the upload completed');
       this.uploadsHeldForRejoin = false;
+      this.hydratedFile = null;
       this.stateStore.set({
         ...defaultState,
         hideThinking: !!this.config.hideThinking,
@@ -556,12 +626,12 @@ export class WhereverClient {
     // cached active session from an unsolicited drop. In BOTH cases onOpen
     // re-issues session_load, so mark resyncing here to show the affordance and
     // block sending until fresh history lands.
+    // No load watchdog is armed here: connect() -> disconnect(false) would clear
+    // it at once, and onOpen arms one for the rejoin it actually issues. While
+    // the socket never opens (offline boot over a hydrated cache) there is no
+    // load in flight to time out, so no "timed out" error must appear.
     if (this.resumeSessionFile || s.activeSessionFile) {
       this.stateStore.update(st => ({...st, resyncing: true}));
-      // Arm here too: if the socket never opens, onOpen never runs and the
-      // resync affordance would otherwise hang. onClose also clears it, but the
-      // watchdog covers the half-open / never-opens case.
-      this.armLoadWatchdog();
     }
     this.connect(undefined, true);
   }
@@ -1443,6 +1513,10 @@ export class WhereverClient {
         // This reply matches the load we were waiting on (or the create we
         // requested): the load is resolved, so stop guarding against it.
         this.pendingLoadFile = null;
+        // The server accepted the load: whatever follows (folder_missing, a
+        // failed cold build) comes after an authoritative paint and must keep
+        // the readable-but-blocked view, so it can no longer reject a hydration.
+        this.hydratedFile = null;
         // The server has now applied this client's write verdict for the
         // session (it sets readOnly before sending session_created), so uploads
         // held across the reconnect can go out and be gated correctly.
@@ -1464,6 +1538,11 @@ export class WhereverClient {
           activeSessionFile: msg.sessionFile,
           activeCwd: msg.cwd,
           activeModel: msg.model,
+          // Stamp the server that delivered this session (ADR 0013).
+          serverKey: this.socketServerKey,
+          // Its message_history follows; until then the paging state in the
+          // store is not this session's.
+          historyAuthoritative: false,
           isStreaming: msg.isStreaming ?? false,
           creatingSession: false,
           // The server forces read-only for sessions in a configured
@@ -1617,7 +1696,7 @@ export class WhereverClient {
         });
         break;
 
-      case 'session_error':
+      case 'session_error': {
         // While held, the only request in flight is the rejoin: it failed, so the
         // held uploads can never be gated and sent. Fail them now rather than
         // leaving them (and every new upload) parked for the full timeout.
@@ -1627,6 +1706,15 @@ export class WhereverClient {
         if (!msg.sessionId) {
           this.failHeldUploads('Could not rejoin the session, so the upload was not sent');
         }
+        // The server refused the load of a HYDRATED session outright. Only the
+        // reply to the rejoin's own session_load counts: with no session
+        // attached, the server's catch-all sends EVERY handler error untagged,
+        // so the error must arrive while that load is still the pending one and
+        // before any session_created (which clears hydratedFile).
+        const rejectedHydration =
+          !msg.sessionId &&
+          this.hydratedFile !== null &&
+          this.pendingLoadFile === this.hydratedFile;
         this.stateStore.update((s: WhereverState) => ({
           ...s,
           sessionError: msg.error,
@@ -1639,7 +1727,9 @@ export class WhereverClient {
           // is surfaced. This is the degrade-to-read-only path.
           agentPending: false,
         }));
+        if (rejectedHydration) this.rejectHydration();
         break;
+      }
 
       case 'folder_missing':
         // The server states, authoritatively, that this session's working folder
@@ -1873,6 +1963,7 @@ export class WhereverClient {
             messages: [...mapped, ...undelivered],
             historyTotalCount: totalCount,
             historyOffset: offset,
+            historyAuthoritative: true,
             loadingMoreHistory: false,
             loadingSession: false,
             resyncing: false,
@@ -2132,6 +2223,9 @@ export class WhereverClient {
   public loadMoreHistory() {
     const s = get(this.stateStore);
     if (!s.sessionId) return;
+    // The offset may come from the cache or a dropped socket: never page from
+    // it until the server's own history has replaced it.
+    if (!s.historyAuthoritative) return;
     if (s.loadingMoreHistory) return;
     if (s.historyOffset <= 0) return;
     this.stateStore.update((st: WhereverState) => ({
@@ -2600,6 +2694,80 @@ export class WhereverClient {
     return {...s, restore: mutate(current)};
   }
 
+  /**
+   * Paint a conversation from the web's on-device cache before the socket is up
+   * (ADR 0013), so a reload after the OS killed the PWA shows it at once. Call
+   * it, then `connect(cfg, true)`: onOpen's normal rejoin issues the
+   * `session_load` and its `message_history` replaces the cached messages.
+   *
+   * A no-op unless the client holds nothing that could be clobbered: no active
+   * session, no load in flight, not connected. The painted session is
+   * `resyncing` (sending blocked) and NOT `historyAuthoritative`. `agentPending`,
+   * `folderConflict`, `sudoPrompt` and `readOnly` stay at their defaults: they
+   * are verdicts the server re-states on the rejoin. `pendingLoadFile` is NOT
+   * set here (the rejoin sets it when it actually sends the load).
+   *
+   * Delivery-tagged user messages in the snapshot are dropped: undelivered
+   * outbound messages are recovered only from localStorage on the history
+   * reply (`loadPersistedPending`), so a cached copy would double-surface them.
+   */
+  public hydrateCachedSession(snapshot: HydrationSnapshot) {
+    const s = get(this.stateStore);
+    if (s.activeSessionFile || this.pendingLoadFile !== null || s.connected) return;
+    const messages = snapshot.messages.filter(
+      (m) => !(m.role === 'user' && m.delivery !== undefined),
+    );
+    this.hydratedFile = snapshot.sessionFile;
+    this.stateStore.update((st: WhereverState) => ({
+      ...st,
+      session: snapshot.sessionFile,
+      sessionId: snapshot.sessionId,
+      activeSessionFile: snapshot.sessionFile,
+      activeCwd: snapshot.cwd,
+      activeModel: snapshot.model,
+      messages,
+      historyTotalCount: snapshot.historyTotalCount ?? messages.length,
+      historyOffset: snapshot.historyOffset ?? 0,
+      historyAuthoritative: false,
+      resyncing: true,
+      isStreaming: false,
+      serverKey: snapshot.serverKey ?? serverKey(this.config),
+    }));
+  }
+
+  // The server refused the hydrated session's load: clear the cached view (the
+  // session_error reducer already surfaced the error) and tell the listeners,
+  // so the web evicts the record and drops the hash. Synthesized locally; it is
+  // never a server frame.
+  private rejectHydration() {
+    const sessionId = get(this.stateStore).sessionId;
+    this.hydratedFile = null;
+    this.pendingLoadFile = null;
+    this.stateStore.update((s: WhereverState) => ({
+      ...s,
+      messages: [],
+      session: null,
+      sessionId: null,
+      activeSessionFile: null,
+      activeCwd: null,
+      activeModel: null,
+      historyTotalCount: 0,
+      historyOffset: 0,
+      historyAuthoritative: false,
+      serverKey: null,
+      resyncing: false,
+    }));
+    if (!sessionId) return;
+    const event = {type: 'hydration_rejected', sessionId};
+    for (const listener of this.listeners) {
+      try {
+        listener(event);
+      } catch (err) {
+        console.error("Error in message listener:", err);
+      }
+    }
+  }
+
   public joinSession(sessionFile: string, cwd?: string, model?: string) {
     this.stateStore.update((s: WhereverState) => ({
       ...s,
@@ -2663,6 +2831,7 @@ export class WhereverClient {
     this.resumeSessionFile = null;
     this.resumeCwd = undefined;
     this.resumeModel = undefined;
+    this.hydratedFile = null;
     // Switching supersedes any in-flight create; disarm its watchdog so it can't
     // later fire against the newly loaded session.
     this.clearCreateWatchdog();
@@ -2706,6 +2875,7 @@ export class WhereverClient {
     // be rejected by a stale pendingLoadFile, and a late load reply for the old
     // target must not clobber the new session.
     this.pendingLoadFile = null;
+    this.hydratedFile = null;
     this.send({
       type: 'session_new',
       cwd,
@@ -2758,6 +2928,7 @@ export class WhereverClient {
     }));
     this.clearLoadWatchdog();
     this.pendingLoadFile = null;
+    this.hydratedFile = null;
     this.resumeSessionFile = null;
     this.resumeCwd = undefined;
     this.resumeModel = undefined;

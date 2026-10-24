@@ -52,3 +52,15 @@ git fetch origin && git switch -c work/client-hydration-seam-and-server-key orig
 # on completion, in the work branch's PR/merge:
 git mv work/tasks/ready/client-hydration-seam-and-server-key.md work/tasks/done/client-hydration-seam-and-server-key.md
 ```
+
+## Decisions
+
+These are recorded in `work/notes/observations/client-hydration-seam-decisions.md` (please link it from the done record), with JSDoc comments where the choices are made in the code. The ones you may want to confirm:
+1. **ws vs wss is not part of the server key**, so switching that setting does not wipe the cache.
+2. **A plain `connect()` also wipes on a key mismatch**, not just a preserving one. Otherwise a plain connect after `suspend()` would still rejoin the old session on the new server.
+3. **`session_created` also resets `historyAuthoritative`**, so the flag means "this session's own history has arrived" after a session switch too.
+4. **`hydrateCachedSession` drops snapshot messages tagged with a delivery state**, as a safety net (the cache already drops them when writing).
+5. **A rejection also clears the stamp and the paging state.** `switchSession`, `leaveSession` and `createSession` all cancel a pending hydration.
+6. **A snapshot without a `serverKey`** gets the key of the current config.
+
+I made no git operations, and the working tree holds only the intended changes.
