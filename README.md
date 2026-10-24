@@ -448,6 +448,7 @@ The configuration file is located at `~/.wherever/config.json` on the server mac
   - `subDir` (string, optional, Default: `'.wherever/uploads'`): The relative directory to use when `type` is set to `'session'`.
   - `dir` (string, optional): The absolute or tilde-expanded (e.g. `~/uploads`) folder path to use when `type` is set to `'custom'`.
   - `method` (string, optional, Default: `'websocket'`): File transport method. Set to `'websocket'` for secure Base64 WebSocket transfer or `'post'` to fallback to HTTP multipart POST.
+  - `maxBytes` (number, optional, Default: `1073741824`, i.e. 1 GiB): Maximum size of one uploaded file, in bytes. Larger uploads are refused with a reason.
 
 - **`speech`** (object, optional):
   Configuration for cloud speech-to-text transcription:

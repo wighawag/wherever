@@ -381,7 +381,11 @@ Optionally add `&clientKey=YOUR_STABLE_KEY` (max 128 chars): a stable identity f
   "model": "anthropic:claude-3-5-sonnet"
 }
 
-// Send file upload via Base64 over WebSocket (Bypasses CORS/SSL warning blocks)
+// Send file upload via Base64 over WebSocket (Bypasses CORS/SSL warning blocks).
+// Accepted only for the session this socket last painted (session_created of its
+// latest session_load / session_new), only while that session is writable from
+// here, and only up to `uploads.maxBytes` (default 1 GiB) decoded. Otherwise the
+// server answers `file_upload_error` with a reason.
 {
   "type": "file_upload",
   "uploadId": "upload123",
@@ -485,6 +489,14 @@ Optionally add `&clientKey=YOUR_STABLE_KEY` (max 128 chars): a stable identity f
   "sessionId": "abc123xyz",
   "filename": "diagram.png",
   "savedPath": "/absolute/path/to/diagram.png"
+}
+
+// File upload refused or failed (wrong session, read-only, too large, write error)
+{
+  "type": "file_upload_error",
+  "uploadId": "upload123",
+  "sessionId": "abc123xyz",
+  "error": "This session is read-only from here, so the file was not uploaded."
 }
 ```
 

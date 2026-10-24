@@ -11,6 +11,7 @@ import { matchRemoteRepoRule, resolveRemoteCandidates } from './remote-candidate
 import { RestoreJobRegistry, type RestoreJobSnapshot, type RestoreRequest } from './restore-jobs.js';
 import type { ClientMessage, ServerMessage, ToolImage } from './protocol.js';
 import { INITIAL_HISTORY_LIMIT, HISTORY_PAGE_SIZE } from './protocol.js';
+import { gateUploadWrite, uploadMaxBytes, uploadTooLarge } from './upload-gate.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -324,6 +325,24 @@ interface WSClient {
   // refused by path rather than by attachment, and "Continue anyway" -- which
   // only ever answers a folder CONFLICT -- cannot lift it.
   folderMissingCwd?: string;
+  /**
+   * The session this client last PAINTED: the `session_created` of its latest
+   * `session_load` / `session_new`. The upload write gate binds to it
+   * (server/src/upload-gate.ts, docs/adr/0012), and a cold load's late attach
+   * proceeds only while it still names that load's session file.
+   *
+   * Deliberately SEPARATE from `pendingCwd` ('painted but not yet attached'):
+   * `clearConflictState` clears `pendingCwd`, and `switchClientSession(null)`
+   * calls it, including in the folder-missing branch right after the paint.
+   * These are cleared ONLY at the start of `session_load` (before its first
+   * await), at the start of `session_new`, and unconditionally by
+   * `session_leave`; NEVER by `switchClientSession(null)`.
+   */
+  paintedSessionFile?: string;
+  /** The painted session's id. See `paintedSessionFile`. */
+  paintedSessionId?: string;
+  /** The painted session's cwd: the upload target folder. See `paintedSessionFile`. */
+  paintedCwd?: string;
   // Stable identity supplied by the client on connect, carried across
   // reconnects. Used to retire this viewer's own superseded connection so a
   // dropped-and-reconnected client is never mistaken for a second viewer.
@@ -2508,6 +2527,27 @@ function clearConflictState(client: WSClient): void {
   client.pendingCwd = undefined;
 }
 
+// Forget which session this client painted (see WSClient.paintedSessionFile).
+// NOT part of clearConflictState: a detach must not clear it.
+function clearPaintedSession(client: WSClient): void {
+  client.paintedSessionFile = undefined;
+  client.paintedSessionId = undefined;
+  client.paintedCwd = undefined;
+}
+
+/**
+ * TEST-ONLY lever: `WHEREVER_TEST_COLD_BUILD_DELAY_MS` holds a cold
+ * `session_load`'s agent build open for that long before it starts, so tests can
+ * act deterministically inside the paint-to-attach window (an upload during a
+ * cold load, a leave/switch racing the late attach) instead of racing a fast
+ * machine. Unset (every real deployment) it is a no-op.
+ */
+function coldBuildTestDelay(): Promise<void> {
+  const ms = Number(process.env.WHEREVER_TEST_COLD_BUILD_DELAY_MS);
+  if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve();
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 // Is a DIFFERENT session in the same working folder currently being viewed? That
 // is the whole definition of a folder conflict: two agents pointed at one working
 // tree. Two viewers of the SAME conversation are not a conflict (they share one
@@ -2958,6 +2998,11 @@ async function handleWSMessage(
       // Same reasoning for the missing-folder lock: it belongs to the session we
       // are leaving, and must not leak into the one we are opening.
       client.folderMissingCwd = undefined;
+      // And the painted session: a new load is about to paint another one.
+      // Cleared BEFORE the first await because `joinSession` sends no leave: a
+      // slow cold build of the previous session finishing during the read below
+      // would otherwise still match it and attach the socket to the wrong session.
+      clearPaintedSession(client);
       const meta = await pool.readSessionMeta(msg.sessionFile, INITIAL_HISTORY_LIMIT, msg.model);
       if ('error' in meta) {
         sendWS(client.ws, { type: 'session_error', error: meta.error });
@@ -2999,6 +3044,10 @@ async function handleWSMessage(
       client.readOnly = forcedReadOnly;
       client.conflictObserver = folderConflict;
       client.pendingCwd = meta.cwd;
+      // Bind uploads (and this load's late attach) to the session painted now.
+      client.paintedSessionFile = meta.sessionFile;
+      client.paintedSessionId = meta.sessionId;
+      client.paintedCwd = meta.cwd;
 
       // Paint immediately. `pending` is true when the live agent is not resident
       // yet, so the client keeps the composer disabled (with a "preparing
@@ -3094,7 +3143,18 @@ async function handleWSMessage(
       // Cold: build the live agent in the background, then attach + signal ready.
       // Errors degrade to a session_error (the conversation stays readable).
       void (async () => {
+        await coldBuildTestDelay();
         const result = await pool.loadSession(msg.sessionFile, msg.cwd, msg.model);
+        // LATE ATTACH GUARD. The client may have left, switched or created
+        // another session while the agent was building. Then the WHOLE tail
+        // belongs to a session nobody is looking at: no stale session_error, no
+        // attach (which would drag the socket back to this session), no read-only
+        // re-derivation, session_ready, queue snapshot or conflict verdict. Just
+        // let idle eviction reclaim the freshly built agent.
+        if (client.paintedSessionFile !== meta.sessionFile) {
+          if (!result.error) pool.scheduleIdleCheck(result.tracked.sessionFile);
+          return;
+        }
         if (result.error) {
           sendWS(client.ws, { type: 'session_error', sessionId: meta.sessionId, error: result.error });
           return;
@@ -3194,6 +3254,10 @@ async function handleWSMessage(
       // staring at a blocking overlay its 25s create watchdog would give up on
       // while git was still running. Creating a REMOTE (the other branch of that
       // dialog) is untouched and still happens inside createNewSession.
+      //
+      // A create is a new paint: forget the previous one first, so a cold load
+      // still building cannot late-attach and uploads for it are refused.
+      clearPaintedSession(client);
       if (msg.cloneRemote) {
         const targetPath = resolveCreateCwd(msg.cwd);
         // The restore broadcast is DERIVED from a path match against each
@@ -3239,6 +3303,9 @@ async function handleWSMessage(
       const folderOccupied = folderHasOtherViewedSession(pool, result.tracked.sessionFile, result.tracked.cwd);
       client.readOnly = folderOccupied || pool.isReadOnlyCwd(result.tracked.cwd);
       client.conflictObserver = folderOccupied;
+      client.paintedSessionFile = result.tracked.sessionFile;
+      client.paintedSessionId = result.tracked.sessionId;
+      client.paintedCwd = result.tracked.cwd;
 
       sendWS(client.ws, {
         type: 'session_created',
@@ -3288,6 +3355,10 @@ async function handleWSMessage(
       // folder-missing load never attaches, so `sessionId` can already be null
       // here and the flag must be cleared regardless.)
       client.folderMissingCwd = undefined;
+      // UNCONDITIONALLY, like the lock above: a leave during a cold load arrives
+      // before the attach (sessionId still null or the previous session), and it
+      // is what stops that load's late attach and refuses its uploads.
+      clearPaintedSession(client);
       if (client.sessionId) {
         switchClientSession(client, null, pool, onSessionsUpdated);
         client.readOnly = false;
@@ -3670,22 +3741,26 @@ async function handleWSMessage(
       // dir. Refuse out loud rather than silently, for the same reason the
       // message handler does: a client only hides its composer when it AGREES it
       // is read-only, so any desync must be visible instead of swallowed.
-      if (client.readOnly) {
-        sendWS(client.ws, {
-          type: 'file_upload_error',
-          uploadId,
-          sessionId,
-          error: 'This session is read-only from here, so the file was not uploaded.',
-        });
+      //
+      // The verdict and the target folder both come from the session this socket
+      // PAINTED (gateUploadWrite, docs/adr/0012): the verdict used to be the
+      // attached session's while the file went to `msg.sessionId`'s folder, and
+      // the folder came from the live session, absent during a cold build (tmp).
+      const gate = gateUploadWrite(client, pool, sessionId);
+      if (!gate.ok) {
+        sendWS(client.ws, { type: 'file_upload_error', uploadId, sessionId, error: gate.reason });
+        break;
+      }
+
+      const config = getWhereverConfig();
+      const tooLarge = uploadTooLarge(Buffer.byteLength(String(data), 'base64'), uploadMaxBytes(config));
+      if (tooLarge) {
+        sendWS(client.ws, { type: 'file_upload_error', uploadId, sessionId, error: tooLarge });
         break;
       }
 
       try {
-        const tracked = pool.getSession(sessionId);
-        const cwd = tracked?.cwd;
-
-        const config = getWhereverConfig();
-        const targetDir = resolveUploadDir(config, cwd);
+        const targetDir = resolveUploadDir(config, gate.cwd);
 
         fs.mkdirSync(targetDir, { recursive: true });
 

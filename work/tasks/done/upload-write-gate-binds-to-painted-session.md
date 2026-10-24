@@ -4,7 +4,7 @@ slug: upload-write-gate-binds-to-painted-session
 spec: resumable-chunked-uploads
 blockedBy: []
 covers: [11, 12]
-needsAnswers: true
+needsAnswers: false
 ---
 
 ## What to build
