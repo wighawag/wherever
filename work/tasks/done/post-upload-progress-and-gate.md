@@ -52,3 +52,15 @@ git fetch origin && git switch -c work/post-upload-progress-and-gate origin/main
 # on completion, in the work branch's PR/merge:
 git mv work/tasks/ready/post-upload-progress-and-gate.md work/tasks/done/post-upload-progress-and-gate.md
 ```
+
+## Decisions
+
+These are recorded in comments where each choice is made; please link them from the done record.
+1. **Meaning of progress over POST** (`web/src/lib/core/post-upload.ts`): progress is bytes the browser has sent, not bytes the server confirmed. The chip can therefore sit at 100% before `done` arrives.
+2. **The file is streamed, not read into memory first** (same file). A file the phone can no longer read now shows up as a network error. To keep the "pick the file again" message, the client then tries to read one byte, and shows that message if it can't.
+3. **Kept the `text/plain` content type** (same file), as the old `fetch` path sent.
+4. **One 403 for all three folder refusals**, told apart by the reason text, plus 404 and 413 (`server/src/upload-gate.ts`, `gateUploadFolder`). This is user-visible, so you may want to confirm it.
+5. **"Being restored" takes precedence over "missing"** when a folder is both (same JSDoc).
+6. **Read only the session file's first line, not the existing history read with a tiny limit** (same JSDoc), because the history read scans the whole transcript of a cold session.
+
+**Observation:** I left a note at `work/notes/observations/upload-test-payloads-leaked-into-os-tmpdir.md`. `/tmp` holds about eight old 31-byte `*_note.txt` files containing `file-upload-read-only.test.ts`'s payload; I haven't confirmed where they come from. Separately, the first (red) run of my new test wrote four files to `/tmp` before the fix; I deleted them.

@@ -279,19 +279,21 @@ Gracefully close and clean up an active session (saved database states are untou
   ```
 
 ### `POST /session/upload`
-Upload a document or image to the server via standard HTTP multipart POST.
+Upload one file as the RAW request body (not multipart). This is the `uploads.method: 'post'` path; the web client's default is the WebSocket (mobile browsers block POSTs against self-signed certificates, see `docs/mobile-upload-optimization.md`).
 * **Auth required:** Yes (if token is configured)
-* **Form Data Parameters:**
-  * `sessionId`: The session identifier (UUID or custom ID).
-  * `file`: The binary file upload (image or document).
+* **Query Parameters:**
+  * `sessionId`: The session id (or session file). The session does NOT have to be loaded: a cold session's folder is read from its session file's header.
+  * `filename`: The original file name; the file is saved as `<timestamp>_<filename>` in the session's upload dir (`uploads.type` / `subDir` / `dir`).
+* **Body:** the file bytes. `Content-Length` is optional; without it the size limit is enforced while streaming.
 * **Response (200 OK):**
   ```json
   {
     "status": "uploaded",
     "filename": "screenshot.png",
-    "savedPath": "/absolute/path/to/server-storage/screenshot.png"
+    "savedPath": "/absolute/path/to/server-storage/1700000000000_screenshot.png"
   }
   ```
+* **Errors** (all `{ "error": "<reason>" }`): `400` missing `sessionId` / `filename`; `404` the session cannot be resolved; `403` the session's folder is read-only (`sessions.readOnly`), missing, or being restored; `413` the file exceeds `uploads.maxBytes` (default 1 GiB; a partial file is removed). A POST cannot see per-viewer folder-conflict state, so it does not enforce the observe-only lock.
 
 ### `GET /session/download`
 Download a file the agent produced (the reverse of `/session/upload`). The server streams the file with `Content-Disposition: attachment`. This is what makes file mentions in the chat tappable/downloadable from a phone or browser.

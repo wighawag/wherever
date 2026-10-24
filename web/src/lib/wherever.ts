@@ -6,9 +6,7 @@ import {
 	serverKey,
 	type ChatMessage,
 	type UploadByteSource,
-	type UploadError,
 	type UploadProgress,
-	type UploadState,
 	type WhereverState,
 } from '@wherever-dev/client';
 import {
@@ -16,6 +14,7 @@ import {
 	shouldSignalConversationMode,
 } from './core/conversation-mode';
 import {buildAttachmentMessage} from './core/attachments';
+import {fileStillReadable, postUpload} from './core/post-upload';
 import {adoptTokenFromUrlOnce} from './core/token-adoption';
 import {normalizeDrafts, type Draft} from './core/drafts';
 import {
@@ -1205,52 +1204,26 @@ export const isLoadingMoreHistory = derived(
 	($s) => $s.loadingMoreHistory,
 );
 
-async function uploadFileViaPost(
+// `uploads.method: 'post'`: one XMLHttpRequest POST with byte progress, the
+// same `onProgress` contract as the WebSocket paths, and no resume
+// (`./core/post-upload.ts`, whose module comment records the decisions).
+function uploadFileViaPost(
 	sessionId: string,
 	file: File,
 	signal: AbortSignal | undefined,
-	report: (state: UploadState, error?: UploadError) => void,
+	onProgress: ((progress: UploadProgress) => void) | undefined,
 ): Promise<{savedPath: string; filename: string}> {
 	const baseUrl = getBaseUrl();
 	const token = getToken();
 	const url = `${baseUrl}/session/upload?sessionId=${encodeURIComponent(sessionId)}&filename=${encodeURIComponent(file.name)}${token ? `&token=${encodeURIComponent(token)}` : ''}`;
-
-	// No byte progress on POST yet (post-upload-progress-and-gate): acked stays 0.
-	report('sending');
-	try {
-		const fileData = await file.arrayBuffer();
-
-		const res = await fetch(url, {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'text/plain',
-			},
-			body: fileData,
-			signal,
-		});
-
-		if (!res.ok) {
-			const errData = await res.json().catch(() => ({}));
-			throw new Error(
-				errData.error || `Upload failed with status ${res.status}`,
-			);
-		}
-
-		const result = await res.json();
-		report('done');
-		return result;
-	} catch (err) {
-		if (signal?.aborted) {
-			report('aborted');
-		} else if ((err as Error)?.name === 'NotReadableError') {
-			const message = 'The file is no longer readable, pick it again';
-			report('failed', {message, code: 'not_readable'});
-			throw Object.assign(new Error(message), {code: 'not_readable'});
-		} else {
-			report('failed', {message: (err as Error)?.message || 'Upload failed'});
-		}
-		throw err;
-	}
+	return postUpload({
+		url,
+		body: file,
+		size: file.size,
+		signal,
+		onProgress,
+		probeReadable: () => fileStillReadable(file),
+	});
 }
 
 /**
@@ -1295,7 +1268,8 @@ export function downloadFileUrl(path: string): string | null {
  * of truth. Over the WebSocket the client picks the protocol (chunked with real
  * acked progress on servers with `upload.v1`, else the legacy one-frame upload:
  * `queued` -> `sending` (acked 0) -> `paused` while its socket is lost ->
- * `done` / `failed`). POST reports `sending` (acked 0) -> `done` / `failed`. A
+ * `done` / `failed`). POST reports `sending` (acked = bytes the browser has
+ * sent, from `xhr.upload.onprogress`) -> `done` / `failed`, with no resume. A
  * cancel through `signal` reports `aborted`.
  */
 export async function uploadFile(
@@ -1309,14 +1283,7 @@ export async function uploadFile(
 	const method = get(uploadMethodStore);
 	const onProgress = options?.onProgress;
 	if (method === 'post') {
-		return uploadFileViaPost(sessionId, file, options?.signal, (state, error) =>
-			onProgress?.({
-				acked: state === 'done' ? file.size : 0,
-				size: file.size,
-				state,
-				...(error ? {error} : {}),
-			}),
-		);
+		return uploadFileViaPost(sessionId, file, options?.signal, onProgress);
 	}
 	return client.uploadFileViaWebSocket(
 		sessionId,

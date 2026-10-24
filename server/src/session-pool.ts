@@ -1318,6 +1318,47 @@ export class SessionPool {
   }
 
   /**
+   * HEADER-ONLY read of what a write into a session's folder needs: its cwd and
+   * the two folder verdicts of `readSessionMeta` (`readOnly`, `folderMissing`),
+   * with no history and no agent. A resident session answers from the pool; a
+   * cold one (including one whose agent is still building) from the session
+   * file's header, one 8 KB read regardless of transcript size. Used by
+   * `POST /session/upload`, which has no socket and so no painted session.
+   * `{error}` means the session cannot be resolved at all.
+   */
+  async readSessionFolderMeta(
+    sessionFileOrId: string,
+  ): Promise<
+    | { sessionFile: string; sessionId: string; cwd: string; readOnly: boolean; folderMissing: boolean }
+    | { error: string }
+  > {
+    const resolved = await this.resolveSessionFile(sessionFileOrId);
+    if (resolved.error || !resolved.resolvedFile) {
+      return { error: resolved.error ?? 'Could not resolve session' };
+    }
+    const resolvedFile = resolved.resolvedFile;
+    const resident = this.sessions.get(resolvedFile);
+    let sessionId: string;
+    let cwd: string;
+    if (resident) {
+      sessionId = resident.sessionId;
+      cwd = resident.cwd;
+    } else {
+      const header = await readSessionHeader(resolvedFile);
+      if (!header) return { error: `Session "${sessionFileOrId}" not found` };
+      sessionId = header.id;
+      cwd = normalizePath(header.cwd || process.cwd());
+    }
+    return {
+      sessionFile: resolvedFile,
+      sessionId,
+      cwd,
+      readOnly: this.isReadOnlyCwd(cwd),
+      folderMissing: !(await this.folderExists(cwd)),
+    };
+  }
+
+  /**
    * CHEAP read of a session's metadata + history WITHOUT building a live agent.
    * Opening a session for VIEWING only needs the header (id/cwd/model) and the
    * transcript (a file read); instantiating the agent (createAgentSession ->

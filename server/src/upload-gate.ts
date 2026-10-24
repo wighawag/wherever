@@ -1,7 +1,8 @@
 /**
  * The upload WRITE GATE: one decision, shared by every path that writes an
- * uploaded file (the legacy base64 `file_upload` frame today; the chunked
- * protocol and `POST /session/upload` reuse it).
+ * uploaded file over the WebSocket (the legacy base64 `file_upload` frame and
+ * the chunked protocol). `POST /session/upload` has no socket, so it uses
+ * `gateUploadFolder` below, which shares the reasons and the size limit.
  *
  * An upload WRITES a file to disk, so it is a write capability and sits behind
  * the same verdict as a send. It is bound to the session this socket PAINTED
@@ -76,6 +77,60 @@ export function gateUploadWrite(
     return { ok: false, reason: 'This session is read-only from here, so the file was not uploaded.' };
   }
   return { ok: true, cwd };
+}
+
+/** A session folder's verdicts, as `POST /session/upload` resolves them without a socket. */
+export interface UploadFolderVerdicts {
+  cwd: string;
+  /** The cwd matches a `sessions.readOnly` glob. */
+  readOnly: boolean;
+  /** The cwd does not exist (or is not a directory) on this machine. */
+  folderMissing: boolean;
+  /** A restore job is materialising the cwd right now. */
+  restoring: boolean;
+}
+
+/**
+ * The write gate for an upload that has NO socket (`POST /session/upload`).
+ *
+ * It applies the HARD read-only reasons of the WebSocket verdict (see
+ * `hasHardReadOnly` in index.ts, plus a running restore, which `session_load`
+ * folds into folder-missing): a `sessions.readOnly` folder, a missing folder,
+ * and a folder a restore job is cloning into. It cannot apply the per-viewer
+ * folder-conflict observe-only lock, because that state belongs to a socket and
+ * a POST has none (an accepted, documented limitation, docs/adr/0012). It does
+ * not require the session to be loaded: the composer is editable while a cold
+ * agent builds, so the cwd comes from the pool or the session file's header.
+ *
+ * Decisions (recorded here, the choice site):
+ * - The HTTP statuses: a refusal by this gate is `403`, an unresolvable session
+ *   `404`, an oversized body `413` (matching `/session/download`'s `413`). One
+ *   `403` for all three folder reasons, told apart by the `error` text the
+ *   client shows, rather than e.g. `409` for a restore in progress: the client
+ *   only needs the reason, and the WebSocket paths have no codes either.
+ * - A running restore is checked BEFORE folder-missing, so a folder that is
+ *   both missing and being cloned says "being restored", the more useful truth.
+ * - A header-only read (`SessionPool.readSessionFolderMeta`) rather than
+ *   `readSessionMeta` with a tiny history limit: a cold `readSessionMeta`
+ *   streams the whole transcript to find the window, which a write never needs.
+ */
+export function gateUploadFolder(v: UploadFolderVerdicts): UploadGateVerdict {
+  if (v.readOnly) {
+    return { ok: false, reason: 'This session is read-only from here, so the file was not uploaded.' };
+  }
+  if (v.restoring) {
+    return {
+      ok: false,
+      reason: "This session's folder is still being restored, so the file was not uploaded.",
+    };
+  }
+  if (v.folderMissing) {
+    return {
+      ok: false,
+      reason: "This session's folder is missing on this machine, so the file was not uploaded.",
+    };
+  }
+  return { ok: true, cwd: v.cwd };
 }
 
 /** The configured `uploads.maxBytes`, or the 1 GiB default when unset or not a positive number. */
