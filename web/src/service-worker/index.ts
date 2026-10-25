@@ -19,7 +19,12 @@ let ASSETS: string[] = [];
 if (OFFLINE_CACHE === 'all') {
 	ASSETS = build
 		.concat(prerendered)
-		.concat(files.filter((v) => v.indexOf('pwa/') === -1));
+		.concat(files.filter((v) => v.indexOf('pwa/') === -1))
+		// The Nerd Font symbols face (see app.css) is large and only needed when a
+		// prompt icon is actually shown. Keep it out of the install-time precache:
+		// the browser fetches it on demand (unicode-range) and the fetch handler
+		// caches it then, so it is available offline once used with this version.
+		.filter((v) => v.indexOf('SymbolsNerdFont') === -1);
 } // TODO support more offline option
 
 let _logEnabled = true; // TODO false

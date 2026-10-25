@@ -2,7 +2,33 @@
 @plugin '@tailwindcss/forms';
 @plugin '@tailwindcss/typography';
 
+/*
+ * Nerd Font symbols (Powerline separators, git branch, clock, folder icons...)
+ * used by fancy shell prompts. They live in Unicode Private Use Areas, which no
+ * regular font covers, so pasted prompts rendered as tofu boxes. This face is
+ * restricted with unicode-range, so the browser only downloads it when such a
+ * glyph is actually on screen, and it never overrides regular text. A locally
+ * installed copy is preferred over the bundled one.
+ * Font: Symbols Nerd Font Mono 3.5.0 (https://www.nerdfonts.com, OFL-1.1 / MIT,
+ * see lib/assets/fonts/LICENSE-SymbolsNerdFont.txt).
+ */
+@font-face {
+	font-family: 'Wherever Nerd Symbols';
+	src:
+		local('Symbols Nerd Font Mono'),
+		local('SymbolsNerdFontMono-Regular'),
+		url('./lib/assets/fonts/SymbolsNerdFontMono-Regular.woff2') format('woff2');
+	font-display: swap;
+	unicode-range: U+23FB-23FE, U+2B58, U+E000-F8FF, U+F0000-FFFFD;
+}
+
 @theme {
+	--font-sans:
+		'Wherever Nerd Symbols', ui-sans-serif, system-ui, sans-serif,
+		'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+	--font-mono:
+		'Wherever Nerd Symbols', ui-monospace, SFMono-Regular, Menlo, Monaco,
+		Consolas, 'Liberation Mono', 'Courier New', monospace;
 	--color-brand-cyan: #06b6d4;
 	--color-brand-blue: #3b82f6;
 	--color-brand-purple: #8b5cf6;
@@ -17,6 +43,7 @@
 
 html {
 	font-family:
+		'Wherever Nerd Symbols',
 		'Inter',
 		system-ui,
 		-apple-system,
@@ -155,7 +182,7 @@ body {
 	font-style: italic;
 }
 .markdown-body code {
-	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-family: var(--font-mono);
 	font-size: 0.85em;
 	background: var(--color-brand-surface-3);
 	padding: 0.1em 0.35em;
@@ -179,7 +206,7 @@ body {
 }
 .markdown-body details.code-collapsible > summary {
 	cursor: pointer;
-	font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+	font-family: var(--font-mono);
 	font-size: 0.8125em;
 	color: var(--color-brand-text-muted);
 	background: var(--color-brand-dark);
