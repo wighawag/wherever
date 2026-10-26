@@ -307,7 +307,11 @@ export class WhereverClient {
   private createWatchdog: any = null;
   private static readonly CREATE_WATCHDOG_MS = 25_000;
   private reconnectAttempts = 0;
-  private reconnectDelay = 2000;
+  private static readonly MIN_RECONNECT_DELAY = 2000;
+  private reconnectDelay = WhereverClient.MIN_RECONNECT_DELAY;
+  // Wall-clock time the current socket was created, so a return to the page can
+  // tell a handshake that has hung across a freeze from one just started.
+  private socketStartedAt = 0;
   private maxReconnectDelay = 15000;
   // Whether the socket has EVER opened successfully since construction. Repeated
   // closes with zero successful opens almost always mean a rejected handshake
@@ -343,6 +347,20 @@ export class WhereverClient {
   // the timers fire BEFORE the frames queued during the freeze are dispatched,
   // so the raw silence verdict is routinely false on a phone.
   private static readonly PROBE_GRACE_MS = 5_000;
+  // The probe a return to the page starts (noteVisible) uses a shorter grace.
+  // The long grace above exists because timers that came due DURING a freeze
+  // fire before the frames queued during it; a probe started from the
+  // visibility event is a fresh timer, so the queued frames (and a healthy
+  // socket's pong, one round trip later) are dispatched well before it fires.
+  // Waiting the full 5 s there, then the reconnect backoff on top, is what made
+  // coming back to the PWA slower than a reload.
+  private static readonly VISIBLE_PROBE_GRACE_MS = 2_000;
+  // A socket still CONNECTING this long when the page becomes visible is
+  // treated as a handshake that hung (typically started before a freeze,
+  // against a network that was gone) and restarted. Well above an honest slow
+  // mobile TLS handshake, so a return never throws away one that is about to
+  // complete.
+  private static readonly STALLED_HANDSHAKE_MS = 8_000;
   // The pending probe's grace timer, and the socket it was started on. Cleared
   // by any inbound frame, by stopLivenessWatchdog (every socket change), and
   // ignored if the socket it belongs to is no longer current.
@@ -511,6 +529,7 @@ export class WhereverClient {
 
     // A new socket: its capabilities are unknown until its `connected` frame.
     this.socketCapabilities = null;
+    this.socketStartedAt = Date.now();
     try {
       const wsOptions = this.config.secure && this.config.WebSocketCtor ? { rejectUnauthorized: false } : undefined;
       this.ws = wsOptions ? new WebSocketImpl(wsUrl, wsOptions) : new WebSocketImpl(wsUrl);
@@ -533,7 +552,7 @@ export class WhereverClient {
       }
       this.hasEverConnected = true;
       this.reconnectAttempts = 0;
-      this.reconnectDelay = 2000;
+      this.reconnectDelay = WhereverClient.MIN_RECONNECT_DELAY;
       this.isInitialConnect = false;
       this.startLivenessWatchdog();
       this.stateStore.update(s => ({
@@ -870,20 +889,40 @@ export class WhereverClient {
   // socket is OPEN and watched, probe it right away instead of waiting for the
   // next tick, and reset the stale baseline so the time the page spent frozen is
   // not counted as silence (the probe decides whether the socket is alive).
-  // A no-op otherwise: on a CONNECTING socket the ping would be dropped by
-  // send() and the grace check would tear down a socket still handshaking.
+  //
+  // The user is looking at the page, so a return must never pay the slow paths
+  // meant for an unattended client: the probe uses the short
+  // VISIBLE_PROBE_GRACE_MS, a socket it condemns is replaced at once instead of
+  // after the reconnect backoff, and the backoff grown while hidden is reset.
+  // A socket still CONNECTING after STALLED_HANDSHAKE_MS is restarted.
+  // With no socket at all this only resets the backoff: the page follows up
+  // with resume() / connect(), which connect at once.
   public noteVisible() {
+    this.reconnectDelay = WhereverClient.MIN_RECONNECT_DELAY;
     const ws = this.ws as any;
-    if (!ws || ws.readyState !== 1 /* OPEN */ || !this.livenessTimer) return;
+    if (!ws) return;
+    if (ws.readyState === 0 /* CONNECTING */) {
+      if (Date.now() - this.socketStartedAt > WhereverClient.STALLED_HANDSHAKE_MS) {
+        console.info('[wherever] handshake stalled; restarting it');
+        this.reconnectNow();
+      }
+      return;
+    }
+    if (ws.readyState !== 1 /* OPEN */ || !this.livenessTimer) return;
     this.lastInboundAt = Date.now();
     this.lastLivenessTickAt = this.lastInboundAt;
     // Restart any pending probe: its grace may have been eaten by the freeze.
     this.cancelLivenessProbe();
-    this.startLivenessProbe('page became visible');
+    this.startLivenessProbe('page became visible', true);
   }
 
   // Send a ping and arm the grace check. Idempotent while a probe is pending.
-  private startLivenessProbe(reason: string) {
+  // `onReturn` marks the probe a return to the page started: short grace, and
+  // an immediate reconnect if it goes unanswered.
+  private startLivenessProbe(reason: string, onReturn = false) {
+    const grace = onReturn
+      ? WhereverClient.VISIBLE_PROBE_GRACE_MS
+      : WhereverClient.PROBE_GRACE_MS;
     if (this.probeTimer || !this.ws || typeof setTimeout !== 'function') return;
     const probedWs = this.ws;
     try {
@@ -900,15 +939,17 @@ export class WhereverClient {
       // background timer throttling (timers batched to ~1/min in a long-hidden
       // tab) every grace check is late, so the verdict on a dead socket is
       // deferred until the page is visible again, where noteVisible() restarts
-      // an unthrottled probe and a dead socket goes ~5 s later. Accepted: a
+      // an unthrottled probe and a dead socket goes ~2 s later. Accepted: a
       // hidden page has no viewer, and a capped retry would reintroduce the
       // false teardown on thaw this probe exists to prevent.
-      if (Date.now() - sentAt > 2 * WhereverClient.PROBE_GRACE_MS) {
+      // A return probe whose check ran late means the page froze again, so
+      // nobody is waiting on it any more: re-probe as an ordinary probe.
+      if (Date.now() - sentAt > 2 * grace) {
         this.startLivenessProbe(reason);
         return;
       }
-      this.tearDownStaleSocket(reason);
-    }, WhereverClient.PROBE_GRACE_MS);
+      this.tearDownStaleSocket(reason, grace, onReturn);
+    }, grace);
     if (this.probeTimer && typeof (this.probeTimer as any).unref === 'function') {
       (this.probeTimer as any).unref();
     }
@@ -924,12 +965,12 @@ export class WhereverClient {
   // The probe went unanswered: treat the socket as dead. Tearing it down
   // forcibly is what makes a half-open connection recover, since the OS never
   // produced a FIN/RST to trigger the normal close path.
-  private tearDownStaleSocket(reason: string) {
+  private tearDownStaleSocket(reason: string, graceMs: number, immediate: boolean) {
     if (!this.ws) return;
     const streaming = get(this.stateStore).isStreaming;
     console.warn(
       `[wherever] relay connection stale: ${reason}; probe unanswered for ` +
-      `${WhereverClient.PROBE_GRACE_MS}ms; tearing down dead socket and reconnecting`,
+      `${graceMs}ms; tearing down dead socket and reconnecting`,
     );
     this.stopLivenessWatchdog();
     const deadWs = this.ws;
@@ -957,7 +998,10 @@ export class WhereverClient {
         : s.sessionError,
       isStreaming: false,
     }));
-    this.scheduleReconnect();
+    // A probe started by a return to the page has a user waiting on it: no
+    // backoff, the dead socket is replaced now.
+    if (immediate) this.reconnectNow();
+    else this.scheduleReconnect();
   }
 
   private stopLivenessWatchdog() {
@@ -1040,46 +1084,56 @@ export class WhereverClient {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, this.maxReconnectDelay);
-      console.info(`[wherever] reconnecting to relay (attempt ${++this.reconnectAttempts})`);
+      this.reconnectNow();
+    }, this.reconnectDelay);
+  }
 
-      // If we have retried a few times and NEVER once opened the socket, this is
-      // almost certainly a rejected handshake, not a flaky network. Surface a
-      // concrete, actionable error (the server rejects a bad/missing token with
-      // HTTP 401 during the WS upgrade, which the browser reports only as an
-      // opaque 1006 close). Keep retrying, but stop looking like a mere network
-      // hiccup.
-      if (
-        !this.hasEverConnected &&
-        this.reconnectAttempts >= WhereverClient.HANDSHAKE_FAIL_HINT_AFTER
-      ) {
-        const scheme = this.config.secure ? 'wss' : 'ws';
-        this.stateStore.update(s => ({
-          ...s,
-          error:
-            'Cannot connect to the wherever server: the connection is being rejected. ' +
-            'This usually means a missing or wrong token, or a wrong host/port/scheme ' +
-            `(currently ${scheme}://${this.config.host}:${this.config.port}). ` +
-            'Check the auth token and connection settings.',
-        }));
-      }
+  // Reconnect right away (the body of a backoff timer firing), preserving the
+  // store when a session is active so onOpen rejoins it in place.
+  private reconnectNow() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    console.info(`[wherever] reconnecting to relay (attempt ${++this.reconnectAttempts})`);
 
-      // If we still hold an active session, PRESERVE the cached store across the
-      // reconnect. A default connect() resets to a blank store, which wiped
-      // activeSessionFile BEFORE onOpen could re-attach to it -- that is what
-      // silently detached the frontend from a still-running session (frozen
-      // conversation, no re-follow, not even a "connecting"/"loading" hint).
-      // Preserving the store keeps the conversation on screen and lets onOpen
-      // re-issue session_load from activeSessionFile.
-      const preserve = !!get(this.stateStore).activeSessionFile;
-
+    // If we have retried a few times and NEVER once opened the socket, this is
+    // almost certainly a rejected handshake, not a flaky network. Surface a
+    // concrete, actionable error (the server rejects a bad/missing token with
+    // HTTP 401 during the WS upgrade, which the browser reports only as an
+    // opaque 1006 close). Keep retrying, but stop looking like a mere network
+    // hiccup.
+    if (
+      !this.hasEverConnected &&
+      this.reconnectAttempts >= WhereverClient.HANDSHAKE_FAIL_HINT_AFTER
+    ) {
+      const scheme = this.config.secure ? 'wss' : 'ws';
       this.stateStore.update(s => ({
         ...s,
-        connecting: true,
-        error: 'Reconnecting...',
+        error:
+          'Cannot connect to the wherever server: the connection is being rejected. ' +
+          'This usually means a missing or wrong token, or a wrong host/port/scheme ' +
+          `(currently ${scheme}://${this.config.host}:${this.config.port}). ` +
+          'Check the auth token and connection settings.',
       }));
+    }
 
-      this.connect(undefined, preserve);
-    }, this.reconnectDelay);
+    // If we still hold an active session, PRESERVE the cached store across the
+    // reconnect. A default connect() resets to a blank store, which wiped
+    // activeSessionFile BEFORE onOpen could re-attach to it -- that is what
+    // silently detached the frontend from a still-running session (frozen
+    // conversation, no re-follow, not even a "connecting"/"loading" hint).
+    // Preserving the store keeps the conversation on screen and lets onOpen
+    // re-issue session_load from activeSessionFile.
+    const preserve = !!get(this.stateStore).activeSessionFile;
+
+    this.stateStore.update(s => ({
+      ...s,
+      connecting: true,
+      error: 'Reconnecting...',
+    }));
+
+    this.connect(undefined, preserve);
   }
 
   private handleMessage(msg: any) {

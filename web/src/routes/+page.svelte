@@ -205,9 +205,11 @@
 				clearTimeout(hiddenTimer);
 				hiddenTimer = null;
 			}
-			// Probe a still-open socket on every pageshow too (see handleVisibility).
-			noteVisible();
 			if (document.visibilityState === 'hidden') return;
+			// Probe a still-open socket on every visible pageshow too (see
+			// handleVisibility). Not on a hidden one: noteVisible() takes the fast
+			// paths meant for a user who is looking at the page.
+			noteVisible();
 			const action = decideReturn({
 				booting,
 				connected,

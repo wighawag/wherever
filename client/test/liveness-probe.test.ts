@@ -69,18 +69,119 @@ describe('liveness watchdog probes before tearing a socket down', () => {
 		expect(get(client.stateStore).connected).toBe(true);
 	});
 
-	it('after a thaw-like jump, noteVisible() with NO reply tears down after the grace and reconnects', () => {
+	it('after a thaw-like jump, noteVisible() with NO reply tears down after the SHORT grace and reconnects at once', () => {
 		const sock = ws.last();
 		sock.open();
 		freeze(120_000);
 		client.noteVisible();
-		vi.advanceTimersByTime(4_000);
+		vi.advanceTimersByTime(1_999);
 		expect(sock.readyState).toBe(1);
-		vi.advanceTimersByTime(1_000);
+		expect(ws.instances).toHaveLength(1);
+		vi.advanceTimersByTime(1);
 		expect(sock.readyState).toBe(3);
-		expect(get(client.stateStore).connected).toBe(false);
+		// No reconnect backoff: the replacement socket is already being opened.
+		expect(ws.instances).toHaveLength(2);
+		expect(get(client.stateStore).connecting).toBe(true);
+	});
+
+	it('a return to the page resets a backoff grown while hidden', () => {
+		ws.last().open();
+		// Failed reconnects while hidden grow the delay: 2 s, then 3 s, then 4.5 s.
+		ws.last().close();
 		vi.advanceTimersByTime(2_000);
 		expect(ws.instances).toHaveLength(2);
+		ws.last().close(); // next attempt in 3 s
+		client.noteVisible(); // the user is back: the growth restarts
+		vi.advanceTimersByTime(3_000);
+		expect(ws.instances).toHaveLength(3);
+		ws.last().close();
+		// Without the reset this attempt would wait 4.5 s.
+		vi.advanceTimersByTime(3_000);
+		expect(ws.instances).toHaveLength(4);
+	});
+
+	it('noteVisible() restarts a handshake that hung across a freeze', () => {
+		const sock = ws.last();
+		expect(sock.readyState).toBe(0);
+		freeze(30_000);
+		client.noteVisible();
+		expect(ws.instances).toHaveLength(2);
+		expect(sock.readyState).toBe(3);
+		expect(ws.last().readyState).toBe(0);
+	});
+
+	it('noteVisible() leaves a slow but young handshake alone', () => {
+		const sock = ws.last();
+		vi.advanceTimersByTime(7_900);
+		client.noteVisible();
+		expect(ws.instances).toHaveLength(1);
+		expect(sock.readyState).toBe(0);
+	});
+
+	it('the page order (noteVisible then resume) on a stalled handshake opens exactly one new socket', () => {
+		freeze(30_000);
+		client.noteVisible();
+		client.resume();
+		expect(ws.instances).toHaveLength(2);
+	});
+
+	it('a return probe whose check runs late (page froze again) re-probes instead of tearing down', () => {
+		const sock = ws.last();
+		sock.open();
+		client.noteVisible();
+		const before = pings(sock);
+		freeze(30_000);
+		vi.advanceTimersByTime(2_000);
+		expect(sock.readyState).toBe(1);
+		expect(pings(sock)).toBe(before + 1);
+		// The re-probe is an ordinary one: the long grace, then the backoff.
+		vi.advanceTimersByTime(4_999);
+		expect(sock.readyState).toBe(1);
+		vi.advanceTimersByTime(1);
+		expect(sock.readyState).toBe(3);
+		expect(ws.instances).toHaveLength(1);
+		vi.advanceTimersByTime(2_000);
+		expect(ws.instances).toHaveLength(2);
+	});
+
+	it('a return probe that condemns the socket keeps the session and rejoins it in place', () => {
+		const sock = ws.last();
+		sock.open();
+		client.joinSession('/tmp/project/session.jsonl');
+		sock.receive({
+			type: 'session_created',
+			sessionId: 'sid-1',
+			sessionFile: '/tmp/project/session.jsonl',
+			cwd: '/tmp/project',
+			model: 'fake:model',
+			isStreaming: false,
+		});
+		sock.receive({
+			type: 'message_history',
+			sessionId: 'sid-1',
+			messages: [
+				{role: 'user', content: 'hello', timestamp: 1},
+				{role: 'assistant', content: 'hi there', timestamp: 2},
+			],
+			totalCount: 2,
+			offset: 0,
+		});
+		freeze(120_000);
+		client.noteVisible();
+		vi.advanceTimersByTime(2_000);
+		expect(sock.readyState).toBe(3);
+		let s = get(client.stateStore);
+		expect(s.activeSessionFile).toBe('/tmp/project/session.jsonl');
+		expect(s.messages.length).toBe(2);
+		const next = ws.last();
+		expect(next).not.toBe(sock);
+		next.open();
+		s = get(client.stateStore);
+		expect(s.resyncing).toBe(true);
+		expect(s.messages.length).toBe(2);
+		expect(next.lastSentOfType('session_load')?.sessionFile).toBe(
+			'/tmp/project/session.jsonl',
+		);
 	});
 
 	it('noteVisible() resets the stale baseline: the frozen time alone does not count as silence', () => {
@@ -150,7 +251,7 @@ describe('liveness watchdog probes before tearing a socket down', () => {
 		expect(ws.instances).toHaveLength(1);
 	});
 
-	it('noteVisible() on a CONNECTING socket does nothing', () => {
+	it('noteVisible() on a freshly CONNECTING socket does nothing', () => {
 		const sock = ws.last();
 		expect(sock.readyState).toBe(0);
 		client.noteVisible();

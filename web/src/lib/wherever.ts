@@ -867,8 +867,11 @@ export function resume() {
 
 // The page became visible again (visibilitychange: visible, pageshow). Probes a
 // still-open socket at once instead of trusting the silence clock across the
-// freeze (docs/adr/0011). A no-op when there is no OPEN socket, so it is safe to
-// call on every return, before deciding whether to resume/connect.
+// freeze (docs/adr/0011), with a short grace and no reconnect backoff since the
+// user is waiting. Also resets the backoff and restarts a stalled handshake.
+// Never opens a socket where there is none, so it is safe to call on every
+// return, before deciding whether to resume/connect. Call it only while the
+// page is visible: it assumes a user is looking.
 export function noteVisible() {
 	client.noteVisible();
 }
