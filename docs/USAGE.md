@@ -222,6 +222,13 @@ Delete one draft by id. POST rather than DELETE, mirroring `/session/delete`, so
 * **Response (200 OK):** `{ "drafts": [...] }`, the whole remaining list.
 * **Errors:** `400` if `id` is missing or the body is malformed; `500` if the store cannot be read (nothing is written).
 
+### `POST /sessions/star`
+Star or unstar a session ("come back to this"). Stars are stored on the server (`<state dir>/starred-sessions.json`), so they show on every device; `GET /sessions` reports `"starred": true` on each starred session, and starred sessions are exempt from `sessions.maxAgeDays` / `sessions.maxSessions`. Every open dashboard is told to re-list (`sessions_updated`).
+* **Auth required:** Yes
+* **Body:** `{ "sessionFile": "/home/me/.pi/agent/sessions/.../x.jsonl", "starred": true }` (`starred` is an explicit boolean, so a retried request is idempotent)
+* **Response (200 OK):** `{ "starred": [{ "sessionFile": "...", "starredAt": 1767225600000 }] }`, the whole list, most recently starred first.
+* **Errors:** `400` for a malformed body, a missing `sessionFile`, a non-boolean `starred`, or a path outside the sessions directory; `500` if the store cannot be read (nothing is written).
+
 ### `POST /session/new`
 Start a session inside a directory. If that folder already has a live session with at least one attached viewer, this returns THAT session instead of creating a second agent beside it. (The WebSocket `session_new` message is the other intent: it always creates a new conversation.)
 

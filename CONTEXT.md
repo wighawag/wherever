@@ -56,6 +56,7 @@ Wherever is a TypeScript extension for the [pi coding agent](https://pi.dev) tha
   - Strict mode enabled
   - Output to `dist/`
 - **`~/.wherever/drafts.json`** - Saved drafts (see "Saved drafts" below). Lives in the STATE dir (`WHEREVER_STATE_DIR`), which DEFAULTS to the config dir, so `WHEREVER_CONFIG_DIR` alone still isolates it exactly as before.
+- **`~/.wherever/starred-sessions.json`** - Starred sessions (see "Starred sessions" below). STATE dir, like `drafts.json`.
 - **`~/.wherever/config.json`** - Server-side runtime config (`getWhereverConfig()`): `sessions.ignore` / `sessions.readOnly`, `uploads`, `downloads`, `beep`, `searchFolder`, `conversationSearch` (autoSync / syncIntervalMs for `GET /search`), remote-repo rules. `WHEREVER_CONFIG_DIR` overrides the directory it is read from; the test harness sets it so an isolated server never picks up the developer's real config (a personal `sessions.ignore: ["/tmp/**"]` would otherwise hide the harness's own temp-dir sessions).
 - **`~/.wherever/certs/localhost.{key,crt}`** - The auto-generated self-signed TLS pair, written only when the key and cert are NOT BOTH supplied (exactly one half is discarded with a warning). Also in the STATE dir (see below); it used to be built from `os.homedir()` directly, ignoring `WHEREVER_CONFIG_DIR` entirely.
 
@@ -118,6 +119,7 @@ Wherever is a TypeScript extension for the [pi coding agent](https://pi.dev) tha
 - `POST /session/compact` - Trigger compaction
 - `GET /search` - Conversation search over every past session (see "Conversation search" below)
 - `GET /drafts` / `POST /drafts` / `POST /drafts/delete` - Saved drafts (see "Saved drafts" below)
+- `POST /sessions/star` - Star/unstar a session (see "Starred sessions" below)
 - `GET /health` - Health check (no auth)
 - `POST /session/upload` - Upload a file from the client to the server
 - `GET /session/download` - Download an agent-produced file to the client (see "File Download / Attachments" below)
@@ -130,7 +132,7 @@ The server distinguishes the directory it READS configuration from and the direc
 - `getWhereverStateDir()` (`WHEREVER_STATE_DIR`, **default: the resolved config dir**) - everything WRITTEN. The default is what makes the split purely additive: with the variable unset, and with only `WHEREVER_CONFIG_DIR` set (as every existing test does), every path is byte-identical to what it was before. There is no migration.
 - `getWhereverCertsDir()` = `<state dir>/certs`.
 
-**The complete list of config-dir writers, which is also the `StateDirectory` / backup set:** `drafts.json` (+ its `.tmp` sibling during the atomic write) and `certs/localhost.{key,crt}`. Nothing else. In particular **uploads are NOT under the config dir** despite `uploads.subDir` defaulting to `.wherever/uploads`: `resolveUploadDir()` resolves that against the SESSION's `cwd` (`path.resolve(cwd, subDir)`), so it is a per-project folder; the other two modes are `os.tmpdir()` (the default) and an explicit `uploads.dir`.
+**The complete list of config-dir writers, which is also the `StateDirectory` / backup set:** `drafts.json` and `starred-sessions.json` (+ their `.tmp` siblings during the atomic write) and `certs/localhost.{key,crt}`. Nothing else. In particular **uploads are NOT under the config dir** despite `uploads.subDir` defaulting to `.wherever/uploads`: `resolveUploadDir()` resolves that against the SESSION's `cwd` (`path.resolve(cwd, subDir)`), so it is a per-project folder; the other two modes are `os.tmpdir()` (the default) and an explicit `uploads.dir`.
 
 A future writer belongs in the state dir. If something genuinely has to be written next to the config, that is a design problem to solve, not a reason to reopen the config dir for writing.
 
@@ -221,6 +223,16 @@ The composer can keep a message the user does not want to send yet, and load it 
 - **"Unreadable" is NOT "empty", and that distinction is load-bearing.** Every mutation is a read-modify-write, so a `readDrafts()` that answered `[]` for an unreadable or corrupt file would DELETE every draft on the next save, and the client would then mirror that empty list over its own offline copy. `parseDrafts` therefore returns `null` for "not a drafts file" (only a missing file is an empty list), `readDrafts()` throws `DraftsUnavailableError`, and both the read and the mutation routes answer `500` naming the file, leaving it untouched for the user to fix.
 - **Over-long input is REJECTED, not truncated** (`validateDraftInput`, the single rule the routes call): the composer clears itself once the server has the draft, so silently storing a prefix would destroy the tail of the message with no error and no undo. `sessionId`/`cwd` are bounded too (`MAX_DRAFT_META_CHARS`): they are values the client already holds, and uncapped they are a way to grow the file until the whole list becomes unreadable.
 - The panel floats ABOVE the composer (like the skill-command menu) so opening it never resizes the textarea or shifts the transcript.
+
+### Starred sessions ("come back to this")
+
+The motivating flow: a session writes a prompt, the user launches it in a NEW session, and the first one now waits on that result. The new session takes the top of the list (it is the most recently modified), so nothing said which one spawned it. A star is the user's own "revisit this" marker.
+
+- **Server-side** (`server/src/session-stars.ts`, `<state dir>/starred-sessions.json`) for the same reason as drafts: a star set on the phone must show on the laptop. Same discipline: atomic write (tmp + rename, 0600), a corrupt file FAILS CLOSED on mutation (`StarsUnavailableError`) and is never overwritten as empty, capped at `MAX_STARRED` (500, oldest dropped).
+- **Keyed by the normalized session file path**, the same value `/sessions` reports as `path` and the client holds as the open session's `sessionFile`, so neither side needs a lookup. It also lets retention exempt starred sessions before any body is read (next point).
+- **`/sessions` reports `starred: true`** per session, and starred sessions are passed to `scanDiskSessions` as `retention.keep`: they survive `maxAgeDays`/`maxSessions` (and do not count against `maxSessions`), since a "come back to this" marker must not silently age out of the list. The pool gets the set through an injected `getStarred` constructor option (wired to the store by `index.ts`, so `session-pool.ts` does not depend on it), used by EVERY listing including the startup warm-up: a `/sessions` request arriving mid-warm-up joins that same scan (`inFlightScans`), so the warm-up must apply the same exemption. The listing reads the set with `readStarredSet()`, which never throws: a broken stars file shows no stars rather than breaking the dashboard.
+- **`POST /sessions/star {sessionFile, starred}`** takes an explicit boolean (idempotent, unlike a toggle), refuses paths outside the sessions dir (`isSessionFile`; the file need not exist yet, so a brand-new session can be starred), keeps the original `starredAt` on a re-star, and broadcasts `sessions_updated` so every open dashboard re-lists. `/session/delete` drops the deleted session's star (best effort, `forgetStar`).
+- **Web:** a ☆/★ toggle in the top bar for the open session (the natural moment, right after handing a prompt off), a per-row star in the sidebar (hover-revealed on desktop, always shown once starred). There is deliberately NO separate "Starred" section: the star on the row is enough (tried and dropped). `setSessionStarred()` in `session-store.ts` is optimistic and rolls back on refusal.
 
 ### File Download / Attachments
 

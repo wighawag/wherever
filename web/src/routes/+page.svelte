@@ -53,6 +53,9 @@
 		searchFolderStore,
 		searchDefaultModelStore,
 		appearanceStore,
+		sessionFolders,
+		readOnlySessionFolders,
+		setSessionStarred,
 	} from '$lib/session-store';
 	import {onMount} from 'svelte';
 	import {version} from '$app/environment';
@@ -276,6 +279,20 @@
 
 	let wasSessionActive = $state(false);
 	let currentSessionId = $derived(sessionInfo.sessionId);
+
+	// Is the open session starred? Read from the session LISTS (the star lives on
+	// the listing, server-side), checking both the main and the read-only list.
+	let currentStarred = $derived.by(() => {
+		const file = sessionInfo.sessionFile;
+		if (!file) return false;
+		for (const store of [$sessionFolders, $readOnlySessionFolders]) {
+			for (const folder of store.folders) {
+				const hit = folder.sessions.find((s) => s.path === file);
+				if (hit) return !!hit.starred;
+			}
+		}
+		return false;
+	});
 
 	// Update hash when sessionId changes, only if connected to prevent clearing on reload
 	$effect(() => {
@@ -859,6 +876,29 @@
 						</div>
 					{/if}
 				</div>
+			{/if}
+
+			<!-- Star the open session: "come back to this". The natural moment is
+			     right after this session hands a prompt to a new one, which will take
+			     the top of the list. The star also shows on the session's sidebar row. -->
+			{#if sessionInfo.sessionFile}
+				<button
+					type="button"
+					onclick={() =>
+						setSessionStarred(sessionInfo.sessionFile!, !currentStarred).catch(
+							() => {},
+						)}
+					class="flex flex-shrink-0 items-center justify-center rounded border px-2 py-1 text-sm transition-colors {currentStarred
+						? 'border-amber-400/50 bg-amber-400/10 text-amber-400 hover:bg-amber-400/20'
+						: 'border-brand-border bg-brand-surface-2 text-brand-text-muted hover:bg-brand-surface-3 hover:text-amber-400'}"
+					title={currentStarred
+						? 'Starred. Click to unstar.'
+						: 'Star this session to come back to it later'}
+					aria-label={currentStarred ? 'Unstar session' : 'Star session'}
+					aria-pressed={currentStarred}
+				>
+					{currentStarred ? '★' : '☆'}
+				</button>
 			{/if}
 
 			{#if readOnly}

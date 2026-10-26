@@ -6,6 +6,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { SessionPool, RELOADING_REFUSAL, getWhereverConfig, getWhereverCertsDir, getWhereverStateDir, detectRemoteRepo, normalizePath, invalidateFolderExistence, type WhereverConfig } from './session-pool.js';
 import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.js';
+import { readStarredSet, setSessionStarred, validateStarInput, forgetStar } from './session-stars.js';
 import { piSdkInfo } from './pi-sdk.js';
 import { searchConversations } from './conversation-search.js';
 import { matchRemoteRepoRule, resolveRemoteCandidates } from './remote-candidates.js';
@@ -1039,7 +1040,7 @@ async function main(): Promise<void> {
     `[wherever] pi SDK ${piSdkInfo.version}: ` +
       (piSdkInfo.tier === 'bundled' ? `bundled (${piSdkInfo.why})` : `${piSdkInfo.tier}, from ${piSdkInfo.root} (${piSdkInfo.why})`),
   );
-  const sessionPool = new SessionPool(idleTimeout);
+  const sessionPool = new SessionPool(idleTimeout, { getStarred: readStarredSet });
   await sessionPool.initialize();
 
   // Abandoned partial uploads (untouched for 24 h) are collected at startup and
@@ -1437,6 +1438,42 @@ async function main(): Promise<void> {
       const folders = await sessionPool.listSessions(view);
       const active = sessionPool.getActiveSessions();
       sendJSON(res, 200, { folders, activeSessions: active });
+      return;
+    }
+
+    // --- Starred sessions ("come back to this") ------------------------------
+    // Server-side like drafts, so a star set on one device shows on every other.
+    // `/sessions` reports each session's `starred` flag; this toggles one and
+    // broadcasts `sessions_updated` so every open dashboard re-lists. POST with
+    // an explicit boolean (not a toggle) so a retried request is idempotent.
+    if (pathname === '/sessions/star' && req.method === 'POST') {
+      let parsed: any;
+      try {
+        parsed = JSON.parse((await readBody(req)) || '{}');
+      } catch {
+        sendJSON(res, 400, { error: 'Invalid request' });
+        return;
+      }
+      const invalid = validateStarInput(parsed);
+      if (invalid) {
+        sendJSON(res, 400, { error: invalid });
+        return;
+      }
+      const resolved = path.resolve(parsed.sessionFile);
+      // Only paths inside the sessions dir (an arbitrary path would just be junk
+      // in the store). The file need not exist yet: a brand-new session can be
+      // starred from the top bar before its transcript is first written.
+      if (!sessionPool.isSessionFile(resolved)) {
+        sendJSON(res, 400, { error: 'Invalid session file: not a session in the sessions directory' });
+        return;
+      }
+      try {
+        const stars = setSessionStarred(resolved, parsed.starred);
+        broadcastSessionsUpdated();
+        sendJSON(res, 200, { starred: stars });
+      } catch (err) {
+        sendJSON(res, 500, { error: (err as Error).message || 'Failed to update star' });
+      }
       return;
     }
 
@@ -1954,6 +1991,8 @@ async function main(): Promise<void> {
         if (fs.existsSync(resolved)) {
           fs.unlinkSync(resolved);
         }
+        // A deleted session's star would otherwise linger in the store forever.
+        forgetStar(resolved);
 
         // Tell all connected clients the list changed. Throttled: deleting a
         // whole folder fires one DELETE per session in parallel, and each one

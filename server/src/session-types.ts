@@ -54,6 +54,11 @@ export interface FolderSessionInfo {
    * the client build the fork hierarchy tree, mirroring pi's session selector.
    */
   parentSessionPath?: string;
+  /**
+   * True when the user starred this session ("come back to this"). Stored
+   * server-side in `starred-sessions.json`, see server/src/session-stars.ts.
+   */
+  starred?: boolean;
 }
 
 export interface FolderWithSessions {

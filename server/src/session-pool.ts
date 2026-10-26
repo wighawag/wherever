@@ -550,6 +550,12 @@ export interface SessionRetention {
   maxAgeDays?: number;
   /** Keep at most the N most recently modified session files. */
   maxSessions?: number;
+  /**
+   * Session files kept REGARDLESS of the two limits above (starred sessions: a
+   * "come back to this" marker must not silently age out of the list). They do
+   * not count against `maxSessions`.
+   */
+  keep?: (filePath: string) => boolean;
 }
 
 /**
@@ -636,7 +642,9 @@ async function runDiskScan(
   }
 
   // Retention, applied on (cheap) stat metadata BEFORE any body is read.
-  let kept = candidates;
+  const keepAlways = retention?.keep;
+  const pinned = keepAlways ? candidates.filter((c) => keepAlways(normalizeSessionFile(c.filePath))) : [];
+  let kept = keepAlways ? candidates.filter((c) => !pinned.includes(c)) : candidates;
   if (retention?.maxAgeDays && retention.maxAgeDays > 0) {
     const cutoff = Date.now() - retention.maxAgeDays * 24 * 60 * 60 * 1000;
     kept = kept.filter((c) => c.mtimeMs >= cutoff);
@@ -644,6 +652,7 @@ async function runDiskScan(
   if (retention?.maxSessions && retention.maxSessions > 0 && kept.length > retention.maxSessions) {
     kept = [...kept].sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, retention.maxSessions);
   }
+  if (pinned.length > 0) kept = [...kept, ...pinned];
   const droppedByRetention = candidates.length - kept.length;
 
   for (const c of kept) {
@@ -1080,6 +1089,14 @@ export class SessionPool {
    * observe the extension lifecycle (session_start / session_shutdown).
    */
   private extraExtensionFactories: InlineExtension[];
+  /**
+   * Source of the starred session paths (the stars store, wired by index.ts).
+   * Injected rather than imported so this module does not depend on the store,
+   * and used by EVERY listing, including the startup warm-up: a request that
+   * arrives mid-warm-up joins that same scan (inFlightScans), so the warm-up
+   * must apply the same starred retention exemption.
+   */
+  private getStarred: () => ReadonlySet<string>;
   /** Bound on extension `session_shutdown` before dispose (see extension-lifecycle.ts). */
   private extensionShutdownTimeoutMs: number;
   /** When a stuck `session_start` gets logged (see extension-lifecycle.ts). */
@@ -1091,8 +1108,10 @@ export class SessionPool {
       extraExtensionFactories?: InlineExtension[];
       extensionShutdownTimeoutMs?: number;
       extensionBindWarnAfterMs?: number;
+      getStarred?: () => ReadonlySet<string>;
     } = {},
   ) {
+    this.getStarred = options.getStarred ?? (() => new Set());
     // Before any extension can load: tells an in-process CLI bridge it must not
     // connect (defence in depth behind withoutCliBridgeExtension).
     markWhereverServerProcess();
@@ -2002,7 +2021,12 @@ export class SessionPool {
    * (`missing`), from the per-folder existence cache -- one check per distinct
    * folder, never one per session, for the same reason the scan is cached.
    */
+  /**
+   * Starred sessions (from the injected `getStarred`) are marked `starred: true`
+   * and exempt from retention.
+   */
   async listSessions(view: 'default' | 'readonly' = 'default'): Promise<FolderWithSessions[]> {
+    const starred = this.getStarred();
     const cfg = getWhereverConfig().sessions;
     const isIgnored = makeIgnoreMatcher(cfg?.ignore);
     const isReadOnly = makeIgnoreMatcher(cfg?.readOnly);
@@ -2019,9 +2043,13 @@ export class SessionPool {
       path.join(this.agentDir, 'sessions'),
       folderWanted,
       `/sessions (${view})`,
-      { maxAgeDays: cfg?.maxAgeDays, maxSessions: cfg?.maxSessions },
+      {
+        maxAgeDays: cfg?.maxAgeDays,
+        maxSessions: cfg?.maxSessions,
+        ...(starred.size > 0 ? { keep: (f: string) => starred.has(f) } : {}),
+      },
     );
-    const folders = this.buildFolders(infos, view === 'readonly' ? isReadOnly : undefined);
+    const folders = this.buildFolders(infos, view === 'readonly' ? isReadOnly : undefined, starred);
     await annotateFolderExistence(folders);
     return folders;
   }
@@ -2060,6 +2088,7 @@ export class SessionPool {
   private buildFolders(
     diskSessions: DiskSessionInfo[],
     isReadOnly?: (cwd: string) => boolean,
+    starred: ReadonlySet<string> = new Set(),
   ): FolderWithSessions[] {
     const folderMap = new Map<string, FolderSessionInfo[]>();
 
@@ -2081,10 +2110,11 @@ export class SessionPool {
         folderMap.set(cwd, []);
       }
       const active = this.getSession(s.path);
+      // Normalize so a child's parentSessionPath (also normalized) matches this
+      // path exactly when the client builds the fork-hierarchy tree.
+      const sessionPath = normalizeSessionFile(s.path);
       folderMap.get(cwd)!.push({
-        // Normalize so a child's parentSessionPath (also normalized) matches this
-        // path exactly when the client builds the fork-hierarchy tree.
-        path: normalizeSessionFile(s.path),
+        path: sessionPath,
         id: s.id,
         name: s.name,
         created: safeToISOString(s.created),
@@ -2096,6 +2126,7 @@ export class SessionPool {
         isActive: !!active,
         clientCount: active ? active.clients.size : 0,
         ...(s.parentSessionPath ? { parentSessionPath: normalizeSessionFile(s.parentSessionPath) } : {}),
+        ...(starred.has(sessionPath) ? { starred: true } : {}),
       });
     }
 

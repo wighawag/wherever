@@ -11,6 +11,7 @@
 		checkPath,
 		autocompletePath,
 		setCurrentSession,
+		setSessionStarred,
 		type ModelInfo,
 		type FolderWithSessions,
 	} from '$lib/session-store';
@@ -111,6 +112,11 @@
 				.filter((folder) => folder.sessions.length > 0);
 		}
 	});
+
+	function toggleStar(sessionPath: string, starred: boolean) {
+		// Optimistic in the store; a refusal is rolled back there and logged.
+		setSessionStarred(sessionPath, starred).catch(() => {});
+	}
 
 	function isFolderExpanded(folderPath: string): boolean {
 		if (searchQuery) {
@@ -833,6 +839,26 @@
 											>
 										{/if}
 									</a>
+
+									<!-- Star toggle: always visible once starred, on hover otherwise
+									     (always on touch screens, which have no hover). -->
+									<button
+										onclick={(e) => {
+											e.stopPropagation();
+											toggleStar(session.path, !session.starred);
+										}}
+										class="flex-shrink-0 p-1 text-sm focus:outline-none {session.starred
+											? 'text-amber-400 hover:text-brand-text-muted'
+											: 'text-brand-text-muted transition-opacity hover:text-amber-400 md:opacity-0 md:group-hover:opacity-100'}"
+										title={session.starred
+											? 'Unstar'
+											: 'Star to come back to it later'}
+										aria-label={session.starred
+											? 'Unstar session'
+											: 'Star session'}
+									>
+										{session.starred ? '★' : '☆'}
+									</button>
 
 									<!-- Delete button with confirm state (hidden in read-only mode) -->
 									{#if !readOnly}

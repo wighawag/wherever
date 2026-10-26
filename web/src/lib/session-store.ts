@@ -22,6 +22,9 @@ export interface SessionInfo {
 	// Absolute path of the parent session this one was forked from, or undefined
 	// for a root session. Used to build the fork-hierarchy tree in the browser.
 	parentSessionPath?: string;
+	// True when the user starred it ("come back to this"). Server-side, so a
+	// star set on one device shows on every other.
+	starred?: boolean;
 }
 
 export interface FolderWithSessions {
@@ -223,6 +226,74 @@ async function runQueuedFetch(): Promise<void> {
 		const rest = resolveQueue;
 		resolveQueue = [];
 		for (const r of rest) r();
+	}
+}
+
+// Patch one session's `starred` flag in a folders store, in place. Returns the
+// value it had before (undefined when the session is not in this store), so a
+// failed request can restore exactly that.
+function patchStarred(
+	store: typeof sessionFolders,
+	sessionFile: string,
+	starred: boolean | undefined,
+): boolean | undefined {
+	let previous: boolean | undefined;
+	store.update((s) => ({
+		...s,
+		folders: s.folders.map((f) =>
+			f.sessions.some((x) => x.path === sessionFile)
+				? {
+						...f,
+						sessions: f.sessions.map((x) => {
+							if (x.path !== sessionFile) return x;
+							previous = !!x.starred;
+							return {...x, starred};
+						}),
+					}
+				: f,
+		),
+	}));
+	return previous;
+}
+
+/**
+ * Star or unstar a session (POST /sessions/star). OPTIMISTIC: the list flips at
+ * once so the tap feels instant, and if the server refuses, each store is put
+ * back to the value it had before THIS call (not `!starred`, which would be
+ * wrong after a quick star-then-unstar). The server then broadcasts
+ * `sessions_updated`, so every other open dashboard re-lists and picks it up.
+ */
+export async function setSessionStarred(
+	sessionFile: string,
+	starred: boolean,
+): Promise<void> {
+	const prevMain = patchStarred(sessionFolders, sessionFile, starred);
+	const prevReadOnly = patchStarred(
+		readOnlySessionFolders,
+		sessionFile,
+		starred,
+	);
+	try {
+		const baseUrl = getBaseUrl();
+		const token = getToken();
+		const url = `${baseUrl}/sessions/star${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+		const res = await fetch(url, {
+			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
+			body: JSON.stringify({sessionFile, starred}),
+		});
+		if (!res.ok) {
+			const errData = await res.json().catch(() => ({}));
+			throw new Error(errData.error || `Star failed with status ${res.status}`);
+		}
+	} catch (err) {
+		if (prevMain !== undefined)
+			patchStarred(sessionFolders, sessionFile, prevMain);
+		if (prevReadOnly !== undefined) {
+			patchStarred(readOnlySessionFolders, sessionFile, prevReadOnly);
+		}
+		console.error('Failed to update star:', err);
+		throw err;
 	}
 }
 

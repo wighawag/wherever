@@ -194,6 +194,21 @@ describe('scanDiskSessions', () => {
       expect(infos.map((s) => s.id).sort()).toEqual(['s3', 's4']);
     });
 
+    it('keeps `keep` (starred) sessions regardless of both limits', async () => {
+      // A star means "come back to this": it must not silently age out of the
+      // list, and it must not cost a recent session its maxSessions slot.
+      const fresh = writeSession('proj-fresh', 'fresh.jsonl', '/tmp/proj-fresh', ['recent']);
+      const starred = writeSession('proj-old', 'starred.jsonl', '/tmp/proj-old', ['ancient']);
+      const other = writeSession('proj-other', 'other.jsonl', '/tmp/proj-other', ['also old']);
+      ageFile(starred, 400);
+      ageFile(other, 400);
+      ageFile(fresh, 1);
+
+      const keep = (f: string) => f === path.resolve(starred);
+      const infos = await scanDiskSessions(root, wantAll, 'listing', { maxAgeDays: 30, maxSessions: 1, keep });
+      expect(infos.map((s) => s.id).sort()).toEqual(['fresh', 'starred']);
+    });
+
     it('still resolves an excluded session on a scan without retention', async () => {
       // The by-ID lookup (findDiskSessionByIdOrName) deliberately scans WITHOUT
       // retention, so a deep link to an old session keeps working. If that ever
