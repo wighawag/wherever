@@ -285,6 +285,10 @@ export type ServerMessage =
   // the TRUE offset). `done` + `savedPath` when the upload already finished.
   | { type: 'upload_offset'; uploadId: string; offset: number; done?: boolean; savedPath?: string }
   | { type: 'sessions_updated' }
+  // Broadcast to every dashboard (not CLI bridges) when a session's agent starts
+  // or ends a turn, so the sidebar can show which sessions are working without
+  // refetching /sessions. `sessionFile` matches the listing's session `path`.
+  | { type: 'session_working'; sessionFile: string; working: boolean }
   // Server -> client: the skill commands available for `sessionId`, for the
   // composer's `/skill:<name>` autocomplete. Each entry's `name` is the full
   // invocation without the leading slash (e.g. "skill:setup"). Empty for CLI

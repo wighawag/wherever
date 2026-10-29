@@ -2124,6 +2124,12 @@ export class SessionPool {
         // dominant lever on /sessions payload size.
         firstMessage: previewText(s.firstMessage),
         isActive: !!active,
+        // Live "agent is mid-turn" flag for the sidebar. Only set when true to
+        // keep the payload small; kept fresh between listings by the
+        // `session_working` broadcast (see broadcastAgentEvent in index.ts).
+        ...(active && (active.type === 'server' ? active.agentSession.isStreaming : active.isStreaming)
+          ? { isWorking: true }
+          : {}),
         clientCount: active ? active.clients.size : 0,
         ...(s.parentSessionPath ? { parentSessionPath: normalizeSessionFile(s.parentSessionPath) } : {}),
         ...(starred.has(sessionPath) ? { starred: true } : {}),

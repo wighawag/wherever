@@ -812,7 +812,14 @@
 										}}
 										class="flex min-w-0 flex-1 items-center gap-2 text-left no-underline"
 									>
-										{#if session.isActive}
+										{#if session.isWorking}
+											<span
+												class="h-2 w-2 flex-shrink-0 animate-pulse rounded-full bg-amber-400"
+												role="img"
+												title="Agent is working"
+												aria-label="Agent is working"
+											></span>
+										{:else if session.isActive}
 											<span
 												class="h-2 w-2 flex-shrink-0 rounded-full bg-emerald-500"
 											></span>

@@ -36,6 +36,7 @@ import {
 	getToken,
 	uploadMethodStore,
 	fetchSessions,
+	setSessionWorking,
 	searchFolderStore,
 	searchCreateRemoteStore,
 } from './session-store';
@@ -810,6 +811,12 @@ client.onMessage((msg) => {
 		case 'sessions_updated':
 			fetchSessions();
 			break;
+
+		case 'session_working': {
+			const m = msg as {sessionFile: string; working: boolean};
+			setSessionWorking(m.sessionFile, !!m.working);
+			break;
+		}
 
 		case 'session_interrupted':
 			setCurrentSession(null);

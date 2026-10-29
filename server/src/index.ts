@@ -1375,6 +1375,20 @@ async function main(): Promise<void> {
     if (event.type === 'agent_end') {
       broadcastSessionsUpdated();
     }
+
+    // Sidebar "working" indicator: two tiny frames per turn to every dashboard,
+    // patched in place client-side (no /sessions refetch).
+    if (event.type === 'agent_start' || event.type === 'agent_end') {
+      const tracked = sessionPool.getSession(sessionFile);
+      const workingMsg: ServerMessage = {
+        type: 'session_working',
+        sessionFile: tracked?.sessionFile ?? sessionFile,
+        working: event.type === 'agent_start',
+      };
+      for (const c of clients.values()) {
+        if (!c.isCliBridge) sendWS(c.ws, workingMsg);
+      }
+    }
   }
 
   function broadcastContextUsage(sessionFile: string): void {

@@ -18,6 +18,9 @@ export interface SessionInfo {
 	// Short, capped preview of the first user message (not the full text).
 	firstMessage: string;
 	isActive: boolean;
+	// True while the agent is mid-turn. Seeded by /sessions, then kept live by
+	// `session_working` frames via setSessionWorking().
+	isWorking?: boolean;
 	clientCount: number;
 	// Absolute path of the parent session this one was forked from, or undefined
 	// for a root session. Used to build the fork-hierarchy tree in the browser.
@@ -606,6 +609,43 @@ export async function fetchConfig(): Promise<void> {
 	} catch (err) {
 		console.error('Failed to fetch config:', err);
 	}
+}
+
+/**
+ * Apply a `session_working` frame: flip one row's isWorking in place. A no-op
+ * (no store write) when the row is absent or already in that state, so the
+ * frequent frames never cause a needless re-render or a /sessions refetch.
+ */
+export function setSessionWorking(sessionFile: string, working: boolean): void {
+	// Both lists are built by the same server listing, so patch both (like
+	// setSessionStarred): the read-only page never refetches on its own.
+	patchWorking(sessionFolders, sessionFile, working);
+	patchWorking(readOnlySessionFolders, sessionFile, working);
+}
+
+function patchWorking(
+	store: typeof sessionFolders,
+	sessionFile: string,
+	working: boolean,
+): void {
+	const cur = get(store);
+	const hit = cur.folders.some((f) =>
+		f.sessions.some((x) => x.path === sessionFile && !!x.isWorking !== working),
+	);
+	if (!hit) return;
+	store.set({
+		...cur,
+		folders: cur.folders.map((f) =>
+			f.sessions.some((x) => x.path === sessionFile)
+				? {
+						...f,
+						sessions: f.sessions.map((x) =>
+							x.path === sessionFile ? {...x, isWorking: working} : x,
+						),
+					}
+				: f,
+		),
+	});
 }
 
 export function setCurrentSession(sessionId: string | null): void {

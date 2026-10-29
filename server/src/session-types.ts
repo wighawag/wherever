@@ -47,6 +47,12 @@ export interface FolderSessionInfo {
    */
   firstMessage: string;
   isActive: boolean;
+  /**
+   * True while the agent is mid-turn in this session (omitted otherwise). The
+   * listing carries the state at fetch time; `session_working` frames keep it
+   * live without a refetch.
+   */
+  isWorking?: boolean;
   clientCount: number;
   /**
    * Absolute path of the parent session this one was forked from (from the

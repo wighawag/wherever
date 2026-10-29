@@ -1,4 +1,5 @@
 import {describe, it, expect, beforeEach, afterEach, vi} from 'vitest';
+import {get} from 'svelte/store';
 
 // Regression: fetchSessions() coalesces a stream of `sessions_updated` events
 // into as few /sessions requests as possible. The in-flight branch returned a
@@ -112,5 +113,47 @@ describe('fetchSessions coalescing', () => {
 
 		releaseFetch.shift()!();
 		await expect(Promise.all(all)).resolves.toBeDefined();
+	});
+});
+
+describe('setSessionWorking', () => {
+	it('flips one row in place and skips no-op writes', async () => {
+		const {sessionFolders, setSessionWorking} =
+			await import('./session-store.js');
+		const row = (path: string) => ({
+			path,
+			id: path,
+			created: '',
+			modified: '',
+			messageCount: 0,
+			firstMessage: '',
+			isActive: true,
+			clientCount: 0,
+		});
+		sessionFolders.set({
+			folders: [{path: '/p', name: 'p', sessions: [row('/a'), row('/b')]}],
+			activeSessions: [],
+			currentSession: null,
+			loading: false,
+		});
+		let writes = 0;
+		const unsub = sessionFolders.subscribe(() => writes++);
+		writes = 0;
+
+		setSessionWorking('/a', true);
+		let folders = get(sessionFolders).folders;
+		expect(folders[0].sessions[0].isWorking).toBe(true);
+		expect(folders[0].sessions[1].isWorking).toBeUndefined();
+		expect(writes).toBe(1);
+
+		setSessionWorking('/a', true); // already working: no write
+		setSessionWorking('/missing', true); // unknown row: no write
+		expect(writes).toBe(1);
+
+		setSessionWorking('/a', false);
+		folders = get(sessionFolders).folders;
+		expect(folders[0].sessions[0].isWorking).toBe(false);
+		expect(writes).toBe(2);
+		unsub();
 	});
 });
