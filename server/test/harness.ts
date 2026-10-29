@@ -77,6 +77,12 @@ export interface Harness {
   /** Open a WS client and wait for the socket to open. `clientKey` is the stable
    *  per-viewer identity the server uses to retire a superseded connection. */
   connect(clientKey?: string): Promise<TestClient>;
+  /** Wait until `sessionFile` is resident in the server's pool (it shows in
+   *  `GET /sessions` `activeSessions`). `cli_register` has no ack and registers
+   *  asynchronously, so a viewer that `session_load`s the same file right after
+   *  can race it and get `session_error` (the file does not exist on disk yet).
+   *  Call this between the `cli_register` send and the viewer's load. */
+  waitForActive(sessionFile: string, timeoutMs?: number): Promise<void>;
   /** Stop the server (and close its clients) WITHOUT deleting the tmpRoot, so a
    *  second harness can reuse this one's session files and workspace (restart
    *  tests). `cleanup()` still removes everything afterwards. */
@@ -242,6 +248,23 @@ export async function startHarness(opts?: HarnessOptions): Promise<Harness> {
       const c = await TestClient.open(port, workspace, clientKey);
       clients.push(c);
       return c;
+    },
+    async waitForActive(sessionFile: string, timeoutMs = 15_000) {
+      // Match on the basename suffix: the pool normalizes the path, and a
+      // symlinked tmp dir (macOS /var -> /private/var) would defeat an exact match.
+      const suffix = `${path.sep}${path.basename(sessionFile)}`;
+      const until = Date.now() + timeoutMs;
+      for (;;) {
+        try {
+          const r = await fetch(`http://127.0.0.1:${port}/sessions`);
+          if (r.ok) {
+            const data = (await r.json()) as { activeSessions?: { sessionFile: string }[] };
+            if (data.activeSessions?.some((s) => s.sessionFile.endsWith(suffix))) return;
+          }
+        } catch {}
+        if (Date.now() > until) throw new Error(`session never became active: ${sessionFile}`);
+        await new Promise((r) => setTimeout(r, 50));
+      }
     },
     async stop() {
       for (const c of clients) c.close();

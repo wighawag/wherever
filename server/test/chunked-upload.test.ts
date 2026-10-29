@@ -354,6 +354,7 @@ describe('resumable chunked uploads (server)', () => {
     await cli.waitForType('connected');
     const sessionFile = path.join(h.workspace, 'cli-session.jsonl');
     cli.send({ type: 'cli_register', sessionFile, cwd: h.workspace, model: 'fake:fake-model' });
+    await h.waitForActive(sessionFile);
     const viewer = await h.connect();
     await viewer.waitForType('connected');
     viewer.send({ type: 'session_load', sessionFile });

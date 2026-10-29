@@ -37,6 +37,7 @@ describe('CLI-bridge streaming state on join', () => {
       model: 'fake:fake-model',
       isStreaming: true,
     });
+    await h.waitForActive(sessionFile);
 
     // A viewer (the web client) joins the same session from the sidebar.
     const viewer = await h.connect();

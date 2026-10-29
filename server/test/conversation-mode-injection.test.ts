@@ -229,6 +229,7 @@ describe('conversation-mode relay (CLI-bridge session)', () => {
     await cli.waitForType('connected');
     const sessionFile = `${cli.workspace}/cli-conversation.jsonl`;
     cli.send({ type: 'cli_register', sessionFile, cwd: cli.workspace, model: 'fake:fake-model' });
+    await h.waitForActive(sessionFile);
 
     // The web client (phone, conversation mode ON) joins that session and sends.
     const web = await h.connect();
