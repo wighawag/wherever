@@ -48,3 +48,7 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions taken while building this task (status shape, pointer file location and foreign-folder handling, dangling-pointer replacement, CLI-only pinning, steer-by-default `send`, in-memory dropped-message record, the new `assistant_open` / `assistant_reset` / `assistant_current` / `assistant_status` frames, the serial queue with own-creation skip, web placement, changeset bump) are recorded in [work/notes/observations/assistant-pointer-and-reset-decisions.md](../../notes/observations/assistant-pointer-and-reset-decisions.md), with JSDoc at each choice site in `server/src/assistant-controller.ts`, `server/src/session-pool.ts` and `server/src/index.ts`.
