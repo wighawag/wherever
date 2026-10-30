@@ -306,9 +306,9 @@ Upload one file as the RAW request body (not multipart). This is the `uploads.me
 Download a file the agent produced (the reverse of `/session/upload`). The server streams the file with `Content-Disposition: attachment`. This is what makes file mentions in the chat tappable/downloadable from a phone or browser.
 * **Auth required:** Yes (if token is configured)
 * **Query Parameters:**
-  * `sessionId`: The session identifier the download is attributed to (used to resolve the working directory).
-  * `path`: The file to download. Relative paths resolve against the session's `cwd`; absolute/`~` paths are allowed only if inside an allowed root.
-* **Security (deny-by-default):** A file is served ONLY when its real (symlink-resolved) path is inside an allowed root. Allowed roots are always the session's `cwd` and the resolved upload dir, plus any extra roots in `downloads.roots`. `..` traversal and in-tree symlinks that escape a root are rejected. A path outside the roots returns `404` (indistinguishable from not-found, so existence is not leaked).
+  * `sessionId`: The session identifier the download is attributed to (used to resolve the working directory and the session's attach grants; a session that is only on disk works too).
+  * `path`: The file to download. Relative paths resolve against the session's `cwd`; absolute/`~` paths are allowed only if inside an allowed root, or if granted by a successful `attach_file` in that session (see below).
+* **Security (deny-by-default):** A file is served ONLY when its real (symlink-resolved) path is inside an allowed root. Allowed roots are always the session's `cwd` and the resolved upload dir, plus any extra roots in `downloads.roots`. `..` traversal and in-tree symlinks that escape a root are rejected. A path outside the roots returns `404` (indistinguishable from not-found, so existence is not leaked). **Attach grants:** a file the agent offered with a SUCCESSFUL `attach_file` call in that session is also served, wherever it lives (e.g. a PDF built in a sibling project). The grant is the exact file only (matched on real path, never its directory), and is read from the session transcript, so it survives a server restart and works for a session the server has not loaded. A session that is not loaded still resolves its `cwd` from its transcript.
 * **Config (`~/.wherever/config.json`):**
   ```json
   {
