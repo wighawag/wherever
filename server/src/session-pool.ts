@@ -236,6 +236,13 @@ export interface WhereverConfig {
    * start; a change takes effect on restart only. Tilde (~) is expanded.
    */
   assistantFolder?: string;
+  /**
+   * The assistant scheduler's restart grace window, in minutes (default 60): a
+   * job that missed runs while the server was down fires ONCE on startup if its
+   * latest missed run is at most this old, else the run is skipped (and
+   * recorded). Read at start, like `assistantFolder`.
+   */
+  assistantScheduleGraceMinutes?: number;
   /** When true, the on-demand search folder gets a remote, forced to private visibility. Default false. */
   searchCreateRemote?: boolean;
   /** Session listing controls. */
@@ -2775,6 +2782,17 @@ export class SessionPool {
     const cleared = tracked.agentSession.clearQueue();
     this.routing.get(tracked.sessionFile)?.clear();
     return { steering: [...cleared.steering], followUp: [...cleared.followUp] };
+  }
+
+  /**
+   * How many messages pi holds queued (steer + followUp), or null when the
+   * session is not resident or is a CLI bridge (whose queues the server cannot
+   * see). The assistant scheduler delivers an inline job only once this is 0.
+   */
+  getQueuedMessageCount(sessionFileOrId: string): number | null {
+    const tracked = this.getSession(sessionFileOrId);
+    if (!tracked || tracked.type !== 'server') return null;
+    return tracked.agentSession.getSteeringMessages().length + tracked.agentSession.getFollowUpMessages().length;
   }
 
   async cancelSteerQueue(sessionFileOrId: string): Promise<void> {

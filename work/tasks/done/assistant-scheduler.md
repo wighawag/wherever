@@ -55,3 +55,7 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions taken while building this task (hand-written cron parser instead of a library, DST gap/overlap semantics, the `{ "jobs": [...] }` file shape with required `name`/`enabled` and refusal to write over an unreadable file, when a missed run counts and the first-seen/re-enable/edit base, grace applied on every tick, the `assistantScheduleGraceMinutes` config key, the run-log outcome vocabulary and fired-at-dispatch entries, the prefix on isolated jobs too, one inline job per exchange with in-memory pending and the 60 s CLI start timeout, the unconditional clear after an aborted settle with the new `aborted` drop reason, the timezone state file and the not-yet-wired `onTimezoneChange`, re-reading per tick instead of a watcher, the `!` check on trimmed text, the changeset bump) are recorded in [work/notes/observations/assistant-scheduler-decisions.md](../../notes/observations/assistant-scheduler-decisions.md), with JSDoc at the choice sites in `server/src/assistant-cron.ts`, `server/src/assistant-schedule.ts`, `server/src/assistant-scheduler.ts` and `server/src/assistant-controller.ts`.

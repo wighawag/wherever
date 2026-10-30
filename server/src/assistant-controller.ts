@@ -81,7 +81,8 @@ export interface AssistantCurrentSession {
  */
 export interface DroppedMessages {
   sessionFile: string;
-  reason: 'reset';
+  /** `reset`: the session was retired; `aborted`: its turn was aborted (the scheduler clears after an aborted settle). */
+  reason: 'reset' | 'aborted';
   steering: string[];
   followUp: string[];
   at: string;
@@ -219,6 +220,21 @@ export class AssistantController {
     await this.pool.sendUserMessage(cur.sessionFile, text, behavior, false, origin);
   }
 
+  /**
+   * After an ABORTED settle of the CURRENT session (the scheduler calls this on
+   * `agent_settled` with `aborted: true`): pi still holds the queued steer /
+   * followUp messages an abort leaves behind (ADR 0014), so "settled with
+   * nothing queued", which inline jobs wait for, would never be reached again.
+   * Clear them and record what was dropped, exactly as a reset does (reported
+   * to their channels once `channel-seam-notify-and-web-push` exists). A no-op
+   * for any other session, and for a CLI-bridge session (whose queues the
+   * server cannot read or clear).
+   */
+  clearAfterAbort(sessionFile: string): DroppedMessages | null {
+    if (this.pointer?.sessionFile !== sessionFile) return null;
+    return this.clearAndRecord(sessionFile, 'aborted');
+  }
+
   // -------------------------------------------------------------------------
 
   private serial<T>(fn: () => Promise<T>): Promise<T> {
@@ -257,31 +273,36 @@ export class AssistantController {
     } catch (err) {
       console.error(`[wherever] assistant: abort of ${sessionFile} on reset failed: ${errMessage(err)}`);
     }
+    this.clearAndRecord(sessionFile, 'reset');
+  }
+
+  /** Clear pi's queues of a session and record what was dropped (null when nothing was). Never throws. */
+  private clearAndRecord(sessionFile: string, reason: DroppedMessages['reason']): DroppedMessages | null {
     let cleared: { steering: string[]; followUp: string[] } | null = null;
     try {
       cleared = this.pool.clearQueuedMessages(sessionFile);
     } catch (err) {
-      console.error(`[wherever] assistant: clearing the queue of ${sessionFile} on reset failed: ${errMessage(err)}`);
+      console.error(`[wherever] assistant: clearing the queue of ${sessionFile} (${reason}) failed: ${errMessage(err)}`);
     }
-    if (cleared && (cleared.steering.length > 0 || cleared.followUp.length > 0)) {
-      const record: DroppedMessages = {
-        sessionFile,
-        reason: 'reset',
-        steering: [...cleared.steering],
-        followUp: [...cleared.followUp],
-        at: new Date().toISOString(),
-      };
-      this.dropped.push(record);
-      if (this.dropped.length > DROPPED_KEEP) this.dropped.splice(0, this.dropped.length - DROPPED_KEEP);
-      console.log(
-        `[wherever] assistant reset dropped ${record.steering.length + record.followUp.length} queued message(s) of ${sessionFile}`,
-      );
-      try {
-        this.onDropped?.(record);
-      } catch (err) {
-        console.error(`[wherever] assistant: onDropped failed: ${errMessage(err)}`);
-      }
+    if (!cleared || (cleared.steering.length === 0 && cleared.followUp.length === 0)) return null;
+    const record: DroppedMessages = {
+      sessionFile,
+      reason,
+      steering: [...cleared.steering],
+      followUp: [...cleared.followUp],
+      at: new Date().toISOString(),
+    };
+    this.dropped.push(record);
+    if (this.dropped.length > DROPPED_KEEP) this.dropped.splice(0, this.dropped.length - DROPPED_KEEP);
+    console.log(
+      `[wherever] assistant ${reason === 'reset' ? 'reset' : 'aborted turn'} dropped ${record.steering.length + record.followUp.length} queued message(s) of ${sessionFile}`,
+    );
+    try {
+      this.onDropped?.(record);
+    } catch (err) {
+      console.error(`[wherever] assistant: onDropped failed: ${errMessage(err)}`);
     }
+    return record;
   }
 
   private movePointer(sessionFile: string, sessionId: string): void {
