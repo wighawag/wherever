@@ -85,7 +85,15 @@ describe('assistantFolder (real server)', () => {
     const folder = path.join(root, 'assistant');
     const h = await boot(root, 'a', { assistantFolder: folder });
     const cfg = await getConfig(h.port);
-    expect(cfg.assistant).toEqual({ configured: true, folder, active: true, lock: { state: 'held' } });
+    expect(cfg.assistant).toEqual({
+      configured: true,
+      folder,
+      active: true,
+      lock: { state: 'held' },
+      // The current-session pointer (assistant-pointer-and-reset): none yet.
+      currentSessionId: null,
+      currentSessionFile: null,
+    });
     expect(fs.existsSync(path.join(folder, 'AGENTS.md'))).toBe(true);
     expect(fs.existsSync(path.join(folder, 'jobs', 'AGENTS.md'))).toBe(true);
     expect(fs.readFileSync(path.join(folder, '.gitignore'), 'utf8')).toContain('.assistant.lock');

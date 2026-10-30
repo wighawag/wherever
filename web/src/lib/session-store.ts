@@ -482,6 +482,13 @@ export interface AssistantStatus {
 	folder: string | null;
 	active: boolean;
 	lock: AssistantLockState | null;
+	/**
+	 * The CURRENT assistant session (server/src/assistant-controller.ts), only
+	 * while `active`: null until one exists, absent when the assistant is off. Live:
+	 * `assistant_status` frames move it (see applyAssistantPointer).
+	 */
+	currentSessionId?: string | null;
+	currentSessionFile?: string | null;
 }
 export const assistantNotConfigured: AssistantStatus = {
 	configured: false,
@@ -492,6 +499,35 @@ export const assistantNotConfigured: AssistantStatus = {
 export const assistantStatusStore = writable<AssistantStatus>(
 	assistantNotConfigured,
 );
+
+/** Apply a live `assistant_status` frame (the pointer moved). Ignored while not active. */
+export function applyAssistantPointer(pointer: {
+	currentSessionId: string | null;
+	currentSessionFile: string | null;
+}): void {
+	assistantStatusStore.update((s) =>
+		s.active
+			? {
+					...s,
+					currentSessionId: pointer.currentSessionId,
+					currentSessionFile: pointer.currentSessionFile,
+				}
+			: s,
+	);
+}
+
+/** True when `sessionFile` is the current assistant session (drives the Reset action). */
+export function isAssistantSession(
+	status: AssistantStatus,
+	sessionFile: string | null | undefined,
+): boolean {
+	return (
+		status.active &&
+		!!sessionFile &&
+		!!status.currentSessionFile &&
+		status.currentSessionFile === sessionFile
+	);
+}
 
 /** Visual identity of the connected server instance (label + theme overrides). */
 export const appearanceStore = writable<AppearanceInfo>(defaultAppearance);

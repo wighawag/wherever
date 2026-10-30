@@ -1092,6 +1092,29 @@ export class SessionPool {
   onEvent?: (sessionFile: string, event: AgentSessionEvent) => void;
 
   /**
+   * Fired when a session is REALLY created: from `createNewSession` once the new
+   * session is in the pool, never when it hands back an existing viewed session
+   * and never for a caller that joined a pending create (that caller gets the
+   * same promise; the creation fired once). Registered only while the assistant
+   * is active (index.ts wires it to `AssistantController.handleSessionCreated`),
+   * so with `assistantFolder` unset nothing listens. A throwing or rejecting
+   * listener is logged and never fails the creation. `cli-bridge-foundation`
+   * also fires it for a `cli_register` with `isNew: true`.
+   */
+  onSessionCreated?: (sessionFile: string, cwd: string) => void | Promise<void>;
+
+  /**
+   * Session files exempt from CLI idle teardown (the current assistant session,
+   * pinned by the assistant controller). Only CLI-bridge entries honour it: an
+   * idle CLI session with no viewers is otherwise destroyed and its terminal
+   * reconnects with backoff, and a message sent in that window would build a
+   * SERVER agent on the same file beside the terminal's. A server session is
+   * still evicted as before; the controller reloads it before every send. Empty
+   * unless the assistant is active, so idle teardown is otherwise unchanged.
+   */
+  private pinnedSessions = new Set<string>();
+
+  /**
    * Extra inline extensions loaded into EVERY server-created session, after the
    * built-in ones. Not used by the server itself; it is the seam tests use to
    * observe the extension lifecycle (session_start / session_shutdown).
@@ -1852,6 +1875,7 @@ export class SessionPool {
         };
 
         this.sessions.set(sessionFile, tracked);
+        this.emitSessionCreated(sessionFile, resolvedCwd);
         return { tracked, sessionFile };
       } catch (err) {
         return { tracked: null as any, error: (err as Error).message };
@@ -1862,6 +1886,35 @@ export class SessionPool {
 
     this.pendingCreateSessions.set(resolvedCwd, createPromise);
     return createPromise;
+  }
+
+  /** Call `onSessionCreated`, isolating the creation from any listener failure. */
+  private emitSessionCreated(sessionFile: string, cwd: string): void {
+    const listener = this.onSessionCreated;
+    if (!listener) return;
+    const report = (err: unknown) =>
+      console.error(`[wherever] session-created listener failed for ${sessionFile}: ${err instanceof Error ? err.message : String(err)}`);
+    try {
+      const out = listener(sessionFile, cwd);
+      if (out && typeof (out as Promise<void>).then === 'function') (out as Promise<void>).then(undefined, report);
+    } catch (err) {
+      report(err);
+    }
+  }
+
+  /** Exempt a session file from CLI idle teardown (see `pinnedSessions`). */
+  pinSession(sessionFile: string): void {
+    const key = normalizeSessionFile(sessionFile);
+    this.pinnedSessions.add(key);
+    const tracked = this.sessions.get(key);
+    if (tracked?.type === 'cli') this.cancelIdleCheck(key);
+  }
+
+  /** Undo `pinSession`; an idle, unviewed CLI session becomes evictable again. */
+  unpinSession(sessionFile: string): void {
+    const key = normalizeSessionFile(sessionFile);
+    if (!this.pinnedSessions.delete(key)) return;
+    if (this.sessions.has(key)) this.scheduleIdleCheck(key);
   }
 
   /**
@@ -2555,6 +2608,19 @@ export class SessionPool {
     return [...tracked.agentSession.getSteeringMessages()];
   }
 
+  /**
+   * Clear pi's pending steer AND followUp queues and return what was dropped
+   * (the assistant reset records them, ADR 0014: an abort leaves them queued).
+   * Null when the session is not resident or is a CLI bridge (whose queues the
+   * server cannot see).
+   */
+  clearQueuedMessages(sessionFileOrId: string): { steering: string[]; followUp: string[] } | null {
+    const tracked = this.getSession(sessionFileOrId);
+    if (!tracked || tracked.type !== 'server') return null;
+    const cleared = tracked.agentSession.clearQueue();
+    return { steering: [...cleared.steering], followUp: [...cleared.followUp] };
+  }
+
   async cancelSteerQueue(sessionFileOrId: string): Promise<void> {
     const tracked = this.getSession(sessionFileOrId);
     if (!tracked) return;
@@ -2645,6 +2711,7 @@ export class SessionPool {
     if (!tracked) return;
     this.cancelIdleCheck(tracked.sessionFile);
 
+    if (tracked.type === 'cli' && this.pinnedSessions.has(tracked.sessionFile)) return;
     if (tracked.clients.size === 0 && tracked.isIdle) {
       tracked.idleTimer = setTimeout(() => {
         this.destroySession(tracked.sessionFile, 'idle timeout');
