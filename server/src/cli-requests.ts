@@ -38,8 +38,9 @@ export type CliResponseFrame =
  * What `assistant_info` returns and `assistant_info_changed` pushes.
  * `assistantFolder` is null when the assistant is not ACTIVE on this server
  * (unset, or refused because another server holds the folder lock): the gate is
- * `assistant.active`, as everywhere else in the assistant. `timezone` (the user's
- * current timezone) is filled in by `assistant-schedule-tools-server`.
+ * `assistant.active`, as everywhere else in the assistant. `timezone` is the
+ * user's current timezone (the scheduler's, see assistant-tools.ts), null when
+ * not active; every change of it is pushed as `assistant_info_changed`.
  */
 export interface AssistantInfo {
   assistantFolder: string | null;

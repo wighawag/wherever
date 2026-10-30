@@ -130,3 +130,48 @@ describe('assistant current-session pointer', () => {
 		).toBe(false);
 	});
 });
+
+// The user's current timezone (assistant-schedule-tools-server): /config carries
+// it while active, and an `assistant_status` frame carrying it moves it live.
+describe('assistant timezone', () => {
+	const active = {
+		configured: true,
+		folder: '/home/me/assistant',
+		active: true,
+		lock: {state: 'held'},
+		currentSessionId: 'id-1',
+		currentSessionFile: '/s/1.jsonl',
+		timezone: 'Europe/Paris',
+	};
+
+	it('publishes the timezone from /config, and a frame moves it', async () => {
+		stubConfig({assistant: active});
+		const {fetchConfig, assistantStatusStore, applyAssistantPointer} =
+			await import('./session-store');
+		const {get} = await import('svelte/store');
+		await fetchConfig();
+		expect(get(assistantStatusStore).timezone).toBe('Europe/Paris');
+		applyAssistantPointer({
+			currentSessionId: 'id-1',
+			currentSessionFile: '/s/1.jsonl',
+			timezone: 'Asia/Tokyo',
+		});
+		expect(get(assistantStatusStore)).toEqual({
+			...active,
+			timezone: 'Asia/Tokyo',
+		});
+	});
+
+	it('a frame without a timezone (older server) keeps the known one', async () => {
+		stubConfig({assistant: active});
+		const {fetchConfig, assistantStatusStore, applyAssistantPointer} =
+			await import('./session-store');
+		const {get} = await import('svelte/store');
+		await fetchConfig();
+		applyAssistantPointer({
+			currentSessionId: 'id-2',
+			currentSessionFile: '/s/2.jsonl',
+		});
+		expect(get(assistantStatusStore).timezone).toBe('Europe/Paris');
+	});
+});

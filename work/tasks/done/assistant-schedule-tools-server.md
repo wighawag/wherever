@@ -50,3 +50,19 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions taken while building this task are recorded in [work/notes/observations/assistant-schedule-tools-server-decisions.md](../../notes/observations/assistant-schedule-tools-server-decisions.md), with JSDoc at the choice sites in `server/src/assistant-tools.ts`, `server/src/assistant-tool-text.ts`, `server/src/session-pool.ts` (`setAssistantSessionHooks`, `composeServerAgentParts`), `server/src/index.ts` and `web/src/lib/core/timezone-report.ts`. They cover:
+- `mode` being required on `assistant_schedule_add`;
+- tool-added jobs always being enabled, with generated ids and no update tool;
+- refusing `!` prompts at add time;
+- registering the same tool set whatever the lock says, with a lock-state error when not active;
+- adding the timezone-line extension only to sessions in the assistant folder or `jobs/`, by `path.resolve` equality;
+- the `setAssistantSessionHooks` injection seam and the pure `composeServerAgentParts`;
+- the new `client_timezone` message, sent on every connect (so a web connect overrides a zone set through the assistant);
+- the timezone-history sources `web` and `assistant_set_timezone`;
+- `assistant_status` gaining `timezone` and being broadcast on every timezone change;
+- showing the timezone in the sidebar's Assistant entry;
+- the fake LLM's new `queue()` test seam;
+- the `minor` changeset bump.

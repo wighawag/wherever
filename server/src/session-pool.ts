@@ -961,6 +961,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createAttachFileTool } from './attach-file-tool.js';
 import { createSayTool } from './say-tool.js';
+import { assistantSessionParts, type AssistantSessionHooks } from './assistant-tools.js';
 import { maybeSeedAssistantSession } from './assistant-folder.js';
 import { createConversationModeSignal, type ConversationModeSignal } from './conversation-mode-hint.js';
 import { withoutCliBridgeExtension } from './cli-bridge-extension.js';
@@ -974,7 +975,7 @@ import {
   EXTENSION_SHUTDOWN_TIMEOUT_MS,
   EXTENSION_BIND_WARN_AFTER_MS,
 } from './extension-lifecycle.js';
-import type { InlineExtension } from '@earendil-works/pi-coding-agent';
+import type { InlineExtension, ToolDefinition } from '@earendil-works/pi-coding-agent';
 
 /** How long startup waits for the extension-provider discovery before going on
  * without it (see SessionPool.initialize). */
@@ -1077,6 +1078,38 @@ export interface CliTrackedSession {
 }
 
 export type TrackedSession = ServerTrackedSession | CliTrackedSession;
+
+/**
+ * The extension factories and custom tools a server agent is built with. Pure,
+ * so the "assistant off = byte-identical" rule is testable without a pi
+ * runtime: with `assistant` undefined the result is exactly the pre-assistant
+ * set (pi's built-ins, the conversation-mode extension, the test seam's extras;
+ * `attach_file` and `say`). With it set, the assistant tools follow `say`, and
+ * in the assistant folder (or its `jobs/`) the timezone-line extension follows
+ * the conversation-mode one, so both APPEND to the prompt the event carries.
+ */
+export function composeServerAgentParts(opts: {
+  cwd: string;
+  conversationExtension: InlineExtension;
+  extraExtensionFactories: readonly InlineExtension[];
+  assistant: AssistantSessionHooks | undefined;
+  caller: () => { sessionId: string | null; cwd: string };
+}): { extensionFactories: InlineExtension[]; customTools: ToolDefinition[] } {
+  const assistant = assistantSessionParts(opts.assistant, opts.cwd, opts.caller);
+  return {
+    extensionFactories: [
+      ...serverBuiltinExtensions,
+      opts.conversationExtension,
+      ...assistant.extensionFactories,
+      ...opts.extraExtensionFactories,
+    ],
+    customTools: [
+      createAttachFileTool(opts.cwd, () => getWhereverConfig().downloads),
+      createSayTool(),
+      ...assistant.customTools,
+    ],
+  };
+}
 
 export class SessionPool {
   private sessions = new Map<string, TrackedSession>();
@@ -1183,6 +1216,20 @@ export class SessionPool {
   /** Called once at server start with the ACTIVE assistant folder (see assistant-folder.ts). */
   setAssistantFolder(folder: string | undefined): void {
     this.assistantFolder = folder;
+  }
+
+  /**
+   * The assistant's per-session additions (assistant-tools.ts): the
+   * `assistant_schedule_*` / `assistant_set_timezone` tools in EVERY server
+   * session, and the timezone line in the assistant folder and its `jobs/`. Set
+   * once at server start ONLY while `assistantFolder` is CONFIGURED (active or
+   * not: a refused server's tools answer a lock-state error), so with it unset a
+   * server session's tools, extensions and system prompt are exactly as before.
+   */
+  private assistantHooks: AssistantSessionHooks | undefined;
+
+  setAssistantSessionHooks(hooks: AssistantSessionHooks | undefined): void {
+    this.assistantHooks = hooks;
   }
 
   constructor(
@@ -3154,13 +3201,20 @@ export class SessionPool {
     // counterpart of the pi.on(...) the CLI-bridge extension registers). It is
     // per session, so the armed flag can never cross sessions.
     const conversationSignal = createConversationModeSignal();
+    const parts = composeServerAgentParts({
+      cwd: opts.cwd,
+      conversationExtension: conversationSignal.inlineExtension,
+      extraExtensionFactories: this.extraExtensionFactories,
+      assistant: this.assistantHooks,
+      caller: () => ({ sessionId: opts.sessionManager.getSessionId() ?? null, cwd: opts.cwd }),
+    });
     const resourceLoader = new DefaultResourceLoader({
       cwd: opts.cwd,
       agentDir: this.agentDir,
       settingsManager,
       // pi's built-in MCP, codemode and tool search come first, as in the CLI
       // (see builtin-extensions.ts: the SDK does not load them by itself).
-      extensionFactories: [...serverBuiltinExtensions, conversationSignal.inlineExtension, ...this.extraExtensionFactories],
+      extensionFactories: parts.extensionFactories,
       // Never the CLI bridge (`@wherever-dev/pi`) in a server session: in-process
       // it registers this very session as a CLI and loops takeover/handback. The
       // identification rule is documented at isCliBridgeExtensionPath.
@@ -3192,7 +3246,9 @@ export class SessionPool {
       // with no CLI bridge). Both tools are self-contained; their UI affordance
       // (attach_file's download button, say's spoken-reply card) is driven by
       // the tool call reaching the web UI, no bridge/marker needed.
-      customTools: [createAttachFileTool(opts.cwd, () => getWhereverConfig().downloads), createSayTool()],
+      // Plus, while `assistantFolder` is configured, the assistant tools (see
+      // composeServerAgentParts).
+      customTools: parts.customTools,
       sessionStartEvent: opts.sessionStartEvent,
     });
     // Start the extensions BEFORE the session is tracked or reaches a client:

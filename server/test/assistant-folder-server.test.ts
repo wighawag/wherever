@@ -93,6 +93,8 @@ describe('assistantFolder (real server)', () => {
       // The current-session pointer (assistant-pointer-and-reset): none yet.
       currentSessionId: null,
       currentSessionFile: null,
+      // The user's current timezone (assistant-schedule-tools-server).
+      timezone: expect.any(String),
     });
     expect(fs.existsSync(path.join(folder, 'AGENTS.md'))).toBe(true);
     expect(fs.existsSync(path.join(folder, 'jobs', 'AGENTS.md'))).toBe(true);

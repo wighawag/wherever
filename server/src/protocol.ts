@@ -73,6 +73,11 @@ export type ClientMessage =
   // the assistant is not active on this server.
   | { type: 'assistant_open' }
   | { type: 'assistant_reset' }
+  // Client -> server: the web client's timezone (`Intl.DateTimeFormat()
+  // .resolvedOptions().timeZone`), sent on every connect. While the assistant is
+  // active the server makes it the user's current timezone when it differs
+  // (recorded, source `web`); otherwise it is ignored and nothing is written.
+  | { type: 'client_timezone'; timezone: string }
   | { type: 'session_leave'; sessionId: string }
   // Client -> server: ask for the skill commands available in this session so
   // the composer can offer `/skill:<name>` autocomplete. The server replies with
@@ -309,7 +314,8 @@ export type ServerMessage =
   // Broadcast to every dashboard whenever the current assistant session changes
   // (a reset, a `/new` in the assistant folder), so the Assistant entry point and
   // the Reset action track it without refetching `/config`.
-  | { type: 'assistant_status'; currentSessionId: string | null; currentSessionFile: string | null }
+  // Also sent when the user's timezone changes (`timezone`, the current one).
+  | { type: 'assistant_status'; currentSessionId: string | null; currentSessionFile: string | null; timezone?: string | null }
   // Server -> CLI bridge: the answer to a `cli_request` (ADR 0016).
   | { type: 'cli_response'; id: string; ok: true; result: unknown }
   | { type: 'cli_response'; id: string; ok: false; error: string }

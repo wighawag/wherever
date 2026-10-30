@@ -42,6 +42,12 @@ export interface FakeLlmServer {
   /** Set the behavior for the NEXT /v1/messages call. */
   setNext(behavior: FakeBehavior): void;
   /**
+   * Queue ONE-SHOT behaviors, used (in order) by the next calls before the
+   * sticky `setNext` one applies again. Lets a test make exactly one tool call
+   * (`[toolCall]`) without racing the follow-up request.
+   */
+  queue(...behaviors: FakeBehavior[]): void;
+  /**
    * Every /v1/messages request body seen so far, parsed. This is how a test can
    * assert what actually reached the model, e.g. the `system` prompt for a turn
    * (used by the conversation-mode injection tests).
@@ -59,6 +65,7 @@ export async function startFakeLlmServer(
   initial: FakeBehavior = { kind: 'reply', text: 'ok' },
 ): Promise<FakeLlmServer> {
   let next: FakeBehavior = initial;
+  const queued: FakeBehavior[] = [];
   const requests: Array<Record<string, any>> = [];
 
   const server = createServer((req, res) => {
@@ -87,7 +94,7 @@ export async function startFakeLlmServer(
         Connection: 'keep-alive',
       });
 
-      const behavior = next;
+      const behavior = queued.shift() ?? next;
 
       // Tool-call behavior: emit one tool_use block and end with stop_reason
       // tool_use, so pi executes the tool. The tool's own runtime (e.g. a
@@ -237,6 +244,9 @@ export async function startFakeLlmServer(
     url: `http://127.0.0.1:${port}`,
     setNext(behavior) {
       next = behavior;
+    },
+    queue(...behaviors) {
+      queued.push(...behaviors);
     },
     requests() {
       return requests;

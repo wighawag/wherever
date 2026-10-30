@@ -729,11 +729,21 @@
 							class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-brand-surface-3/50 hover:text-brand-text disabled:opacity-50 {viewingAssistant
 								? 'font-semibold text-brand-blue'
 								: 'text-brand-text-muted'}"
-							title="Open the current assistant session"
+							title={$assistantStatusStore.timezone
+								? `Open the current assistant session (your timezone: ${$assistantStatusStore.timezone})`
+								: 'Open the current assistant session'}
 						>
 							<span>🧭</span>
 							<span>Assistant</span>
-							<span class="ml-auto">→</span>
+							{#if $assistantStatusStore.timezone}
+								<span
+									class="ml-auto truncate text-[10px] font-normal text-brand-text-muted"
+									>{$assistantStatusStore.timezone}</span
+								>
+							{/if}
+							<span class={$assistantStatusStore.timezone ? '' : 'ml-auto'}
+								>→</span
+							>
 						</button>
 					{/if}
 					<button
