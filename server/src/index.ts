@@ -8,6 +8,8 @@ import { SessionPool, RELOADING_REFUSAL, getWhereverConfig, getWhereverCertsDir,
 import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.js';
 import { startAssistantFolder } from './assistant-folder.js';
 import { AssistantController } from './assistant-controller.js';
+import { AssistantScheduler } from './assistant-scheduler.js';
+import { DEFAULT_GRACE_MS } from './assistant-schedule.js';
 import { createCliRequestRouter, assistantInfoChangedFrame, type AssistantInfo, type CliRequestRouter } from './cli-requests.js';
 import { readStarredSet, setSessionStarred, validateStarInput, forgetStar } from './session-stars.js';
 import { piSdkInfo } from './pi-sdk.js';
@@ -1059,6 +1061,17 @@ function sendThenTerminate(ws: WebSocket, msg: ServerMessage, flushTimeoutMs = 1
   }
 }
 
+/**
+ * The scheduler's grace window from `assistantScheduleGraceMinutes`: a finite
+ * number >= 0, else the default (1 h) with a warning.
+ */
+function scheduleGraceMs(minutes: unknown): number {
+  if (minutes === undefined) return DEFAULT_GRACE_MS;
+  if (typeof minutes === 'number' && Number.isFinite(minutes) && minutes >= 0) return minutes * 60_000;
+  console.warn(`[wherever] ignoring assistantScheduleGraceMinutes=${JSON.stringify(minutes)} (not a number >= 0); using 60`);
+  return DEFAULT_GRACE_MS;
+}
+
 async function main(): Promise<void> {
   const { port, host, socket, token, tokenSource, idleTimeout, sslKey, sslCert, noSsl, httpLocalhostFallbackPort, debug } = parseArgs();
   debugEnabled = debug;
@@ -1114,6 +1127,22 @@ async function main(): Promise<void> {
   if (assistantController) {
     sessionPool.onSessionCreated = (sessionFile, cwd) => assistantController.handleSessionCreated(sessionFile, cwd);
   }
+
+  // The assistant scheduler (assistant-scheduler.ts, ADR 0015): fires the jobs in
+  // `<assistantFolder>/schedule.json`. Built and started ONLY while the
+  // assistant is active (configured AND this server holds the folder lock), so
+  // with `assistantFolder` unset or refused there is no timer and nothing is
+  // written to the state dir.
+  const assistantScheduler = assistantController && assistant.status.folder
+    ? new AssistantScheduler({
+        folder: assistant.status.folder,
+        stateDir: getWhereverStateDir(),
+        pool: sessionPool,
+        controller: assistantController,
+        graceMs: scheduleGraceMs(getWhereverConfig().assistantScheduleGraceMinutes),
+      })
+    : null;
+  await assistantScheduler?.start();
 
   // The CLI bridge's request/response path (ADR 0016, cli-requests.ts). Built
   // whether or not the assistant is active: `assistant_info` is how a terminal pi
@@ -2765,6 +2794,7 @@ This encrypts all network traffic securely and enables safe, private remote acce
     for (const c of clients.values()) {
       c.ws.close();
     }
+    assistantScheduler?.stop();
     await sessionPool.disposeAll();
     assistant.release();
     server.close();
