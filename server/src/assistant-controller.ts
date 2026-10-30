@@ -28,8 +28,8 @@ export const ASSISTANT_POINTER_FILE = 'assistant-session.json';
 
 /**
  * Where a message fed to the assistant came from (`telegram`, `schedule:<jobId>`,
- * ...). Carried by `send` for the routing queue of `pool-per-message-routing`
- * (ADR 0014); unused by this controller itself.
+ * ...). `send` threads it into the pool, which records it in the session's
+ * per-user-message reply routing (ADR 0014, `reply-routing.ts`).
  */
 export type AssistantOrigin = string;
 
@@ -49,7 +49,13 @@ export interface AssistantPoolPort {
   abortSession(sessionFile: string): Promise<void>;
   /** Clear pi's steer + followUp queues, returning what was dropped; null when not resident / not readable (CLI). */
   clearQueuedMessages(sessionFile: string): { steering: string[]; followUp: string[] } | null;
-  sendUserMessage(sessionFile: string, text: string, streamingBehavior?: 'steer' | 'followUp'): Promise<void>;
+  sendUserMessage(
+    sessionFile: string,
+    text: string,
+    streamingBehavior?: 'steer' | 'followUp',
+    conversationMode?: boolean,
+    origin?: AssistantOrigin,
+  ): Promise<void>;
   pinSession(sessionFile: string): void;
   unpinSession(sessionFile: string): void;
 }
@@ -198,9 +204,10 @@ export class AssistantController {
    * scheduler). Loads the pointer first: the pool's `sendUserMessage` silently
    * no-ops on a session that is not resident (idle eviction, restart). Into a
    * running turn the message STEERS, as the web composer does (ADR 0003).
-   * `origin` is threaded into the pool by `pool-per-message-routing`.
+   * `origin` is recorded by the pool's reply routing (ADR 0014), so the reply
+   * to this message is attributed to it.
    */
-  async send(text: string, _origin: AssistantOrigin, streamingBehavior?: 'steer' | 'followUp'): Promise<void> {
+  async send(text: string, origin: AssistantOrigin, streamingBehavior?: 'steer' | 'followUp'): Promise<void> {
     const cur = await this.serial(async () => {
       const c = await this.ensureCurrentUnqueued();
       const loaded = await this.pool.loadSession(c.sessionFile);
@@ -209,7 +216,7 @@ export class AssistantController {
       return this.createAndPoint();
     });
     const behavior = streamingBehavior ?? (this.pool.isStreaming(cur.sessionFile) ? 'steer' : undefined);
-    await this.pool.sendUserMessage(cur.sessionFile, text, behavior);
+    await this.pool.sendUserMessage(cur.sessionFile, text, behavior, false, origin);
   }
 
   // -------------------------------------------------------------------------

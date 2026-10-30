@@ -973,6 +973,7 @@ import type { InlineExtension } from '@earendil-works/pi-coding-agent';
  * without it (see SessionPool.initialize). */
 const EXTENSION_DISCOVERY_WAIT_MS = 10_000;
 import { matchRemoteRepoRule } from './remote-candidates.js';
+import { ReplyRouting, WEB_ORIGIN, type ReplyOrigin, type RoutingSnapshot } from './reply-routing.js';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { Model, Api } from '@earendil-works/pi-ai';
 import type { SessionMessageEntry, SessionEntry } from '@earendil-works/pi-coding-agent';
@@ -990,6 +991,17 @@ export interface ReloadResult {
   error?: string;
   closed?: boolean;
 }
+
+/**
+ * An extra pool event subscriber (beside the WS broadcaster in `onEvent`), e.g.
+ * the assistant controller. `destination` is the origin of the user message the
+ * session's current output answers (ADR 0014), null when it has none.
+ */
+export type PoolEventListener = (
+  sessionFile: string,
+  event: AgentSessionEvent,
+  destination: ReplyOrigin | null,
+) => void | Promise<void>;
 
 /** What a send (or model change) gets while the session's agent is being rebuilt. */
 export const RELOADING_REFUSAL =
@@ -1089,7 +1101,25 @@ export class SessionPool {
   /** How long an unanswered sudo prompt survives, if its session outlives it. */
   private static readonly SUDO_PROMPT_TTL_MS = 30 * 60_000;
 
+  /**
+   * The WS broadcaster's slot (index.ts assigns it; tests assign it directly).
+   * It always runs FIRST for an event, before the pool's own idle bookkeeping
+   * and before any `subscribeEvents` listener, so its frames and their order
+   * are exactly what they were before the fan-out existed.
+   */
   onEvent?: (sessionFile: string, event: AgentSessionEvent) => void;
+
+  /** Extra event subscribers (the fan-out beside `onEvent`), see `subscribeEvents`. */
+  private eventListeners = new Set<PoolEventListener>();
+
+  /**
+   * Per-user-message reply routing state (ADR 0014), keyed by session FILE so a
+   * CLI takeover (and the server agent rebuilt when the terminal leaves) keeps
+   * it. Always-on internal bookkeeping with no observable output: only
+   * `getReplyDestination` and `subscribeEvents` listeners read it. Dropped with
+   * the session entry.
+   */
+  private routing = new Map<string, ReplyRouting>();
 
   /**
    * Fired when a session is REALLY created: from `createNewSession` once the new
@@ -1888,6 +1918,92 @@ export class SessionPool {
     return createPromise;
   }
 
+  /**
+   * Subscribe to every pool event, beside the WS broadcaster in `onEvent`
+   * (which keeps running first, unchanged). Each listener is called after the
+   * pool's own bookkeeping for the event, with the session's current reply
+   * destination; a throwing or rejecting listener is logged and never affects
+   * the broadcaster, the bookkeeping or the other listeners. Returns the
+   * unsubscribe.
+   */
+  subscribeEvents(listener: PoolEventListener): () => void {
+    this.eventListeners.add(listener);
+    return () => {
+      this.eventListeners.delete(listener);
+    };
+  }
+
+  /**
+   * The origin (`none` for a web send, `telegram`, `schedule:<jobId>`, ...) of
+   * the user message a session's current output answers, or null when it has
+   * none (no user message yet, or one with nothing recorded for it, e.g. typed
+   * directly in a CLI terminal). Updated on every user `message_end`.
+   */
+  getReplyDestination(sessionFileOrId: string): ReplyOrigin | null {
+    const file = this.getSession(sessionFileOrId)?.sessionFile ?? normalizeSessionFile(sessionFileOrId);
+    return this.routing.get(file)?.destination() ?? null;
+  }
+
+  /** The origins still waiting for their user message, oldest first (tests, diagnostics). */
+  getRoutingSnapshot(sessionFileOrId: string): RoutingSnapshot {
+    const file = this.getSession(sessionFileOrId)?.sessionFile ?? normalizeSessionFile(sessionFileOrId);
+    return this.routing.get(file)?.snapshot() ?? { promptOrSteer: [], followUp: [] };
+  }
+
+  private routingFor(sessionFile: string): ReplyRouting {
+    let r = this.routing.get(sessionFile);
+    if (!r) {
+      r = new ReplyRouting();
+      this.routing.set(sessionFile, r);
+    }
+    return r;
+  }
+
+  /**
+   * Advance the routing state for an event, BEFORE anything sees it: a user
+   * `message_end` sets the destination its output is fanned out with, and the
+   * `agent_settled` trim runs before a settled handler can send (its new entry
+   * must survive the trim). Server sessions trim to pi's real queue lengths;
+   * CLI sessions, whose queues the server cannot see, are emptied.
+   */
+  private routeEvent(tracked: TrackedSession, event: AgentSessionEvent): void {
+    const r = this.routing.get(tracked.sessionFile);
+    if (!r) return;
+    if (event.type === 'message_end' && (event as any).message?.role === 'user') {
+      r.takeForUserMessage();
+    } else if (event.type === 'agent_settled') {
+      if (tracked.type === 'server') {
+        r.trimToPiQueues(
+          tracked.agentSession.getSteeringMessages().length,
+          tracked.agentSession.getFollowUpMessages().length,
+        );
+      } else {
+        r.empty();
+      }
+    }
+  }
+
+  /** Broadcaster, then the extra listeners: for events the pool itself synthesises. */
+  private emitEvent(sessionFile: string, event: AgentSessionEvent): void {
+    if (this.onEvent) this.onEvent(sessionFile, event);
+    this.notifyListeners(sessionFile, event);
+  }
+
+  private notifyListeners(sessionFile: string, event: AgentSessionEvent): void {
+    if (this.eventListeners.size === 0) return;
+    const destination = this.routing.get(sessionFile)?.destination() ?? null;
+    const report = (err: unknown) =>
+      console.error(`[wherever] pool event listener failed for ${sessionFile}: ${err instanceof Error ? err.message : String(err)}`);
+    for (const listener of [...this.eventListeners]) {
+      try {
+        const out = listener(sessionFile, event, destination);
+        if (out && typeof (out as Promise<void>).then === 'function') (out as Promise<void>).then(undefined, report);
+      } catch (err) {
+        report(err);
+      }
+    }
+  }
+
   /** Call `onSessionCreated`, isolating the creation from any listener failure. */
   private emitSessionCreated(sessionFile: string, cwd: string): void {
     const listener = this.onSessionCreated;
@@ -2291,8 +2407,20 @@ export class SessionPool {
    * before_agent_start hook appends the hint to THIS turn's system prompt), and for
    * a CLI-bridge session it is relayed on `cli_message` so the extension's own
    * before_agent_start hook does the same in the bridged terminal pi.
+   *
+   * `origin` is where the message came from (ADR 0014): `telegram`,
+   * `schedule:<jobId>`, ...; omitted = a web send, recorded as `none`. It is
+   * recorded in the session's reply routing only for a send that WILL produce a
+   * user message: never for a `!`/`!!` shell send or a non-resident session,
+   * and dropped again when pi reports the message `handled` or the send throws.
    */
-  async sendUserMessage(sessionFileOrId: string, text: string, streamingBehavior?: 'steer' | 'followUp', conversationMode = false): Promise<void> {
+  async sendUserMessage(
+    sessionFileOrId: string,
+    text: string,
+    streamingBehavior?: 'steer' | 'followUp',
+    conversationMode = false,
+    origin: ReplyOrigin = WEB_ORIGIN,
+  ): Promise<void> {
     const tracked = this.getSession(sessionFileOrId);
     if (!tracked) return;
     // Backstop for the WS layer's own check: mid-reload the tracked agent is the
@@ -2328,13 +2456,11 @@ export class SessionPool {
             excludeFromContext: isExcluded,
             armedAt: now,
           });
-          if (this.onEvent) {
-            this.onEvent(tracked.sessionFile, {
-              type: 'bash_sudo_prompt',
-              promptId,
-              command,
-            } as any);
-          }
+          this.emitEvent(tracked.sessionFile, {
+            type: 'bash_sudo_prompt',
+            promptId,
+            command,
+          } as any);
           return;
         }
 
@@ -2364,9 +2490,20 @@ export class SessionPool {
       // so browser/server sessions behave exactly like the pi CLI: all three
       // expansions are start-of-message anchored, and any trailing text after
       // "/skill:<name> " is preserved and appended after the skill block. Plain
-      // text keeps the sendUserMessage() path (extension "input"-event source).
+      // text goes through prompt() exactly as sendUserMessage() would send it
+      // (no expansion, extension "input"-event source); calling prompt() directly
+      // is what lets the pool observe `preflightResult` for reply routing.
       // Counted as busy (synchronously, before the first await) so a /reload
       // cannot dispose the agent under a send that pi has not started streaming.
+      const routing = this.routingFor(tracked.sessionFile);
+      const ticket = routing.record(origin, streamingBehavior === 'followUp' ? 'followUp' : 'promptOrSteer');
+      let preflightSeen = false;
+      const preflightResult = (disposition: 'handled' | 'queued' | 'started') => {
+        preflightSeen = true;
+        if (disposition === 'handled') routing.drop(ticket);
+        else if (disposition === 'started') routing.started(ticket);
+        else routing.queued(ticket);
+      };
       tracked.busy = (tracked.busy ?? 0) + 1;
       try {
         if (text.startsWith('/')) {
@@ -2374,22 +2511,44 @@ export class SessionPool {
             expandPromptTemplates: true,
             streamingBehavior,
             source: 'interactive',
+            preflightResult,
           });
         } else {
-          await tracked.agentSession.sendUserMessage(text, { deliverAs: streamingBehavior });
+          await tracked.agentSession.prompt(text, {
+            expandPromptTemplates: false,
+            streamingBehavior,
+            source: 'extension',
+            preflightResult,
+          });
         }
+        // Returned without a preflight: pi deferred it (sent while it emits
+        // agent_settled). It stays pending until the deferred prompt runs.
+        if (!preflightSeen) routing.deferred(ticket);
+      } catch (err) {
+        routing.drop(ticket);
+        throw err;
       } finally {
         tracked.busy -= 1;
       }
     } else if (tracked.type === 'cli') {
+      // The server cannot see the terminal pi's preflight, so the entry stands
+      // as relayed (ADR 0014's accepted CLI cost).
+      const routing = this.routingFor(tracked.sessionFile);
+      const ticket = routing.record(origin, streamingBehavior === 'followUp' ? 'followUp' : 'promptOrSteer');
       // Relay the signal to the bridged pi (omitted when off, so the payload is
       // unchanged for a non-conversation message and older extensions are fine).
-      tracked.cliWs.send(JSON.stringify({
-        type: 'cli_message',
-        message: text,
-        streamingBehavior,
-        ...(conversationMode ? { conversationMode: true } : {}),
-      }));
+      try {
+        tracked.cliWs.send(JSON.stringify({
+          type: 'cli_message',
+          message: text,
+          streamingBehavior,
+          ...(conversationMode ? { conversationMode: true } : {}),
+        }));
+        routing.relayed(ticket);
+      } catch (err) {
+        routing.drop(ticket);
+        throw err;
+      }
     }
   }
 
@@ -2427,45 +2586,37 @@ export class SessionPool {
     excludeFromContext: boolean,
     operations?: BashOperations,
   ): Promise<void> {
-    if (this.onEvent) {
-      this.onEvent(tracked.sessionFile, {
-        type: 'tool_execution_start',
-        toolName: 'bash',
-        args: { command },
-        forceCommand: true,
-      } as any);
-    }
+    this.emitEvent(tracked.sessionFile, {
+      type: 'tool_execution_start',
+      toolName: 'bash',
+      args: { command },
+      forceCommand: true,
+    } as any);
 
     try {
       const result = await tracked.agentSession.executeBash(command, (chunk) => {
-        if (this.onEvent) {
-          this.onEvent(tracked.sessionFile, {
-            type: 'tool_execution_update',
-            toolName: 'bash',
-            delta: chunk,
-          } as any);
-        }
+        this.emitEvent(tracked.sessionFile, {
+          type: 'tool_execution_update',
+          toolName: 'bash',
+          delta: chunk,
+        } as any);
       }, { excludeFromContext, operations });
 
-      if (this.onEvent) {
-        this.onEvent(tracked.sessionFile, {
-          type: 'tool_execution_end',
-          toolName: 'bash',
-          result: result.output,
-          isError: result.exitCode !== 0,
-          forceCommand: true,
-        } as any);
-      }
+      this.emitEvent(tracked.sessionFile, {
+        type: 'tool_execution_end',
+        toolName: 'bash',
+        result: result.output,
+        isError: result.exitCode !== 0,
+        forceCommand: true,
+      } as any);
     } catch (err) {
-      if (this.onEvent) {
-        this.onEvent(tracked.sessionFile, {
-          type: 'tool_execution_end',
-          toolName: 'bash',
-          result: (err as Error).message,
-          isError: true,
-          forceCommand: true,
-        } as any);
-      }
+      this.emitEvent(tracked.sessionFile, {
+        type: 'tool_execution_end',
+        toolName: 'bash',
+        result: (err as Error).message,
+        isError: true,
+        forceCommand: true,
+      } as any);
     }
   }
 
@@ -2618,6 +2769,7 @@ export class SessionPool {
     const tracked = this.getSession(sessionFileOrId);
     if (!tracked || tracked.type !== 'server') return null;
     const cleared = tracked.agentSession.clearQueue();
+    this.routing.get(tracked.sessionFile)?.clear();
     return { steering: [...cleared.steering], followUp: [...cleared.followUp] };
   }
 
@@ -2626,6 +2778,8 @@ export class SessionPool {
     if (!tracked) return;
     if (tracked.type === 'server') {
       tracked.agentSession.clearQueue();
+      // pi dropped its whole queue: so do the routing queues (ADR 0014).
+      this.routing.get(tracked.sessionFile)?.clear();
     }
   }
 
@@ -2871,15 +3025,13 @@ export class SessionPool {
       const result = await this.loadSession(sessionFile, tracked.cwd, tracked.model);
       if (!result.error && result.tracked) {
         result.tracked.clients = tracked.clients;
-        if (this.onEvent) {
-          if (tracked.isStreaming) {
-            this.onEvent(sessionFile, {
-              type: 'session_error' as any,
-              error: 'CLI terminal disconnected. Active execution was aborted.'
-            } as any);
-          }
-          this.onEvent(sessionFile, { type: 'agent_end' } as any);
+        if (tracked.isStreaming) {
+          this.emitEvent(sessionFile, {
+            type: 'session_error' as any,
+            error: 'CLI terminal disconnected. Active execution was aborted.'
+          } as any);
         }
+        this.emitEvent(sessionFile, { type: 'agent_end' } as any);
       }
     }
   }
@@ -2911,9 +3063,10 @@ export class SessionPool {
       tracked.contextUsage = (event as any).contextUsage ?? null;
     }
 
-    if (this.onEvent) {
-      this.onEvent(sessionFile, event);
-    }
+    // A forwarded user message_end (the extension does not forward
+    // message_start) and, once forwarded, agent_settled drive the routing.
+    this.routeEvent(tracked, event);
+    this.emitEvent(sessionFile, event);
   }
 
   async disposeAll(): Promise<void> {
@@ -3122,6 +3275,8 @@ export class SessionPool {
   private dropSessionEntry(tracked: TrackedSession): void {
     this.cancelIdleCheck(tracked.sessionFile);
     this.sessions.delete(tracked.sessionFile);
+    // Its pi queues went with the agent (destroyed, or a failed reload).
+    this.routing.delete(tracked.sessionFile);
     for (const [id, p] of this.pendingSudo) {
       if (p.sessionFileOrId === tracked.sessionFile) this.pendingSudo.delete(id);
     }
@@ -3146,53 +3301,63 @@ export class SessionPool {
       const tracked = this.sessions.get(sessionFile);
       if (!tracked) return;
 
+      // Routing first (the destination this event is fanned out with, and the
+      // settle trim before a settled handler can send), then the broadcaster,
+      // then the pool's own bookkeeping, then the extra listeners.
+      this.routeEvent(tracked, event);
+
       if (this.onEvent) {
         this.onEvent(sessionFile, event);
       }
 
-      switch (event.type) {
-        case 'agent_start':
-          tracked.isIdle = false;
-          tracked.lastActivity = Date.now();
-          this.cancelIdleCheck(sessionFile);
-          break;
-
-        case 'agent_end':
-          tracked.isIdle = true;
-          tracked.lastActivity = Date.now();
-          // A turn ended: nothing is in flight anymore. Reset defensively in case
-          // a start/end pair was ever missed, so the count cannot drift positive.
-          if (tracked.type === 'server') tracked.inFlightToolCount = 0;
-          this.scheduleIdleCheck(sessionFile);
-          break;
-
-        case 'tool_execution_start':
-          if (tracked.type === 'server') tracked.inFlightToolCount++;
-          tracked.lastActivity = Date.now();
-          break;
-
-        case 'tool_execution_end':
-          // Clamp at 0: an unmatched end must never make the count negative.
-          if (tracked.type === 'server')
-            tracked.inFlightToolCount = Math.max(0, tracked.inFlightToolCount - 1);
-          tracked.lastActivity = Date.now();
-          break;
-
-        case 'message_update':
-        case 'message_end':
-          tracked.lastActivity = Date.now();
-          break;
-
-        case 'model_select' as any: {
-          const evt = event as any;
-          const modelStr = evt.model ? `${evt.model.provider}:${evt.model.id}` : '';
-          if (modelStr) {
-            tracked.model = modelStr;
-          }
-          break;
-        }
-      }
+      this.applyEventBookkeeping(sessionFile, tracked, event);
+      this.notifyListeners(sessionFile, event);
     });
+  }
+
+  private applyEventBookkeeping(sessionFile: string, tracked: TrackedSession, event: AgentSessionEvent): void {
+    switch (event.type) {
+      case 'agent_start':
+        tracked.isIdle = false;
+        tracked.lastActivity = Date.now();
+        this.cancelIdleCheck(sessionFile);
+        break;
+
+      case 'agent_end':
+        tracked.isIdle = true;
+        tracked.lastActivity = Date.now();
+        // A turn ended: nothing is in flight anymore. Reset defensively in case
+        // a start/end pair was ever missed, so the count cannot drift positive.
+        if (tracked.type === 'server') tracked.inFlightToolCount = 0;
+        this.scheduleIdleCheck(sessionFile);
+        break;
+
+      case 'tool_execution_start':
+        if (tracked.type === 'server') tracked.inFlightToolCount++;
+        tracked.lastActivity = Date.now();
+        break;
+
+      case 'tool_execution_end':
+        // Clamp at 0: an unmatched end must never make the count negative.
+        if (tracked.type === 'server')
+          tracked.inFlightToolCount = Math.max(0, tracked.inFlightToolCount - 1);
+        tracked.lastActivity = Date.now();
+        break;
+
+      case 'message_update':
+      case 'message_end':
+        tracked.lastActivity = Date.now();
+        break;
+
+      case 'model_select' as any: {
+        const evt = event as any;
+        const modelStr = evt.model ? `${evt.model.provider}:${evt.model.id}` : '';
+        if (modelStr) {
+          tracked.model = modelStr;
+        }
+        break;
+      }
+    }
   }
 
   private parseModelStr(modelStr: string): { provider: string; id: string } | null {

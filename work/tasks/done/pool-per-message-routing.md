@@ -53,3 +53,7 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions taken while building this task (entry states and the started-to-front rule refining ADR 0014's head-take, which queue a user `message_end` takes from, deferred prompts, settle trim keeping in-flight sends, what the clears drop, the `subscribeEvents` fan-out API and order, origin as a 5th positional parameter, CLI settle relying on the forwarded `agent_settled`, routing-state lifetime, changeset bump) are recorded in [work/notes/observations/pool-per-message-routing-decisions.md](../../notes/observations/pool-per-message-routing-decisions.md), with JSDoc at the choice sites in `server/src/reply-routing.ts` and `server/src/session-pool.ts`. Left to later tasks: `clearQueuedMessages` does not yet return the dropped origins (`channel-seam-notify-and-web-push`); the CLI `agent_end` fallback for old extensions (`assistant-scheduler`).
