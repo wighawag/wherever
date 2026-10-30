@@ -20,6 +20,10 @@ Default `AGENTS.md`: you are a long-lived general assistant; the session may be 
 
 Default `jobs/AGENTS.md`: you are an isolated job run by the assistant: do the task, save anything worth keeping under `../memory/`, call `assistant_notify` if the user should know the result, and do not start conversations.
 
+## Requeue 2026-10-30
+
+Conductor Gate-3 (recovery 1/2): the implementation, tests, changeset and CONTEXT.md look correct; keep them as they are. Address: (1) the done record work/tasks/done/assistant-folder-opt-in-and-lock.md must LINK the decisions note: append a '## Decisions' section pointing at work/notes/observations/assistant-folder-opt-in-decisions.md. (2) The previous gate went red ONLY on 5 pre-existing tests in server/test/readonly-config-deployment.test.ts (TLS material block) with 'spawnSync openssl ENOENT'; they pass on main and on this branch when run directly, so it looked environmental. Do not modify that test file. If you can reproduce the ENOENT, record what you find in a work/notes/observations/ note rather than working around it.
+
 ## Acceptance criteria
 
 - [ ] With `assistantFolder` unset, nothing is created, locked or written, and status reports "not configured".
