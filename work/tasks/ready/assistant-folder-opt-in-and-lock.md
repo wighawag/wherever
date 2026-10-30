@@ -25,6 +25,7 @@ Default `jobs/AGENTS.md`: you are an isolated job run by the assistant: do the t
 - [ ] With it set, the folder and the three seed files are created once and never overwritten.
 - [ ] Lock: a live foreign lock makes a second server refuse the assistant with a clear log line and status; a same-host lock with a dead pid, a reused pid or a different boot id is taken over; a foreign-host lock is not.
 - [ ] Status is exposed to the web alongside `searchFolder`.
+- [ ] Any assistant seeding hooked into `createNewSession` (beside `maybeSeedSearchWorkspace`) runs only when the folder equals the configured `assistantFolder`; with it unset, session creation is unchanged.
 - [ ] Tests cover the new behaviour (mirror the repo's test style), isolating every write: `assistantFolder`, `WHEREVER_CONFIG_DIR` and `WHEREVER_STATE_DIR` point at temp dirs, and the tests assert the real home folders and `~/.wherever` are untouched.
 - [ ] A changeset (`"wherever-dev"`); `CONTEXT.md` documents the key, seeding and lock.
 

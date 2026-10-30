@@ -28,6 +28,7 @@ A scheduler inside the wherever server that fires the assistant's jobs. `docs/ad
 - [ ] Isolated starts immediately in `jobs/` while the assistant is busy, and records its mapping.
 - [ ] For a CLI-bridge assistant session whose extension lacks the `agent_settled` capability, inline jobs fall back to `agent_end`.
 - [ ] A malformed entry is listed invalid without a turn while valid ones fire; a concurrent on-disk edit is not clobbered; `!` prompts are refused.
+- [ ] With `assistantFolder` unset, or the lock held by another server, the scheduler never starts: no watcher, no timer, no run log and no timezone state are created (a test asserts the state dir is unchanged).
 - [ ] Tests use temp assistant/config/state dirs and assert the real ones are untouched.
 - [ ] A changeset (`"wherever-dev"`); `CONTEXT.md` documents the format and firing rules.
 

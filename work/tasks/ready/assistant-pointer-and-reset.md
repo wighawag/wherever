@@ -22,7 +22,8 @@ An assistant controller in the server that owns WHICH session is the current ass
 - [ ] Reset (button, or web `/new` / `/reset` in the assistant session) yields a NEW session even while a tab views the old one, moves the pointer, aborts a running turn exactly once, and clears and records any queued messages of the old session.
 - [ ] A session created in `jobs/` or elsewhere never moves the pointer; `createNewSession` returning an existing session does not fire the callback.
 - [ ] The pointer survives restart and idle eviction (the next send reloads it).
-- [ ] With `assistantFolder` unset, none of this is visible or active.
+- [ ] With `assistantFolder` unset, no session-created callback and no controller are registered, the Assistant entry point is hidden, `session_new` and web `/new` / `/reset` behave exactly as today, and idle teardown of every session is unchanged (existing idle tests pass).
+- [ ] The callback fires only on a real creation (not the existing-viewed-session return, not when joining a pending create), and a throwing callback never fails `createNewSession`.
 - [ ] Tests cover the new behaviour with temp assistant/config/state dirs, asserting the real ones are untouched.
 - [ ] A changeset (`"wherever-dev"`); `CONTEXT.md` documents the pointer, callback and reset.
 

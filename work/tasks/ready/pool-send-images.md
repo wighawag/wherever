@@ -14,7 +14,7 @@ The pool's send takes text only today, so Telegram photos reach the model as fil
 
 - [ ] A Telegram photo reaches a server-built assistant session as an image input (visible to the model), with its path still available.
 - [ ] The CLI-bridge path either carries images or is documented as paths-only, with a test of whichever holds.
-- [ ] Sends without images behave exactly as before; routing attribution is unchanged.
+- [ ] Sends without images behave exactly as before: `cli_message` omits the `images` key when there are none (as it does for `conversationMode`) and the server passes `images: undefined` to `prompt()`, so payloads are byte-identical; routing attribution is unchanged.
 - [ ] Tests cover the new behaviour (mirror the repo's test style).
 - [ ] Changesets: `"wherever-dev"`, plus `"@wherever-dev/pi"` if the extension changes; `CONTEXT.md` updated.
 

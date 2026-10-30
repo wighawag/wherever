@@ -22,7 +22,8 @@ Extend the `@wherever-dev/pi` extension's existing WebSocket so a CLI-bridge ses
 - [ ] `agent_settled` from a CLI session reaches the pool's event fan-out.
 - [ ] `assistant_info` round-trips; disconnected bridge, disabled bridge and timeout each yield a clear, cached negative answer without blocking anything.
 - [ ] `assistant_info_changed` updates the cache.
-- [ ] An old server (drops unknown messages) and an old extension (no `isNew`, no `agent_settled`) keep working as before.
+- [ ] An old server (drops unknown messages) and an old extension (no `isNew`, no `agent_settled`) keep working as before; a forwarded `agent_settled` produces no new WS frame, beep, `sessions_updated` or working-dot change.
+- [ ] Request timeout timers are `unref`'d, so `pi -p` exit time is unchanged against an old server; with `assistantFolder` unset, `isNew` writes no pointer.
 - [ ] Tests cover the new behaviour (mirror the repo's test style), with temp assistant/config/state dirs (the pointer is written to the state dir) and an assertion that the real ones are untouched.
 - [ ] Changesets `"@wherever-dev/pi"` and `"wherever-dev"`; `CONTEXT.md` documents the new bridge messages.
 

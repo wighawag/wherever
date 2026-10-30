@@ -21,6 +21,7 @@ The Telegram channel's secure base: it connects, and only the paired user can re
 - [ ] Pairing succeeds only with the current code; the configured id wins over a stored pairing; `/start` and `/pair` are refused once paired; re-pair issues a new code; unpaired senders are ignored.
 - [ ] The polling offset survives a restart.
 - [ ] With `assistantFolder` unset, or the lock held by another server, there is no polling and no offset or pairing state is written.
+- [ ] With `assistantFolder` unset or Telegram not enabled, the token file is not read and no error is logged (scrubbing the env variables is still allowed), and the Telegram settings section is hidden.
 - [ ] Tests cover the new behaviour with the Bot API mocked at the HTTP boundary and temp config/state dirs, real ones untouched.
 - [ ] A changeset (`"wherever-dev"`); `CONTEXT.md` documents the token variables, pairing and offset.
 

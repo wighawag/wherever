@@ -16,7 +16,9 @@ Let any server-built session's agent manage the assistant's schedule and the use
 
 ## Acceptance criteria
 
-- [ ] With `assistantFolder` unset, server sessions have none of these tools.
+- [ ] With `assistantFolder` unset, server sessions have none of these tools, and the timezone inline extension is NOT added: the system prompt, the extension factory list and `customTools` are byte-identical to today (test).
+- [ ] With it unset, the web's timezone report is ignored and nothing is written; all assistant UI in the web stays hidden.
+- [ ] Outside the assistant folder (and `jobs/`), the timezone line is never appended.
 - [ ] From a non-assistant session, `assistant_schedule_add` writes to the assistant's `schedule.json` with origin stamped, and the job runs as the assistant.
 - [ ] `assistant_schedule_list` marks the caller's jobs and shows done and invalid entries; `assistant_schedule_remove` removes; bad input returns `isError: true` and writes nothing.
 - [ ] `assistant_set_timezone` and a web connect from another timezone both shift a follows-the-user job; the assistant's next turn carries the new timezone line.

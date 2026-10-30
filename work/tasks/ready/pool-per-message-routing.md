@@ -14,7 +14,8 @@ The session pool learns WHERE each user message came from and exposes, for any a
 - **No drift.** Nothing is recorded, or the entry is dropped, for `!`/`!!` shell sends, sends to a non-resident session, `prompt()` reporting `preflightResult` `"handled"`, and sends that throw. To observe `preflightResult` on every send: `/`-prefixed text KEEPS its current `prompt()` call (`expandPromptTemplates: true`, `source: 'interactive'`, which is what makes `/skill:` and prompt templates expand) with only `preflightResult` added; plain text (including steers) moves from `agentSession.sendUserMessage` to `prompt(text, {expandPromptTemplates: false, streamingBehavior, source: 'extension', preflightResult})`, equivalent to today's plain-text path. A `prompt()` that returns without calling `preflightResult` was deferred and stays pending.
 - **Trigger.** A user `message_end` (forwarded for both server and CLI-bridge sessions; `message_start` is not forwarded by the extension) takes the head of the matching queue; that origin is the session's current destination until the next user message. Match by position, never by text. A message typed directly in a CLI terminal has no send of its own: with an empty queue it gets no origin; otherwise it takes the head entry, a misattribution corrected at the next settle (ADR 0014).
 - **Settle trim.** `cancelSteerQueue` / `clearQueue` clears both routing queues. At `agent_settled` each queue is trimmed to pi's current queue length, keeping the newest (server sessions: `getSteeringMessages()` / `getFollowUpMessages()`; abort leaves pi's queues populated); CLI sessions' routing queues are emptied. The pool does this BEFORE fanning `agent_settled` out.
-- **Fan-out.** `pool.onEvent` is a single slot; add a fan-out so the assistant controller subscribes beside the WS broadcaster, with the current destination available for each assistant event.
+- **Fan-out.** `pool.onEvent` is a single slot; add a fan-out so the assistant controller subscribes beside the WS broadcaster, with the current destination available for each assistant event. `pool.onEvent` stays assignable exactly as today (existing tests assign it directly); the WS broadcaster runs FIRST, with the same frames in the same order, and before the pool's own idle bookkeeping as today; a throwing extra subscriber is caught and never suppresses the broadcaster or the bookkeeping.
+- **Invisible when unused.** Routing state is always-on internal bookkeeping with no observable output; with `assistantFolder` unset (or for any non-assistant session) nothing a user, client or the model sees changes.
 
 ## Acceptance criteria
 
@@ -24,6 +25,8 @@ The session pool learns WHERE each user message came from and exposes, for any a
 - [ ] After an abort with a steer still queued, the settle trim keeps that entry aligned with pi's queue.
 - [ ] Routing works for a CLI-bridge session (via `message_end`), with routing queues emptied at settle.
 - [ ] Web send behaviour (steer by default, ADR 0003) is unchanged, and `/skill:` still expands on web sends (add a test; none guards it today).
+- [ ] Fan-out: broadcaster first with identical frames and order; a throwing subscriber is isolated; `pool.onEvent =` still works.
+- [ ] With `assistantFolder` unset, the full existing server test suite passes unchanged, and `cancelSteerQueue` stays a no-op for CLI sessions.
 - [ ] Tests cover the new behaviour (mirror the repo's test style).
 - [ ] A changeset (`"wherever-dev"`); `CONTEXT.md` documents the routing state.
 

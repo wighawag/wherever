@@ -23,7 +23,7 @@ The channel interface, the one way the assistant reaches the user proactively (`
 - [ ] Subscription endpoints are token-gated; payload matches the SW shape; 404/410 prunes; with no channel, `assistant_notify` errors clearly.
 - [ ] A push goes to EVERY registered subscription.
 - [ ] Messages dropped by a reset or an aborted settle are reported to the channels of their origins (tested with a fake channel).
-- [ ] With `assistantFolder` unset, or the folder lock held by another server, no VAPID key is generated, the endpoints are inactive, and no channel starts.
+- [ ] With `assistantFolder` unset, or the folder lock held by another server, no VAPID key is generated, the push routes behave as unknown routes do today, no channel starts, the settings toggle is hidden, and `assistant_notify` is absent from server sessions.
 - [ ] The template push module is gone and nothing imports it.
 - [ ] Tests cover the new behaviour (push service mocked at the HTTP boundary) with temp state/config dirs, real ones untouched.
 - [ ] A changeset (`"wherever-dev"`); `CONTEXT.md` documents the channel interface, `assistant_notify` and push.
