@@ -14,6 +14,8 @@ import { RestoreJobRegistry, type RestoreJobSnapshot, type RestoreRequest } from
 import type { ClientMessage, ServerMessage, ToolImage } from './protocol.js';
 import { INITIAL_HISTORY_LIMIT, HISTORY_PAGE_SIZE } from './protocol.js';
 import { gateUploadFolder, gateUploadWrite, uploadMaxBytes, uploadTooLarge } from './upload-gate.js';
+import { readAttachGrants } from './download-grants.js';
+import { DEFAULT_DOWNLOAD_MAX_BYTES } from './attach-file-tool.js';
 import { UploadStaging, UPLOAD_CAPABILITY, isValidUploadId, parseChunkFrame, CHUNK_FRAME_KIND, type Authorize } from './upload-staging.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -205,13 +207,23 @@ function getUploadStaging(): UploadStaging {
 }
 
 /**
- * Validate a requested download path against the allowed roots and return the
- * safe absolute path to stream, or null if it escapes / does not exist / is not
- * a regular file. This is the security-critical guard: it realpath-resolves the
- * target BEFORE the containment check so neither `..` traversal nor an in-tree
- * symlink can point outside an allowed root.
+ * Validate a requested download path against the allowed roots and the session's
+ * attach grants, and return the safe absolute path to stream, or null if it
+ * escapes / does not exist / is not a regular file. This is the security-critical
+ * guard: it realpath-resolves the target BEFORE the containment check so neither
+ * `..` traversal nor an in-tree symlink can point outside an allowed root.
+ *
+ * `grants` are the files the agent explicitly offered with `attach_file` (see
+ * download-grants.ts). They are matched EXACTLY on real path, never as roots, so
+ * attaching one file outside the roots does not open its directory. Loaded lazily:
+ * the transcript is only scanned when the root check has already failed.
  */
-function resolveSafeDownloadPath(requested: string, cwd: string | undefined, roots: string[]): string | null {
+async function resolveSafeDownloadPath(
+  requested: string,
+  cwd: string | undefined,
+  roots: string[],
+  grants?: () => Promise<string[]>,
+): Promise<string | null> {
   if (!requested) return null;
   let candidate = expandTilde(requested);
   if (!path.isAbsolute(candidate)) {
@@ -243,9 +255,20 @@ function resolveSafeDownloadPath(requested: string, cwd: string | undefined, roo
     if (real === root) return true;
     return real.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
   });
-  if (!withinRoot) return null;
+  if (withinRoot) return real;
 
-  return real;
+  if (grants) {
+    for (const granted of await grants()) {
+      let grantedReal: string;
+      try {
+        grantedReal = fs.realpathSync(path.resolve(granted));
+      } catch {
+        continue;
+      }
+      if (grantedReal === real) return real;
+    }
+  }
+  return null;
 }
 
 function serveStaticFile(reqPath: string, res: ServerResponse) {
@@ -2171,11 +2194,18 @@ async function main(): Promise<void> {
         return;
       }
 
-      const tracked = sessionPool.getSession(qSessionId);
-      const cwd = tracked?.cwd;
+      // Live OR on-disk: a session the server has not loaded still has a cwd
+      // (its roots) and a transcript (its attach grants).
+      const located = await sessionPool.locateSession(qSessionId);
+      const cwd = located?.cwd;
 
       const roots = resolveDownloadRoots(config, cwd);
-      const safePath = resolveSafeDownloadPath(qPath, cwd, roots);
+      const safePath = await resolveSafeDownloadPath(
+        qPath,
+        cwd,
+        roots,
+        located ? () => readAttachGrants(located.sessionFile) : undefined,
+      );
       if (!safePath) {
         // 404 (not 403) so we do not leak whether a path outside the allowed
         // roots exists: escape and not-found are indistinguishable to the client.
@@ -2191,7 +2221,7 @@ async function main(): Promise<void> {
         return;
       }
 
-      const maxBytes = config.downloads?.maxBytes ?? 100 * 1024 * 1024;
+      const maxBytes = config.downloads?.maxBytes ?? DEFAULT_DOWNLOAD_MAX_BYTES;
       if (stat.size > maxBytes) {
         sendJSON(res, 413, { error: `File too large (${stat.size} > ${maxBytes} bytes)` });
         return;

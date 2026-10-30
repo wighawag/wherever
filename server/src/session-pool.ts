@@ -2055,6 +2055,23 @@ export class SessionPool {
   }
 
   /**
+   * Where a session's transcript lives and which cwd it runs in, for a session
+   * that is live (tracked) OR only on disk. Used by `GET /session/download`, which
+   * must work for a session the server has not loaded (a deep link, a reload
+   * after a restart): without the on-disk fallback it knew neither the cwd (so
+   * even an in-cwd file 404ed) nor the transcript holding the attach grants.
+   */
+  async locateSession(sessionId: string): Promise<{ sessionFile: string; cwd: string } | undefined> {
+    const tracked = this.getSession(sessionId);
+    if (tracked) return { sessionFile: tracked.sessionFile, cwd: tracked.cwd };
+    // By id ONLY: a session NAME equal to this id must not shadow the real one.
+    const infos = await scanDiskSessions(path.join(this.agentDir, 'sessions'), () => true, 'session lookup');
+    const found = infos.find((s) => s.id === sessionId);
+    if (!found) return undefined;
+    return { sessionFile: found.path, cwd: resolveSessionCwd(found.cwd) };
+  }
+
+  /**
    * Find a session on disk by short ID or name, using the same cached scan as
    * listSessions(). Replaces `SessionManager.listAll()` on this lookup path:
    * that helper re-reads and re-parses every session file, which is seconds of
@@ -2881,7 +2898,7 @@ export class SessionPool {
       // with no CLI bridge). Both tools are self-contained; their UI affordance
       // (attach_file's download button, say's spoken-reply card) is driven by
       // the tool call reaching the web UI, no bridge/marker needed.
-      customTools: [createAttachFileTool(opts.cwd), createSayTool()],
+      customTools: [createAttachFileTool(opts.cwd, () => getWhereverConfig().downloads), createSayTool()],
       sessionStartEvent: opts.sessionStartEvent,
     });
     // Start the extensions BEFORE the session is tracked or reaches a client:

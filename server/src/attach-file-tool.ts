@@ -20,8 +20,17 @@ import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
  * works in a pure web-frontend session with no CLI bridge present.
  *
  * `cwd` is the session's working directory; relative paths resolve against it.
+ *
+ * Serving: a successful call is itself the download grant (download-grants.ts),
+ * so any existing file the agent attaches is downloadable, inside the cwd or not.
+ * The remaining refusals are server-wide policy, which `downloadsConfig` exposes
+ * so the tool can FAIL LOUDLY instead of showing a button that can only error:
+ * downloads disabled, or the file over `downloads.maxBytes`.
  */
-export function createAttachFileTool(cwd: string): ToolDefinition {
+export function createAttachFileTool(
+  cwd: string,
+  downloadsConfig: () => DownloadsPolicy | undefined = () => undefined,
+): ToolDefinition {
   return {
     name: 'attach_file',
     label: 'Attach File',
@@ -30,8 +39,8 @@ export function createAttachFileTool(cwd: string): ToolDefinition {
       'phone/browser) can download it with one tap. The user is remote and CANNOT ' +
       'reach the local filesystem, so a file path in your reply is NOT enough: they ' +
       'can only obtain a file if you attach it with this tool. Pass the path to a ' +
-      'real, existing file inside the working directory (or an absolute path the ' +
-      'server is allowed to serve). Use this both right after generating a ' +
+      'real, existing file (relative to the working directory, or absolute; it does ' +
+      'not need to be inside the working directory). Use this both right after generating a ' +
       'deliverable (a PDF, an export, a report) AND whenever the user asks for a ' +
       "file by name or type, including one created earlier in the conversation, " +
       "e.g. 'give me the gpx', 'send me the pdf', 'download the report', 'can I " +
@@ -92,6 +101,22 @@ export function createAttachFileTool(cwd: string): ToolDefinition {
         };
       }
 
+      const refusal = downloadRefusal(downloadsConfig(), size ?? 0, resolved);
+      if (refusal) {
+        return {
+          content: [{ type: 'text' as const, text: refusal }],
+          details: undefined,
+          isError: true,
+        };
+      }
+
+      // Report the REAL path: it is what the download grant names, so the grant
+      // pins the file attached now, not whatever a symlink points at later.
+      try {
+        resolved = fs.realpathSync(resolved);
+      } catch {
+        // Raced away after the stat: keep the lexical path; the download will 404.
+      }
       const filename = path.basename(resolved);
       return {
         content: [
@@ -106,4 +131,40 @@ export function createAttachFileTool(cwd: string): ToolDefinition {
       };
     },
   } as unknown as ToolDefinition;
+}
+
+/** The slice of `WhereverConfig.downloads` the tool needs to predict a refusal. */
+export interface DownloadsPolicy {
+  enabled?: boolean;
+  maxBytes?: number;
+}
+
+/** Default `downloads.maxBytes`, kept in step with GET /session/download. */
+export const DEFAULT_DOWNLOAD_MAX_BYTES = 100 * 1024 * 1024;
+
+/**
+ * Why GET /session/download would refuse this file, as an actionable tool error,
+ * or null when it will be served. Mirrors the endpoint's policy checks so the
+ * agent learns at attach time rather than the user at tap time.
+ */
+export function downloadRefusal(
+  policy: DownloadsPolicy | undefined,
+  size: number,
+  resolved: string,
+): string | null {
+  if (policy?.enabled === false) {
+    return (
+      `attach_file: downloads are disabled on this server (downloads.enabled is false), ` +
+      `so the user cannot download ${resolved}. Tell the user the file path instead.`
+    );
+  }
+  const maxBytes = policy?.maxBytes ?? DEFAULT_DOWNLOAD_MAX_BYTES;
+  if (size > maxBytes) {
+    return (
+      `attach_file: ${resolved} is ${size} bytes, over the server's download limit of ` +
+      `${maxBytes} bytes (downloads.maxBytes). Produce a smaller file (compress, split ` +
+      `or downscale it) and attach that instead.`
+    );
+  }
+  return null;
 }
