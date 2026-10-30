@@ -14,6 +14,8 @@ Let any server-built session's agent manage the assistant's schedule and the use
 - **Timezone line.** Every turn of a session whose cwd is `assistantFolder` or its `jobs/` gets a system-prompt append `User's current timezone: <tz>` at `before_agent_start`, using the conversation-mode inline-extension pattern (ADR 0004): append to the prompt the event carries, never replace it.
 - **Web reports its timezone.** On connect the web client sends `Intl.DateTimeFormat().resolvedOptions().timeZone`; the server updates the user's timezone when it differs (recorded). Every timezone change, whether from the web report or `assistant_set_timezone`, goes through the scheduler's timezone setter, which pushes `assistant_info_changed` to connected CLI bridges (message from `cli-bridge-foundation`). This task also makes `assistant_info` return the current timezone, and adds it to the assistant status shown in the web.
 
+> FORWARD-POINTER (drive conductor, 2026-10-30): (1) when you record non-obvious decisions in a note, ALSO append a `## Decisions` section to the done record (`work/tasks/done/<slug>.md`) that links that note; an unlinked note fails review. (2) Earlier tasks in this chain established conventions to build on: gate assistant behaviour on the `/config` `assistant.active` flag (configured AND lock held), not on `configured`; see the `## Decisions` links in `work/tasks/done/assistant-*.md`.
+
 ## Acceptance criteria
 
 - [ ] With `assistantFolder` unset, server sessions have none of these tools, and the timezone inline extension is NOT added: the system prompt, the extension factory list and `customTools` are byte-identical to today (test).

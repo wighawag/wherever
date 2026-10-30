@@ -14,6 +14,8 @@ Make all five `assistant_*` tools work in a terminal pi session attached to wher
 - **Server ops.** `cli_request` ops `schedule_add`, `schedule_list`, `schedule_remove`, `set_timezone`, `notify`, executed through the same controller / scheduler / notify code as the server tools, with the calling session resolved from the bridge registration.
 - **CLI timezone line.** The extension's `before_agent_start` appends `User's current timezone: <tz>` from the cached `assistant_info` when the session's cwd is `assistantFolder` or its `jobs/`; it never waits on the network.
 
+> FORWARD-POINTER (drive conductor, 2026-10-30): (1) when you record non-obvious decisions in a note, ALSO append a `## Decisions` section to the done record (`work/tasks/done/<slug>.md`) that links that note; an unlinked note fails review. (2) Earlier tasks in this chain established conventions to build on: gate assistant behaviour on the `/config` `assistant.active` flag (configured AND lock held), not on `configured`; see the `## Decisions` links in `work/tasks/done/assistant-*.md`.
+
 ## Acceptance criteria
 
 - [ ] With the assistant not configured, the bridge disabled, or no wherever server reachable, a terminal pi session's active tools and system prompt are identical to today (test).

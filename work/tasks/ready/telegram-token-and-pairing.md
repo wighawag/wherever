@@ -15,6 +15,8 @@ The Telegram channel's secure base: it connects, and only the paired user can re
 - **Pairing.** While unpaired, the server generates a one-time code shown in the web UI; the user sends `/pair <code>` to the bot, and that Telegram user id is stored in the state dir. A user id set in config takes precedence over a stored pairing. Once paired, `/start` and `/pair` are refused; re-pairing is an explicit web action (invalidates the stored pairing and issues a new code). Messages from any other user are ignored (not answered).
 - **Web.** The assistant status gains Telegram state (disabled / unpaired + code / paired user); a settings section shows the code, the paired user, and a re-pair action.
 
+> FORWARD-POINTER (drive conductor, 2026-10-30): (1) when you record non-obvious decisions in a note, ALSO append a `## Decisions` section to the done record (`work/tasks/done/<slug>.md`) that links that note; an unlinked note fails review. (2) Earlier tasks in this chain established conventions to build on: gate assistant behaviour on the `/config` `assistant.active` flag (configured AND lock held), not on `configured`; see the `## Decisions` links in `work/tasks/done/assistant-*.md`.
+
 ## Acceptance criteria
 
 - [ ] Token resolution order holds; the env variables are absent from `process.env` after startup; an unreadable token file disables Telegram, logs loudly, and the server keeps running.

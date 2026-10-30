@@ -13,6 +13,8 @@ Files flow both ways on Telegram.
 - **Inbound.** Photos, albums and documents from the paired user are downloaded into upload staging (the same place web uploads land) and passed to the assistant as file paths in the message text, exactly as web uploads are, with origin `telegram`. A caption becomes the message text.
 - **Outbound.** When the assistant calls `attach_file` during output whose current destination is `telegram`, the file is sent to Telegram with the reply (photo for images, document otherwise), respecting Bot API size limits with a clear note when a file is too large.
 
+> FORWARD-POINTER (drive conductor, 2026-10-30): (1) when you record non-obvious decisions in a note, ALSO append a `## Decisions` section to the done record (`work/tasks/done/<slug>.md`) that links that note; an unlinked note fails review. (2) Earlier tasks in this chain established conventions to build on: gate assistant behaviour on the `/config` `assistant.active` flag (configured AND lock held), not on `configured`; see the `## Decisions` links in `work/tasks/done/assistant-*.md`.
+
 ## Acceptance criteria
 
 - [ ] An image or document sent on Telegram reaches the assistant as a staged path; a caption becomes the text.

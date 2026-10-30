@@ -16,6 +16,8 @@ Extend the `@wherever-dev/pi` extension's existing WebSocket so a CLI-bridge ses
 - **`cli_request {id, op, args}` / `cli_response {id, ok, result | error}`** with correlation ids and a timeout. The server resolves the calling session from the bridge registration (origin stamped server-side). This task implements one op, `assistant_info` (returns `assistantFolder`, or "not configured"; `assistant-schedule-tools-server` adds the user's current timezone to it); an unknown op answers an error. Later tasks add the tool ops.
 - **`assistant_info_changed {assistantFolder, timezone}`** server-to-extension push. The extension fetches `assistant_info` once after register and caches it, negative answers included ("unsupported" on timeout from an old server, "not configured"); the push updates the cache. Expose the cache inside the extension for the tool-twins task.
 
+> FORWARD-POINTER (drive conductor, 2026-10-30): (1) when you record non-obvious decisions in a note, ALSO append a `## Decisions` section to the done record (`work/tasks/done/<slug>.md`) that links that note; an unlinked note fails review. (2) Earlier tasks in this chain established conventions to build on: gate assistant behaviour on the `/config` `assistant.active` flag (configured AND lock held), not on `configured`; see the `## Decisions` links in `work/tasks/done/assistant-*.md`.
+
 ## Acceptance criteria
 
 - [ ] A fresh `pi` in `assistantFolder` moves the pointer; `pi -c` on an existing session and any reconnect do not.

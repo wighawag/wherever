@@ -16,6 +16,8 @@ The channel interface, the one way the assistant reaches the user proactively (`
 - **Status.** The assistant status gains the Web Push state (enabled, VAPID public key available, this device subscribed).
 - **Web.** A settings toggle subscribing / unsubscribing THIS device via `PushManager.subscribe` with the server's public key. DELETE the unused template module `web/src/lib/core/service-worker/push-notifications/` (no importers). Fix the FOREGROUND notification click: it uses SvelteKit `pushState`, which does not fire the `hashchange` the page listens to, so a `/#<sessionId>` target does not open the session today.
 
+> FORWARD-POINTER (drive conductor, 2026-10-30): (1) when you record non-obvious decisions in a note, ALSO append a `## Decisions` section to the done record (`work/tasks/done/<slug>.md`) that links that note; an unlinked note fails review. (2) Earlier tasks in this chain established conventions to build on: gate assistant behaviour on the `/config` `assistant.active` flag (configured AND lock held), not on `configured`; see the `## Decisions` links in `work/tasks/done/assistant-*.md`.
+
 ## Acceptance criteria
 
 - [ ] From any server session, `assistant_notify` produces a push on a subscribed device; tapping it opens the target session per the precedence above, in background and foreground.

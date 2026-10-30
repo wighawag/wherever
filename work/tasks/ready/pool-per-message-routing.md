@@ -17,6 +17,8 @@ The session pool learns WHERE each user message came from and exposes, for any a
 - **Fan-out.** `pool.onEvent` is a single slot; add a fan-out so the assistant controller subscribes beside the WS broadcaster, with the current destination available for each assistant event. `pool.onEvent` stays assignable exactly as today (existing tests assign it directly); the WS broadcaster runs FIRST, with the same frames in the same order, and before the pool's own idle bookkeeping as today; a throwing extra subscriber is caught and never suppresses the broadcaster or the bookkeeping.
 - **Invisible when unused.** Routing state is always-on internal bookkeeping with no observable output; with `assistantFolder` unset (or for any non-assistant session) nothing a user, client or the model sees changes.
 
+> FORWARD-POINTER (drive conductor, 2026-10-30): (1) when you record non-obvious decisions in a note, ALSO append a `## Decisions` section to the done record (`work/tasks/done/<slug>.md`) that links that note; an unlinked note fails review. (2) Earlier tasks in this chain established conventions to build on: gate assistant behaviour on the `/config` `assistant.active` flag (configured AND lock held), not on `configured`; see the `## Decisions` links in `work/tasks/done/assistant-*.md`.
+
 ## Acceptance criteria
 
 - [ ] Two interleaved dummy origins (prompt, steer, followUp) each get their own replies attributed.

@@ -10,6 +10,8 @@ covers: [17]
 
 The pool's send takes text only today, so Telegram photos reach the model as file paths. Add an optional images parameter to the pool send (and the controller's `send`) that passes images to pi as model image inputs, for server sessions and, through `cli_message`, CLI-bridge sessions (the extension passes them to `pi.sendUserMessage` if its API accepts images; if it does not, the CLI path keeps paths only and this is recorded). Telegram inbound photos then go as images plus their staged path. Routing (`pool-per-message-routing`) is unaffected: one send, one origin entry.
 
+> FORWARD-POINTER (drive conductor, 2026-10-30): (1) when you record non-obvious decisions in a note, ALSO append a `## Decisions` section to the done record (`work/tasks/done/<slug>.md`) that links that note; an unlinked note fails review. (2) Earlier tasks in this chain established conventions to build on: gate assistant behaviour on the `/config` `assistant.active` flag (configured AND lock held), not on `configured`; see the `## Decisions` links in `work/tasks/done/assistant-*.md`.
+
 ## Acceptance criteria
 
 - [ ] A Telegram photo reaches a server-built assistant session as an image input (visible to the model), with its path still available.

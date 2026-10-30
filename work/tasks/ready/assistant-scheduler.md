@@ -19,6 +19,8 @@ A scheduler inside the wherever server that fires the assistant's jobs. `docs/ad
 - **Isolated firing.** Starts immediately, in parallel, in a fresh `forceNew` session in `<assistantFolder>/jobs/`, recording the job-to-session mapping (used later by `assistant_notify`).
 - **`!` refusal.** A prompt starting with `!` or `!!` is refused (a failed run), never reaching the shell path. Neither mode notifies on its own. The scheduler runs only while the folder lock is held.
 
+> FORWARD-POINTER (drive conductor, 2026-10-30): (1) when you record non-obvious decisions in a note, ALSO append a `## Decisions` section to the done record (`work/tasks/done/<slug>.md`) that links that note; an unlinked note fails review. (2) Earlier tasks in this chain established conventions to build on: gate assistant behaviour on the `/config` `assistant.active` flag (configured AND lock held), not on `configured`; see the `## Decisions` links in `work/tasks/done/assistant-*.md`.
+
 ## Acceptance criteria
 
 - [ ] Next-run derivation for `cron` and `at` (including `"now"` and offset-less `at`) from the run log, with an injected clock and no real timers.
