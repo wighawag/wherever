@@ -6,6 +6,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { SessionPool, RELOADING_REFUSAL, getWhereverConfig, getWhereverCertsDir, getWhereverStateDir, detectRemoteRepo, normalizePath, invalidateFolderExistence, type WhereverConfig } from './session-pool.js';
 import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.js';
+import { startAssistantFolder } from './assistant-folder.js';
 import { readStarredSet, setSessionStarred, validateStarInput, forgetStar } from './session-stars.js';
 import { piSdkInfo } from './pi-sdk.js';
 import { searchConversations } from './conversation-search.js';
@@ -1066,6 +1067,14 @@ async function main(): Promise<void> {
   const sessionPool = new SessionPool(idleTimeout, { getStarred: readStarredSet });
   await sessionPool.initialize();
 
+  // The assistant folder (opt-in via `assistantFolder`, see assistant-folder.ts):
+  // resolved, created, locked and seeded ONCE here, so a config change takes
+  // effect on restart only. The status is a start-time snapshot served by
+  // /config. The lock is released on shutdown and, as a backstop, on any exit.
+  const assistant = startAssistantFolder(getWhereverConfig());
+  sessionPool.setAssistantFolder(assistant.status.active ? (assistant.status.folder ?? undefined) : undefined);
+  process.on('exit', () => assistant.release());
+
   // Abandoned partial uploads (untouched for 24 h) are collected at startup and
   // then hourly. A no-op when the staging dir was never created. The startup
   // pass is awaited (one readdir) so it is done before the first upload arrives.
@@ -1636,6 +1645,9 @@ async function main(): Promise<void> {
         searchFolder: searchFolder || null,
         searchCreateRemote: !!config.searchCreateRemote,
         searchDefaultModel,
+        // Start-time snapshot (see startAssistantFolder): configured / folder /
+        // active / lock. Later assistant tasks add fields to this object.
+        assistant: assistant.status,
         appearance: {
           label,
           accent,
@@ -2710,6 +2722,7 @@ This encrypts all network traffic securely and enables safe, private remote acce
       c.ws.close();
     }
     await sessionPool.disposeAll();
+    assistant.release();
     server.close();
     process.exit(0);
   };

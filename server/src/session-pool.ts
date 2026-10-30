@@ -229,6 +229,13 @@ export interface WhereverConfig {
   };
   /** Folder used by "search mode" sessions. No default; must be set explicitly. */
   searchFolder?: string;
+  /**
+   * Home and memory of the assistant session (spec assistant-session-and-channels,
+   * see assistant-folder.ts). No default: unset = the whole assistant feature is
+   * off. Seeded once (never overwritten) and locked (`.assistant.lock`) at server
+   * start; a change takes effect on restart only. Tilde (~) is expanded.
+   */
+  assistantFolder?: string;
   /** When true, the on-demand search folder gets a remote, forced to private visibility. Default false. */
   searchCreateRemote?: boolean;
   /** Session listing controls. */
@@ -947,6 +954,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createAttachFileTool } from './attach-file-tool.js';
 import { createSayTool } from './say-tool.js';
+import { maybeSeedAssistantSession } from './assistant-folder.js';
 import { createConversationModeSignal, type ConversationModeSignal } from './conversation-mode-hint.js';
 import { withoutCliBridgeExtension } from './cli-bridge-extension.js';
 import { serverBuiltinExtensions } from './builtin-extensions.js';
@@ -1101,6 +1109,17 @@ export class SessionPool {
   private extensionShutdownTimeoutMs: number;
   /** When a stuck `session_start` gets logged (see extension-lifecycle.ts). */
   private extensionBindWarnAfterMs: number;
+  /**
+   * The assistant folder THIS server holds the lock on (set once at start by
+   * `setAssistantFolder`), or undefined when the assistant is not configured or
+   * was refused. Only gates the `createNewSession` seeding hook for now.
+   */
+  private assistantFolder: string | undefined;
+
+  /** Called once at server start with the ACTIVE assistant folder (see assistant-folder.ts). */
+  setAssistantFolder(folder: string | undefined): void {
+    this.assistantFolder = folder;
+  }
 
   constructor(
     idleTimeoutMs = 300_000,
@@ -1677,6 +1696,9 @@ export class SessionPool {
         // search skill is preloaded). Self-healing:
         // re-created if the folder was deleted. Never clobbers an existing file.
         maybeSeedSearchWorkspace(resolvedCwd);
+        // Same for the assistant folder: re-seeds any missing seed file, only when
+        // this IS the active assistant folder (a no-op with the feature off).
+        maybeSeedAssistantSession(resolvedCwd, this.assistantFolder);
 
         // Git initialization if requested. A folder that was just cloned already
         // has a `.git`, so the existence guard below makes this a no-op there.

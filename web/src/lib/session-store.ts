@@ -463,6 +463,36 @@ export const searchCreateRemoteStore = writable<boolean>(false);
 // resolved server-side against that folder's settings. null when unset.
 export const searchDefaultModelStore = writable<string | null>(null);
 
+/**
+ * The assistant status from `/config` (`assistant`), a start-time snapshot of the
+ * server (see server/src/assistant-folder.ts). `active` = configured AND this
+ * server holds the folder lock. Later assistant tasks add fields.
+ */
+export type AssistantLockState =
+	| {state: 'held'}
+	| {
+			state: 'refused';
+			reason: 'live-lock' | 'foreign-host';
+			holder: {pid: number; host: string};
+			message: string;
+	  }
+	| {state: 'error'; message: string};
+export interface AssistantStatus {
+	configured: boolean;
+	folder: string | null;
+	active: boolean;
+	lock: AssistantLockState | null;
+}
+export const assistantNotConfigured: AssistantStatus = {
+	configured: false,
+	folder: null,
+	active: false,
+	lock: null,
+};
+export const assistantStatusStore = writable<AssistantStatus>(
+	assistantNotConfigured,
+);
+
 /** Visual identity of the connected server instance (label + theme overrides). */
 export const appearanceStore = writable<AppearanceInfo>(defaultAppearance);
 
@@ -594,6 +624,11 @@ export async function fetchConfig(): Promise<void> {
 		searchFolderStore.set(data.searchFolder || null);
 		searchCreateRemoteStore.set(!!data.searchCreateRemote);
 		searchDefaultModelStore.set(data.searchDefaultModel || null);
+		assistantStatusStore.set(
+			data.assistant && typeof data.assistant === 'object'
+				? data.assistant
+				: assistantNotConfigured,
+		);
 		const appearance: AppearanceInfo = {
 			label: data.appearance?.label || '',
 			accent: data.appearance?.accent || null,

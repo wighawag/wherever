@@ -1,0 +1,7 @@
+# readonly-config-deployment TLS tests need `openssl` on PATH; dorfl's gate loses it on NixOS (2026-07)
+
+The 5 TLS-material tests in `server/test/readonly-config-deployment.test.ts` shell out to `openssl` via `execFileSync`, so a gate environment without `openssl` on PATH fails them with `spawnSync openssl ENOENT` (seen on the first two gate runs of `assistant-folder-opt-in-and-lock`).
+
+Root cause (found by the drive conductor, inspecting the live gate's vitest processes): dorfl runs the gate as `bash -c "<verify>"` with node's default piped stdio, which libuv implements as a UNIX socketpair. Bash treats a non-interactive shell whose stdin is a socket as "started by rshd/sshd" and sources the system bashrc; on NixOS `/etc/bashrc` then sources `/etc/profile` (no `__ETC_PROFILE_DONE` in the env), which RESETS PATH to the system/profile dirs. Any tool that the caller had on PATH only via a nix store path (here `openssl`, provided by the wherever unit) disappears inside the gate. The dorfl process itself had openssl on PATH; the `pnpm run -r test` child did not.
+
+Workaround used for the drive: launch `dorfl` with `NOSYSBASHRC=1` (the guard at the top of NixOS `/etc/bashrc`). Durable options: dorfl spawning the gate with `stdio: ['ignore', 'pipe', 'pipe']` (or `bash --norc`-equivalent env), `openssl` in the host's system/user profile, or the tests skipping with a clear message when `openssl` is absent. The flake devshell already lists `pkgs.openssl`, so `nix develop` users are unaffected.
