@@ -4,7 +4,7 @@ slug: assistant-folder-opt-in-and-lock
 spec: assistant-session-and-channels
 blockedBy: []
 covers: [1, 5, 9, 21, 23]
-needsAnswers: true
+needsAnswers: false
 ---
 
 ## What to build
@@ -55,3 +55,7 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions taken while building this task (status shape and the new `active` concept, refused servers write nothing, corrupt-lock takeover, lock release, path resolution, seeding-failure handling, changeset bump) are recorded in [work/notes/observations/assistant-folder-opt-in-decisions.md](../../notes/observations/assistant-folder-opt-in-decisions.md), with JSDoc at each choice site in `server/src/assistant-folder.ts`.

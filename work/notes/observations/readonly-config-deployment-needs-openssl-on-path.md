@@ -1,0 +1,3 @@
+# readonly-config-deployment TLS tests need `openssl` on PATH (2026-07)
+
+The 5 TLS-material tests in `server/test/readonly-config-deployment.test.ts` shell out to `openssl` via `execFileSync`/`spawnSync`, so a gate environment without `openssl` on PATH fails them with `spawnSync openssl ENOENT` (seen on the first gate run of `assistant-folder-opt-in-and-lock`). On the re-run the PATH carried `/nix/store/...-openssl-3.6.3-bin/bin` and the full gate (`pnpm format:check && pnpm build:all && pnpm run -r test`) passed, so the failure is environmental, not a code regression. Worth either declaring `openssl` as a gate/devshell dependency or having those tests skip with a clear message when it is absent.
