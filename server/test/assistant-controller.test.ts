@@ -60,7 +60,7 @@ class FakePool implements AssistantPoolPort {
   sessions = new Map<string, FakeSession>();
   calls: string[] = [];
   pinned = new Set<string>();
-  sent: Array<{ file: string; text: string; streamingBehavior?: string }> = [];
+  sent: Array<{ file: string; text: string; streamingBehavior?: string; origin?: string }> = [];
   onSessionCreated?: (file: string, cwd: string) => void;
   private n = 0;
   constructor(private root: string) {}
@@ -122,10 +122,10 @@ class FakePool implements AssistantPoolPort {
     s.followUp = [];
     return out;
   }
-  async sendUserMessage(file: string, text: string, streamingBehavior?: 'steer' | 'followUp') {
+  async sendUserMessage(file: string, text: string, streamingBehavior?: 'steer' | 'followUp', _conversationMode?: boolean, origin?: string) {
     // Like the real pool: a non-resident session silently drops the send.
     if (!this.sessions.get(file)?.resident) return;
-    this.sent.push({ file, text, streamingBehavior });
+    this.sent.push({ file, text, streamingBehavior, origin });
   }
   pinSession(file: string) {
     this.pinned.add(file);
@@ -322,7 +322,7 @@ describe('AssistantController: restart and idle eviction', () => {
 
     await ctl.send('hello', 'telegram');
     expect(pool.calls).toEqual([`load:${path.basename(cur.sessionFile)}`]);
-    expect(pool.sent).toEqual([{ file: cur.sessionFile, text: 'hello', streamingBehavior: undefined }]);
+    expect(pool.sent).toEqual([{ file: cur.sessionFile, text: 'hello', streamingBehavior: undefined, origin: 'telegram' }]);
   });
 
   it('send into a running turn steers it', async () => {
@@ -331,7 +331,7 @@ describe('AssistantController: restart and idle eviction', () => {
     fs.writeFileSync(cur.sessionFile, '{}\n');
     pool.sessions.get(cur.sessionFile)!.streaming = true;
     await ctl.send('also this', 'telegram');
-    expect(pool.sent.at(-1)).toEqual({ file: cur.sessionFile, text: 'also this', streamingBehavior: 'steer' });
+    expect(pool.sent.at(-1)).toEqual({ file: cur.sessionFile, text: 'also this', streamingBehavior: 'steer', origin: 'telegram' });
   });
 
   it('an evicted pointer whose session was never written gets a fresh session on send', async () => {
@@ -341,6 +341,6 @@ describe('AssistantController: restart and idle eviction', () => {
     await ctl.send('hi', 'schedule:j1');
     const now = ctl.status().currentSessionFile!;
     expect(now).not.toBe(cur.sessionFile);
-    expect(pool.sent).toEqual([{ file: now, text: 'hi', streamingBehavior: undefined }]);
+    expect(pool.sent).toEqual([{ file: now, text: 'hi', streamingBehavior: undefined, origin: 'schedule:j1' }]);
   });
 });

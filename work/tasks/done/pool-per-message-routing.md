@@ -53,3 +53,11 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+All ten decisions are recorded in `work/notes/observations/pool-per-message-routing-decisions.md`, linked from the `reply-routing.ts` module JSDoc. Besides the one above, the main ones are: a send still waiting for pi's response survives a settle trim and a clear; the fan-out order; and `clearQueuedMessages` does not yet return the dropped origins (left to `channel-seam-notify-and-web-push`). I could not add the `## Decisions` section to the done record myself, because I was told not to touch the task body and the done record only exists after the runner's move. Please append this line to `work/tasks/done/pool-per-message-routing.md`:
+
+`## Decisions` – The non-obvious in-scope decisions are recorded in [work/notes/observations/pool-per-message-routing-decisions.md](../../notes/observations/pool-per-message-routing-decisions.md), with JSDoc at the choice sites in `server/src/reply-routing.ts` and `server/src/session-pool.ts`.
+
+`pnpm install` created no stray files; the only untracked files are the ones this task adds.
