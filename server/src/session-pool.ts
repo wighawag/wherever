@@ -1063,6 +1063,10 @@ export interface CliTrackedSession {
   // Latest context-usage snapshot reported by the CLI bridge (the server does
   // not run the agent for CLI sessions, so it cannot compute this itself).
   contextUsage?: ContextUsageInfo | null;
+  // What the bridge extension said it supports on `cli_register` (ADR 0016):
+  // `agent_settled` (it forwards pi's settle event), `cli_request`. Empty for an
+  // older extension that sends none.
+  capabilities: string[];
 }
 
 export type TrackedSession = ServerTrackedSession | CliTrackedSession;
@@ -2911,7 +2915,23 @@ export class SessionPool {
     return teardown;
   }
 
-  async registerCliSession(rawSessionFile: string, cwd: string, modelStr: string, cliWs: WebSocket, isStreaming = false): Promise<{ tracked: TrackedSession; error?: string; interruptedTurn?: boolean; interruptedToolCall?: boolean }> {
+  /**
+   * Register (or re-register) a CLI-bridge session. `opts.isNew` is the
+   * extension's claim that the session had no messages at its session_start
+   * (ADR 0016): it fires `onSessionCreated` once the entry is in the pool, so a
+   * fresh terminal `pi` in `assistantFolder` moves the assistant pointer. Only
+   * when the pool had no entry for the file: a session the pool already tracks
+   * was not just created, whatever the claim. `opts.capabilities` is stored on
+   * the entry (see `getCliCapabilities`).
+   */
+  async registerCliSession(
+    rawSessionFile: string,
+    cwd: string,
+    modelStr: string,
+    cliWs: WebSocket,
+    isStreaming = false,
+    opts: { isNew?: boolean; capabilities?: readonly string[] } = {},
+  ): Promise<{ tracked: TrackedSession; error?: string; interruptedTurn?: boolean; interruptedToolCall?: boolean }> {
     // Canonicalize the CLI-reported path so it keys the same entry the server
     // would compute itself (see normalizeSessionFile). Without this, a CLI on a
     // different pi version can register a second, parallel session for the same
@@ -3000,6 +3020,9 @@ export class SessionPool {
       // joining a mid-tool-call CLI session would see Abort disabled + an enabled
       // composer while the CLI is still working. isStreaming carries that state.
       isStreaming,
+      capabilities: Array.isArray(opts.capabilities)
+        ? opts.capabilities.filter((c): c is string => typeof c === 'string')
+        : [],
     };
     // A session registered mid-turn is not idle; keep it from being idle-reaped.
     if (isStreaming) {
@@ -3009,7 +3032,18 @@ export class SessionPool {
 
     this.sessions.set(sessionFile, tracked);
     await serverTeardown;
+    if (opts.isNew === true && !existing) this.emitSessionCreated(sessionFile, normalizedCwd);
     return { tracked, interruptedTurn, interruptedToolCall };
+  }
+
+  /**
+   * The capabilities a CLI-bridge session's extension reported on register
+   * (`agent_settled`, `cli_request`, ...), or null when the session is not a
+   * resident CLI-bridge session. Empty for an older extension.
+   */
+  getCliCapabilities(sessionFileOrId: string): readonly string[] | null {
+    const tracked = this.getSession(sessionFileOrId);
+    return tracked?.type === 'cli' ? tracked.capabilities : null;
   }
 
   async unregisterCliSession(rawSessionFile: string): Promise<void> {

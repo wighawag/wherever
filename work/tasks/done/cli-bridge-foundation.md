@@ -50,3 +50,19 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions are recorded in [work/notes/observations/cli-bridge-foundation-decisions.md](../../notes/observations/cli-bridge-foundation-decisions.md), with JSDoc at the choice sites in `extension/src/bridge-requests.ts`, `server/src/cli-requests.ts` and `server/src/session-pool.ts`. They cover:
+- the `assistant_info` result shape (null folder means not configured, gated on `assistant.active`);
+- the extension cache's states, and keeping the last server answer across a disconnect;
+- re-asking on every register;
+- the 10 s unref'd timeout;
+- consuming `isNew` only on a register that was actually sent;
+- firing the session-created callback only for a file the pool had no entry for, and the retire that follows;
+- the `registerCliSession` options object and `getCliCapabilities`;
+- refusing unregistered `cli_request`s;
+- `pushAssistantInfoChanged` having no caller yet;
+- the changeset bumps.
+
+Out-of-scope findings are in [work/notes/observations/cli-reconnect-close-race.md](../../notes/observations/cli-reconnect-close-race.md) and [work/notes/observations/assistant-folder-symlink-cwd-mismatch.md](../../notes/observations/assistant-folder-symlink-cwd-mismatch.md).
