@@ -9,6 +9,7 @@ import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.
 import { startAssistantFolder } from './assistant-folder.js';
 import { AssistantController } from './assistant-controller.js';
 import { AssistantScheduler } from './assistant-scheduler.js';
+import { assistantNotActiveError, setTimezone, WEB_TIMEZONE_SOURCE, type AssistantScheduleBackend } from './assistant-tools.js';
 import { DEFAULT_GRACE_MS } from './assistant-schedule.js';
 import { createCliRequestRouter, assistantInfoChangedFrame, type AssistantInfo, type CliRequestRouter } from './cli-requests.js';
 import { readStarredSet, setSessionStarred, validateStarInput, forgetStar } from './session-stars.js';
@@ -1088,6 +1089,28 @@ async function main(): Promise<void> {
   // /config. The lock is released on shutdown and, as a backstop, on any exit.
   const assistant = startAssistantFolder(getWhereverConfig());
   sessionPool.setAssistantFolder(assistant.status.active ? (assistant.status.folder ?? undefined) : undefined);
+  // The assistant tools (assistant-tools.ts) in every server session, and the
+  // timezone line in the assistant folder: registered while `assistantFolder`
+  // is CONFIGURED. The backend is the scheduler, set below once it has started;
+  // until then, and for a server refused by the folder lock, every tool answers
+  // the lock-state error. Unset = no hooks, so sessions are exactly as before.
+  let assistantBackend: AssistantScheduleBackend | null = null;
+  if (assistant.status.configured && assistant.status.folder) {
+    sessionPool.setAssistantSessionHooks({
+      folder: assistant.status.folder,
+      access: () =>
+        assistantBackend
+          ? { ok: true, backend: assistantBackend }
+          : { ok: false, error: assistantNotActiveError(assistant.status.lock) },
+    });
+  }
+  const currentTimezone = (): string | null => {
+    try {
+      return assistantBackend ? assistantBackend.getUserTimezone() : null;
+    } catch {
+      return null;
+    }
+  };
   process.on('exit', () => assistant.release());
 
   // Abandoned partial uploads (untouched for 24 h) are collected at startup and
@@ -1117,7 +1140,7 @@ async function main(): Promise<void> {
         folder: assistant.status.folder,
         stateDir: getWhereverStateDir(),
         onChange: (pointer) => {
-          const update: ServerMessage = { type: 'assistant_status', ...pointer };
+          const update: ServerMessage = { type: 'assistant_status', ...pointer, timezone: currentTimezone() };
           for (const c of clients.values()) {
             if (!c.isCliBridge) sendWS(c.ws, update);
           }
@@ -1140,21 +1163,49 @@ async function main(): Promise<void> {
         pool: sessionPool,
         controller: assistantController,
         graceMs: scheduleGraceMs(getWhereverConfig().assistantScheduleGraceMinutes),
+        // Every change of the user's timezone (the web's report, or
+        // `assistant_set_timezone`) goes through the scheduler's setter, which
+        // calls this: CLI bridges get `assistant_info_changed`, dashboards an
+        // `assistant_status` carrying the new zone.
+        onTimezoneChange: () => {
+          pushAssistantInfoChanged();
+          broadcastAssistantStatus();
+        },
       })
     : null;
   await assistantScheduler?.start();
+  assistantBackend = assistantScheduler;
+  /** Re-send the live assistant status (pointer + timezone) to every dashboard. */
+  const broadcastAssistantStatus = (): void => {
+    if (!assistantController) return;
+    const update: ServerMessage = { type: 'assistant_status', ...assistantController.status(), timezone: currentTimezone() };
+    for (const c of clients.values()) {
+      if (!c.isCliBridge) sendWS(c.ws, update);
+    }
+  };
+  /**
+   * A web client's timezone report (`client_timezone`, sent on connect): made the
+   * user's current timezone when it differs, only while the assistant is active.
+   * Otherwise ignored, so nothing is written. An unknown zone is logged and ignored.
+   */
+  const onClientTimezone = (timezone: unknown): void => {
+    if (!assistantBackend || typeof timezone !== 'string' || !timezone.trim()) return;
+    const r = setTimezone(assistantBackend, { timezone }, WEB_TIMEZONE_SOURCE);
+    if (!r.ok) console.warn(`[wherever] assistant: ignoring the web's timezone report: ${r.error}`);
+  };
 
   // The CLI bridge's request/response path (ADR 0016, cli-requests.ts). Built
   // whether or not the assistant is active: `assistant_info` is how a terminal pi
   // learns it is NOT, and that answer is what keeps its tool twins inactive.
   const currentAssistantInfo = (): AssistantInfo => ({
     assistantFolder: assistantController ? assistant.status.folder : null,
+    timezone: assistantController ? currentTimezone() : null,
   });
   const cliRequests = createCliRequestRouter({ assistantInfo: currentAssistantInfo });
   // Push the current assistant info to every connected CLI bridge, which updates
-  // its cached `assistant_info`. Nothing changes it at runtime yet (the folder
-  // takes effect on restart, and a bridge re-asks on every register); the
-  // timezone setter of `assistant-schedule-tools-server` calls this.
+  // its cached `assistant_info`. The folder takes effect on restart only, so the
+  // one runtime change is the user's timezone: the scheduler's
+  // `onTimezoneChange` calls this.
   const pushAssistantInfoChanged = (): void => {
     const frame = assistantInfoChangedFrame(currentAssistantInfo());
     for (const c of clients.values()) {
@@ -1720,7 +1771,10 @@ async function main(): Promise<void> {
         // active / lock. Later assistant tasks add fields to this object.
         // Plus, while active, the controller's pointer (currentSessionId /
         // currentSessionFile), which is live, not a start-time snapshot.
-        assistant: assistantController ? { ...assistant.status, ...assistantController.status() } : assistant.status,
+        // While active, also the user's current timezone (live).
+        assistant: assistantController
+          ? { ...assistant.status, ...assistantController.status(), timezone: currentTimezone() }
+          : assistant.status,
         appearance: {
           label,
           accent,
@@ -2626,7 +2680,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated, assistantController, cliRequests);
+        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated, assistantController, cliRequests, onClientTimezone);
       } catch (err) {
         console.error('WS message processing error:', err);
         const errorText = (err as Error).message || 'An error occurred';
@@ -3182,8 +3236,13 @@ async function handleWSMessage(
   onSessionsUpdated: () => void,
   assistantController: AssistantController | null = null,
   cliRequests: CliRequestRouter | null = null,
+  onClientTimezone: (timezone: unknown) => void = () => {},
 ): Promise<void> {
   switch (msg.type) {
+    case 'client_timezone':
+      // The web's timezone report on connect (see onClientTimezone in main).
+      onClientTimezone(msg.timezone);
+      break;
     case 'assistant_open':
     case 'assistant_reset': {
       // The Assistant entry point and its Reset action. The asker gets the

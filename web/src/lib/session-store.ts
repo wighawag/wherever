@@ -489,6 +489,13 @@ export interface AssistantStatus {
 	 */
 	currentSessionId?: string | null;
 	currentSessionFile?: string | null;
+	/**
+	 * The user's CURRENT timezone (what a scheduled job without its own `tz`
+	 * follows), only while `active`. Live: an `assistant_status` frame carrying
+	 * `timezone` moves it (the web's own report on connect, or the assistant's
+	 * `assistant_set_timezone`).
+	 */
+	timezone?: string | null;
 }
 export const assistantNotConfigured: AssistantStatus = {
 	configured: false,
@@ -500,10 +507,15 @@ export const assistantStatusStore = writable<AssistantStatus>(
 	assistantNotConfigured,
 );
 
-/** Apply a live `assistant_status` frame (the pointer moved). Ignored while not active. */
+/**
+ * Apply a live `assistant_status` frame (the pointer moved, or the user's
+ * timezone changed). Ignored while not active. A frame without `timezone` (an
+ * older server) keeps the known one.
+ */
 export function applyAssistantPointer(pointer: {
 	currentSessionId: string | null;
 	currentSessionFile: string | null;
+	timezone?: string | null;
 }): void {
 	assistantStatusStore.update((s) =>
 		s.active
@@ -511,6 +523,9 @@ export function applyAssistantPointer(pointer: {
 					...s,
 					currentSessionId: pointer.currentSessionId,
 					currentSessionFile: pointer.currentSessionFile,
+					...(pointer.timezone !== undefined
+						? {timezone: pointer.timezone}
+						: {}),
 				}
 			: s,
 	);

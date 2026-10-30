@@ -16,6 +16,7 @@ import {
 import {buildAttachmentMessage} from './core/attachments';
 import {fileStillReadable, postUpload} from './core/post-upload';
 import {adoptTokenFromUrlOnce} from './core/token-adoption';
+import {timezoneReportFrame} from './core/timezone-report';
 import {normalizeDrafts, type Draft} from './core/drafts';
 import {
 	createConversationCache,
@@ -761,8 +762,18 @@ client.onMessage((msg) => {
 			applyAssistantPointer({
 				currentSessionId: msg.currentSessionId ?? null,
 				currentSessionFile: msg.currentSessionFile ?? null,
+				...(msg.timezone !== undefined ? {timezone: msg.timezone} : {}),
 			});
 			break;
+
+		case 'connected': {
+			// Every new socket reports this browser's timezone: while the assistant
+			// is active the server makes it the user's current one when it differs
+			// (core/timezone-report.ts); otherwise the server ignores it.
+			const report = timezoneReportFrame();
+			if (report) client.send(report);
+			break;
+		}
 
 		case 'session_created':
 			setCurrentSession(msg.sessionFile);

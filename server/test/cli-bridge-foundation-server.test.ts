@@ -159,7 +159,7 @@ describe('CLI bridge foundation (real server)', () => {
     fs.mkdirSync(cwd, { recursive: true });
     const cli = await register(h, path.join(root, 'fresh.jsonl'), cwd, { isNew: true, capabilities: ['cli_request'] });
     const res = await request(cli, 'assistant_info');
-    expect(res).toEqual({ type: 'cli_response', id: res.id, ok: true, result: { assistantFolder: null } });
+    expect(res).toEqual({ type: 'cli_response', id: res.id, ok: true, result: { assistantFolder: null, timezone: null } });
     await new Promise((r) => setTimeout(r, 300));
     expect(fs.existsSync(pointerFile(root))).toBe(false);
     expect(fs.readdirSync(path.join(root, 'state'))).toEqual([]);
