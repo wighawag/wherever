@@ -61,3 +61,13 @@
 <!-- q2 fields: id=q2 kind=stuck -->
 
 **Your answer** (write below this line):
+
+## Q3
+
+**'task:assistant-folder-opt-in-and-lock' was bounced — how should we proceed?**
+
+> continuing the kept work/task-assistant-folder-opt-in-and-lock: rebasing `work/task-assistant-folder-opt-in-and-lock` onto current main (16df0565942a07fcdb98a4a27b7c2a603e9cf8fb) conflicted on work/questions/task-assistant-folder-opt-in-and-lock.md (aborted, never auto-resolved) — run `requeue --reconcile` to non-destructively re-sync the mirror and retry the rebase (keeps the work). Last resort: `requeue --reset` DESTRUCTIVELY discards the branch and starts fresh.
+
+<!-- q3 fields: id=q3 kind=stuck -->
+
+**Your answer** (write below this line):
