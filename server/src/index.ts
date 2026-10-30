@@ -7,6 +7,7 @@ import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { SessionPool, RELOADING_REFUSAL, getWhereverConfig, getWhereverCertsDir, getWhereverStateDir, detectRemoteRepo, normalizePath, invalidateFolderExistence, type WhereverConfig } from './session-pool.js';
 import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.js';
 import { startAssistantFolder } from './assistant-folder.js';
+import { AssistantController } from './assistant-controller.js';
 import { readStarredSet, setSessionStarred, validateStarInput, forgetStar } from './session-stars.js';
 import { piSdkInfo } from './pi-sdk.js';
 import { searchConversations } from './conversation-search.js';
@@ -1091,6 +1092,28 @@ async function main(): Promise<void> {
 
   const clients = new Map<string, WSClient>();
 
+  // The assistant controller (assistant-controller.ts): which session is the
+  // current assistant session, and its reset. Built, and the pool's
+  // session-created callback registered, ONLY while the assistant is active, so
+  // with `assistantFolder` unset (or refused) session creation, `session_new`
+  // and idle teardown are exactly as before.
+  const assistantController = assistant.status.active && assistant.status.folder
+    ? new AssistantController({
+        pool: sessionPool,
+        folder: assistant.status.folder,
+        stateDir: getWhereverStateDir(),
+        onChange: (pointer) => {
+          const update: ServerMessage = { type: 'assistant_status', ...pointer };
+          for (const c of clients.values()) {
+            if (!c.isCliBridge) sendWS(c.ws, update);
+          }
+        },
+      })
+    : null;
+  if (assistantController) {
+    sessionPool.onSessionCreated = (sessionFile, cwd) => assistantController.handleSessionCreated(sessionFile, cwd);
+  }
+
   // expandTilde so `~/certs/...` works from a systemd `Environment=` line or an
   // EnvironmentFile, neither of which is shell-expanded. Without it the read
   // below fails and (before the explicit-TLS check further down) the server
@@ -1647,7 +1670,9 @@ async function main(): Promise<void> {
         searchDefaultModel,
         // Start-time snapshot (see startAssistantFolder): configured / folder /
         // active / lock. Later assistant tasks add fields to this object.
-        assistant: assistant.status,
+        // Plus, while active, the controller's pointer (currentSessionId /
+        // currentSessionFile), which is live, not a start-time snapshot.
+        assistant: assistantController ? { ...assistant.status, ...assistantController.status() } : assistant.status,
         appearance: {
           label,
           accent,
@@ -2553,7 +2578,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated);
+        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated, assistantController);
       } catch (err) {
         console.error('WS message processing error:', err);
         const errorText = (err as Error).message || 'An error occurred';
@@ -3106,8 +3131,28 @@ async function handleWSMessage(
   clients: Map<string, WSClient>,
   broadcast: (sessionFile: string, message: ServerMessage, excludeId?: string) => void,
   onSessionsUpdated: () => void,
+  assistantController: AssistantController | null = null,
 ): Promise<void> {
   switch (msg.type) {
+    case 'assistant_open':
+    case 'assistant_reset': {
+      // The Assistant entry point and its Reset action. The asker gets the
+      // session to open and loads it through the normal session_load, so every
+      // load-time decision (read-only, folder conflict, cold build) applies.
+      if (!assistantController) {
+        sendWS(client.ws, { type: 'session_error', error: 'The assistant is not active on this server (set assistantFolder in the config).' });
+        return;
+      }
+      try {
+        const cur = msg.type === 'assistant_reset' ? await assistantController.reset() : await assistantController.ensureCurrent();
+        sendWS(client.ws, { type: 'assistant_current', sessionFile: cur.sessionFile, sessionId: cur.sessionId, cwd: cur.cwd });
+        onSessionsUpdated();
+      } catch (err) {
+        sendWS(client.ws, { type: 'session_error', error: `Assistant: ${(err as Error).message}` });
+      }
+      return;
+    }
+
     case 'cli_register': {
       client.isCliBridge = true;
       client.sessionId = msg.sessionFile;

@@ -45,6 +45,8 @@
 		hydrateFromCache,
 		flushConversationCache,
 		clearConversationCache,
+		openAssistant,
+		resetAssistant,
 	} from '$lib/wherever';
 	import {
 		fetchSessions,
@@ -56,6 +58,8 @@
 		sessionFolders,
 		readOnlySessionFolders,
 		setSessionStarred,
+		assistantStatusStore,
+		isAssistantSession,
 	} from '$lib/session-store';
 	import {onMount} from 'svelte';
 	import {version} from '$app/environment';
@@ -418,6 +422,13 @@
 		$restoreState?.forSessionCreate ? $restoreState : null,
 	);
 	let searchFolder = $derived($searchFolderStore);
+	// The Assistant entry point shows only while the assistant is ACTIVE on this
+	// server (configured and holding its folder lock); Reset only on the current
+	// assistant session itself.
+	let assistantActive = $derived($assistantStatusStore.active);
+	let viewingAssistant = $derived(
+		isAssistantSession($assistantStatusStore, sessionInfo.sessionFile),
+	);
 
 	// The bottom composer is always mounted but mode-switched: it acts as the
 	// search composer when connected, a search folder is configured, and no
@@ -708,6 +719,23 @@
 			<!-- Sidebar navigation: switch between the main list and the read-only page -->
 			<div class="border-b border-brand-border/50 px-2 py-1.5">
 				{#if sessionView === 'main'}
+					{#if assistantActive}
+						<button
+							onclick={() => {
+								openAssistant();
+								sidebarOpen = false;
+							}}
+							disabled={!connected}
+							class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-brand-surface-3/50 hover:text-brand-text disabled:opacity-50 {viewingAssistant
+								? 'font-semibold text-brand-blue'
+								: 'text-brand-text-muted'}"
+							title="Open the current assistant session"
+						>
+							<span>🧭</span>
+							<span>Assistant</span>
+							<span class="ml-auto">→</span>
+						</button>
+					{/if}
 					<button
 						onclick={() => openSearch(false)}
 						class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-brand-text-muted transition-colors hover:bg-brand-surface-3/50 hover:text-brand-text"
@@ -878,6 +906,21 @@
 						</div>
 					{/if}
 				</div>
+			{/if}
+
+			<!-- Reset the assistant: a fresh session in its folder becomes current
+			     (the old turn is aborted, its queue cleared). The folder is the
+			     memory, so this is cheap. Same effect as /new or /reset here. -->
+			{#if connected && viewingAssistant}
+				<button
+					type="button"
+					onclick={resetAssistant}
+					class="flex flex-shrink-0 items-center justify-center rounded border border-brand-border bg-brand-surface-2 px-2 py-1 text-xs text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
+					title="Reset the assistant: start a fresh session (its memory lives in its folder)"
+					aria-label="Reset the assistant"
+				>
+					↺ Reset
+				</button>
 			{/if}
 
 			<!-- Star the open session: "come back to this". The natural moment is

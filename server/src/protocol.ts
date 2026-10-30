@@ -65,6 +65,14 @@ export type ClientMessage =
   // the new file path + the chosen message's text to pre-fill the composer.
   // The client then loads the new session via the normal `session_load` flow.
   | { type: 'session_fork'; sessionId: string; entryId: string }
+  // Client -> server: the Assistant entry point (spec assistant-session-and-
+  // channels). `assistant_open` asks for the CURRENT assistant session (creating
+  // one, and pointing at it, when there is none); `assistant_reset` retires it
+  // and makes a fresh one current. Both answer `assistant_current` (the client
+  // then opens it through the normal `session_load`), or `session_error` when
+  // the assistant is not active on this server.
+  | { type: 'assistant_open' }
+  | { type: 'assistant_reset' }
   | { type: 'session_leave'; sessionId: string }
   // Client -> server: ask for the skill commands available in this session so
   // the composer can offer `/skill:<name>` autocomplete. The server replies with
@@ -285,6 +293,13 @@ export type ServerMessage =
   // the TRUE offset). `done` + `savedPath` when the upload already finished.
   | { type: 'upload_offset'; uploadId: string; offset: number; done?: boolean; savedPath?: string }
   | { type: 'sessions_updated' }
+  // Server -> client: the assistant session to open, answering
+  // `assistant_open` / `assistant_reset` (to the asker only).
+  | { type: 'assistant_current'; sessionFile: string; sessionId: string; cwd: string }
+  // Broadcast to every dashboard whenever the current assistant session changes
+  // (a reset, a `/new` in the assistant folder), so the Assistant entry point and
+  // the Reset action track it without refetching `/config`.
+  | { type: 'assistant_status'; currentSessionId: string | null; currentSessionFile: string | null }
   // Broadcast to every dashboard (not CLI bridges) when a session's agent starts
   // or ends a turn, so the sidebar can show which sessions are working without
   // refetching /sessions. `sessionFile` matches the listing's session `path`.

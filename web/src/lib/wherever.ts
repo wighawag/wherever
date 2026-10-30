@@ -39,6 +39,7 @@ import {
 	setSessionWorking,
 	searchFolderStore,
 	searchCreateRemoteStore,
+	applyAssistantPointer,
 } from './session-store';
 
 export type {ChatMessage, WhereverState};
@@ -750,6 +751,19 @@ client.onMessage((msg) => {
 			break;
 		}
 
+		case 'assistant_current':
+			// The answer to openAssistant()/resetAssistant(): open that session
+			// through the normal load, like any session picked from the sidebar.
+			switchSession(msg.sessionFile, msg.cwd);
+			break;
+
+		case 'assistant_status':
+			applyAssistantPointer({
+				currentSessionId: msg.currentSessionId ?? null,
+				currentSessionFile: msg.currentSessionFile ?? null,
+			});
+			break;
+
 		case 'session_created':
 			setCurrentSession(msg.sessionFile);
 			if (pendingForkPrefill !== null) {
@@ -1032,6 +1046,26 @@ export function runSearch(
 		createRemote ? 'private' : undefined,
 	);
 	return true;
+}
+
+/**
+ * The Assistant entry point: open the CURRENT assistant session (the server
+ * creates one when there is none). The server answers `assistant_current`, which
+ * the onMessage handler above turns into a normal session switch.
+ */
+export function openAssistant() {
+	client.send({type: 'assistant_open'});
+}
+
+/**
+ * Reset the assistant: the server retires the current session (aborting a
+ * running turn, clearing its queue) and makes a fresh one current, then answers
+ * `assistant_current` like openAssistant. The folder is the memory, so this is
+ * cheap. A composer `/new` or `/reset` inside the assistant session does the same
+ * through the ordinary `session_new`.
+ */
+export function resetAssistant() {
+	client.send({type: 'assistant_reset'});
 }
 
 export function leaveSession() {
