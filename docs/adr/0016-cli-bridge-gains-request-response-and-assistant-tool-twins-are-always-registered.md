@@ -1,0 +1,9 @@
+# The CLI bridge gains a request/response path, and the `assistant_*` tool twins are always registered in CLI sessions
+
+**Status:** accepted
+
+Until now the CLI-bridge connection (the `@wherever-dev/pi` extension's WebSocket to the server) only carried fire-and-forget events up (`cli_register`, `cli_event`) and commands down, and every dual-registered tool (`attach_file`, `say`) was deliberately self-contained. The `assistant_*` tools (spec `assistant-session-and-channels`) act on server state (the schedule, the channels), so in a terminal pi session they must CALL the server and wait. We add `cli_request {id, op, args}` / `cli_response {id, ok, result | error}` with correlation ids and a timeout, plus a server push `assistant_info_changed`, and the server resolves the calling session from the bridge registration so origin is stamped server-side, never trusted from the extension.
+
+The CLI twins are ALWAYS registered, even when the assistant is not configured or the server is too old, and fail at call time with a clear error. Registering them only after asking the server would make that error unreachable (an absent tool cannot explain itself), and a stable tool set keeps the prompt cache warm. An old server is detected by TIMEOUT, because the server's WS handler has no default case and `cli_register` has no ack, so an unknown `cli_request` is silently dropped. Server-built sessions, by contrast, register the tools only when `assistantFolder` is configured, since the server knows the answer at build time.
+
+`cli_register` also gains `isNew` (the session context had no messages at `session_start`, sent true only on the first register after it; an entry count is wrong because pi writes model/thinking entries into every new session) and `capabilities`, and the extension forwards `agent_settled`. Older extensions without these degrade explicitly (no pointer move for CLI-created sessions; `agent_end` fallback for settle).
