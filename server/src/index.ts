@@ -8,6 +8,7 @@ import { SessionPool, RELOADING_REFUSAL, getWhereverConfig, getWhereverCertsDir,
 import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.js';
 import { startAssistantFolder } from './assistant-folder.js';
 import { AssistantController } from './assistant-controller.js';
+import { createCliRequestRouter, assistantInfoChangedFrame, type AssistantInfo, type CliRequestRouter } from './cli-requests.js';
 import { readStarredSet, setSessionStarred, validateStarInput, forgetStar } from './session-stars.js';
 import { piSdkInfo } from './pi-sdk.js';
 import { searchConversations } from './conversation-search.js';
@@ -1113,6 +1114,24 @@ async function main(): Promise<void> {
   if (assistantController) {
     sessionPool.onSessionCreated = (sessionFile, cwd) => assistantController.handleSessionCreated(sessionFile, cwd);
   }
+
+  // The CLI bridge's request/response path (ADR 0016, cli-requests.ts). Built
+  // whether or not the assistant is active: `assistant_info` is how a terminal pi
+  // learns it is NOT, and that answer is what keeps its tool twins inactive.
+  const currentAssistantInfo = (): AssistantInfo => ({
+    assistantFolder: assistantController ? assistant.status.folder : null,
+  });
+  const cliRequests = createCliRequestRouter({ assistantInfo: currentAssistantInfo });
+  // Push the current assistant info to every connected CLI bridge, which updates
+  // its cached `assistant_info`. Nothing changes it at runtime yet (the folder
+  // takes effect on restart, and a bridge re-asks on every register); the
+  // timezone setter of `assistant-schedule-tools-server` calls this.
+  const pushAssistantInfoChanged = (): void => {
+    const frame = assistantInfoChangedFrame(currentAssistantInfo());
+    for (const c of clients.values()) {
+      if (c.isCliBridge) sendWS(c.ws, frame);
+    }
+  };
 
   // expandTilde so `~/certs/...` works from a systemd `Environment=` line or an
   // EnvironmentFile, neither of which is shell-expanded. Without it the read
@@ -2578,7 +2597,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated, assistantController);
+        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated, assistantController, cliRequests);
       } catch (err) {
         console.error('WS message processing error:', err);
         const errorText = (err as Error).message || 'An error occurred';
@@ -3132,6 +3151,7 @@ async function handleWSMessage(
   broadcast: (sessionFile: string, message: ServerMessage, excludeId?: string) => void,
   onSessionsUpdated: () => void,
   assistantController: AssistantController | null = null,
+  cliRequests: CliRequestRouter | null = null,
 ): Promise<void> {
   switch (msg.type) {
     case 'assistant_open':
@@ -3156,7 +3176,13 @@ async function handleWSMessage(
     case 'cli_register': {
       client.isCliBridge = true;
       client.sessionId = msg.sessionFile;
-      const result = await pool.registerCliSession(msg.sessionFile, msg.cwd, msg.model || '', client.ws, msg.isStreaming === true);
+      // `isNew` fires the pool's session-created callback (a fresh terminal pi in
+      // assistantFolder moves the assistant pointer); `capabilities` is stored on
+      // the entry. Older extensions send neither (ADR 0016).
+      const result = await pool.registerCliSession(msg.sessionFile, msg.cwd, msg.model || '', client.ws, msg.isStreaming === true, {
+        isNew: msg.isNew === true,
+        capabilities: Array.isArray(msg.capabilities) ? msg.capabilities : [],
+      });
       if (result.error) {
         sendWS(client.ws, { type: 'session_error', error: result.error });
       } else {
@@ -3232,6 +3258,20 @@ async function handleWSMessage(
     case 'cli_event': {
       if (!client.isCliBridge || !client.sessionId) return;
       pool.handleCliEvent(client.sessionId, msg.event);
+      break;
+    }
+
+    case 'cli_request': {
+      // ADR 0016. The caller is the session THIS connection registered, never a
+      // field of the request, so whatever an op stamps as origin is server-side.
+      // Answered to the asker only. A request with no id cannot be answered.
+      if (!cliRequests) return;
+      const caller =
+        client.isCliBridge && client.sessionId
+          ? { sessionFile: pool.getSession(client.sessionId)?.sessionFile ?? client.sessionId }
+          : null;
+      const response = await cliRequests.handle(msg, caller);
+      if (response) sendWS(client.ws, response);
       break;
     }
 

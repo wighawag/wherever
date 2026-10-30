@@ -21,6 +21,12 @@ import { Type } from "typebox";
 import { WhereverClient } from "@wherever-dev/client";
 import { createConversationModeSignal } from "./conversation-mode-hint.js";
 import { isInsideWhereverServer } from "./server-process-marker.js";
+import {
+  AssistantInfoCache,
+  BRIDGE_CAPABILITIES,
+  BridgeRequestClient,
+  sessionHasNoMessages,
+} from "./bridge-requests.js";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -443,6 +449,31 @@ export default async function (pi: ExtensionAPI) {
   // heuristic already covers, with tool names); the server notice is still the
   // ONLY signal for the streaming-text case.
   let resumeDanglingShown = false;
+  // `isNew` for the NEXT cli_register (ADR 0016): true when this session's
+  // context had no messages at session_start, consumed by the first register
+  // that reaches the server, so a reconnect (even of a still-empty session)
+  // never repeats it. The server fires its session-created callback for it,
+  // which moves the assistant pointer for a fresh `pi` in `assistantFolder`.
+  let pendingIsNew = false;
+  // Whether this session's bridge is enabled (`remote.bridge`), set at session_start.
+  let bridgeEnabled = true;
+
+  // The request/response path to the server (./bridge-requests.ts, ADR 0016).
+  // It reads the CURRENT client on every request, so it survives reconnects and
+  // session switches; a disabled or disconnected bridge answers at once.
+  const requests = new BridgeRequestClient({
+    transport: () => {
+      const c = client;
+      if (!c) return null;
+      return { isConnected: () => c.getIsConnected(), send: (frame: object) => c.send(frame) };
+    },
+    enabled: () => bridgeEnabled,
+  });
+  // The cached `assistant_info` (fetched once after every register, updated by
+  // `assistant_info_changed` pushes). Read-only for everything else in this
+  // extension: the `assistant_*` tool twins activate on it and the CLI timezone
+  // line reads it, neither ever waiting on the network.
+  const assistantInfo = new AssistantInfoCache();
 
   function updateCliWidget(status: 'disconnected' | 'connecting' | 'connected') {
     if (!ctxVal) return;
@@ -738,6 +769,8 @@ export default async function (pi: ExtensionAPI) {
       } catch (err) {}
       client = null;
     }
+    // Whatever was pending on the old socket can never be answered.
+    requests.failAll();
 
     if (!ctxVal || !sessionFile) return;
 
@@ -783,6 +816,14 @@ export default async function (pi: ExtensionAPI) {
     client.onMessage((msg) => {
       try {
         switch (msg.type) {
+          case "cli_response": {
+            requests.handleResponse(msg);
+            break;
+          }
+          case "assistant_info_changed": {
+            assistantInfo.applyPush(msg);
+            break;
+          }
           case "cli_message": {
             ctxVal?.ui.notify(`[Wherever] Received remote command: ${msg.message.slice(0, 40)}...`, "info");
             // Arm/disarm the conversation-mode hint for the turn this message
@@ -1033,13 +1074,22 @@ export default async function (pi: ExtensionAPI) {
         } catch (err) {
           // Best-effort; a stale context just reports not-streaming.
         }
-        client?.send({
+        const registered = client?.send({
           type: "cli_register",
           sessionFile,
           cwd: ctxVal?.cwd,
           model: ctxVal?.model ? `${ctxVal.model.provider}:${ctxVal.model.id}` : "",
           isStreaming: streaming,
+          // Older servers ignore both fields (ADR 0016).
+          isNew: pendingIsNew,
+          capabilities: [...BRIDGE_CAPABILITIES],
         });
+        // isNew is true only on the FIRST register that reached the server.
+        if (registered) pendingIsNew = false;
+        // Fetch assistant_info once per register (the server may have restarted
+        // with another config). Fire-and-forget: nothing waits on it, and an old
+        // server is cached as "unsupported" after the (unref'd) timeout.
+        void assistantInfo.refresh(requests);
         // Push the current context-window usage right after registering. Usage
         // is otherwise only forwarded on agent_end / model_select, so an idle
         // CLI session (no new turn since the bridge connected) would leave the
@@ -1049,6 +1099,7 @@ export default async function (pi: ExtensionAPI) {
         // still sent as null, which is a no-op for the indicator.
         sendContextUsage();
       } else if (!s.connected) {
+        if (wasConnected) requests.failAll();
         wasConnected = false;
       }
     });
@@ -1080,11 +1131,19 @@ export default async function (pi: ExtensionAPI) {
     // cannot be passed as false, so --remote-bridge could never disable it.
     const isBridgeEnabled =
       pi.getFlag("remote-bridge") !== false && readRemoteConfig()?.bridge !== false;
-    if (!isBridgeEnabled) return;
+    bridgeEnabled = isBridgeEnabled;
+    if (!isBridgeEnabled) {
+      assistantInfo.setDisabled();
+      return;
+    }
 
     ctxVal = ctx;
     sessionFile = ctx.sessionManager.getSessionFile() || "";
     if (!sessionFile) return;
+
+    // Decided HERE, before anything of this run is in the context, and sent on
+    // the first register only (see pendingIsNew).
+    pendingIsNew = sessionHasNoMessages(ctx.sessionManager);
 
     // Each new/resumed session starts from the configured default beep behaviour;
     // any prior per-session /remote-beep override does not carry over.
@@ -1148,6 +1207,7 @@ export default async function (pi: ExtensionAPI) {
       } catch (err) {}
       client = null;
     }
+    requests.failAll();
 
     if (oldCtx) {
       try {
@@ -1222,8 +1282,15 @@ export default async function (pi: ExtensionAPI) {
   // compaction, or queued continuation is pending, so the agent is genuinely
   // waiting for a human message. This is the right (single) moment to beep,
   // rather than agent_end which can fire between chained internal turns.
-  pi.on("agent_settled", async () => {
+  //
+  // Also FORWARDED to the server (ADR 0016), where it reaches the pool's event
+  // fan-out: the per-message reply routing empties a CLI session's queues on it,
+  // and the assistant uses it as the settle signal. It produces no WS frame to
+  // viewers. Older extensions do not forward it (the server falls back to
+  // agent_end for those, keyed on `capabilities`).
+  pi.on("agent_settled", async (event: any) => {
     if (beepEnabled()) playBeep();
+    sendCliEvent({ type: "agent_settled", aborted: event?.aborted === true });
   });
 
   pi.on("tool_execution_start", async (event: any) => {

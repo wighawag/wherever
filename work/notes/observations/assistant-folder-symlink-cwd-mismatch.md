@@ -1,0 +1,3 @@
+# Assistant folder vs a symlinked cwd (2026-10-30)
+
+Noticed while building `cli-bridge-foundation`: `AssistantController.handleSessionCreated` compares `path.resolve(cwd)` with `path.resolve(assistantFolder)` (`server/src/assistant-controller.ts`, folder from `resolveAssistantFolder` in `server/src/assistant-folder.ts`, never realpath'd). A terminal pi reports `process.cwd()`, which is the REAL path, so when `assistantFolder` is configured through a symlink (e.g. `~/assistant -> /data/assistant`) a fresh `pi` started there would not move the pointer. Not changed here; whether to realpath the configured folder (and the cwd) is a separate decision.

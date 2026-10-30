@@ -110,8 +110,18 @@ export type ClientMessage =
   | { type: 'upload_begin'; uploadId: string; sessionId: string; filename: string; size: number; mime?: string }
   | { type: 'upload_finish'; uploadId: string; sessionId: string }
   | { type: 'upload_abort'; uploadId: string; sessionId: string }
-  | { type: 'cli_register'; sessionFile: string; cwd: string; model?: string; isStreaming?: boolean }
+  // `isNew` (ADR 0016): the session context had no messages at the extension's
+  // session_start, sent true only on the FIRST register after it (a reconnect
+  // never repeats it). It fires the pool's session-created callback, so a fresh
+  // terminal `pi` in `assistantFolder` moves the assistant pointer. `capabilities`
+  // lists what the extension supports (`agent_settled`, `cli_request`). Older
+  // extensions send neither: no pointer move, and no forwarded `agent_settled`.
+  | { type: 'cli_register'; sessionFile: string; cwd: string; model?: string; isStreaming?: boolean; isNew?: boolean; capabilities?: string[] }
   | { type: 'cli_event'; sessionFile: string; event: any }
+  // CLI bridge -> server request (ADR 0016), answered by `cli_response` with the
+  // same id. The caller is the session this connection registered, never a
+  // field of the request. See server/src/cli-requests.ts.
+  | { type: 'cli_request'; id: string; op: string; args?: unknown }
   // Server -> CLI bridge relay of a web user message. `conversationMode` carries
   // the same per-turn signal as the `message` payload above, so a bridged terminal
   // session driven from the web gets the same injection (the extension's own
@@ -300,6 +310,12 @@ export type ServerMessage =
   // (a reset, a `/new` in the assistant folder), so the Assistant entry point and
   // the Reset action track it without refetching `/config`.
   | { type: 'assistant_status'; currentSessionId: string | null; currentSessionFile: string | null }
+  // Server -> CLI bridge: the answer to a `cli_request` (ADR 0016).
+  | { type: 'cli_response'; id: string; ok: true; result: unknown }
+  | { type: 'cli_response'; id: string; ok: false; error: string }
+  // Server -> CLI bridges: the `assistant_info` answer changed (the extension
+  // updates its cache). `assistantFolder` null = the assistant is not active.
+  | { type: 'assistant_info_changed'; assistantFolder: string | null; timezone: string | null }
   // Broadcast to every dashboard (not CLI bridges) when a session's agent starts
   // or ends a turn, so the sidebar can show which sessions are working without
   // refetching /sessions. `sessionFile` matches the listing's session `path`.
