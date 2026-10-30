@@ -4,6 +4,7 @@ slug: assistant-folder-opt-in-and-lock
 spec: assistant-session-and-channels
 blockedBy: []
 covers: [1, 5, 9, 21, 23]
+needsAnswers: true
 ---
 
 ## What to build
