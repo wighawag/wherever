@@ -496,6 +496,17 @@ export interface AssistantStatus {
 	 * `assistant_set_timezone`).
 	 */
 	timezone?: string | null;
+	/**
+	 * The assistant's Web Push channel (server/src/web-push.ts), only while
+	 * `active`: whether it runs on the server, the VAPID public key once
+	 * generated, and how many devices are subscribed. Whether THIS device is comes
+	 * from `isThisDeviceSubscribed` (core/push-subscription.ts).
+	 */
+	webPush?: {
+		enabled: boolean;
+		publicKey: string | null;
+		subscriptions: number;
+	};
 }
 export const assistantNotConfigured: AssistantStatus = {
 	configured: false,

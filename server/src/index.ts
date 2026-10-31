@@ -9,7 +9,15 @@ import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.
 import { startAssistantFolder } from './assistant-folder.js';
 import { AssistantController } from './assistant-controller.js';
 import { AssistantScheduler } from './assistant-scheduler.js';
-import { assistantNotActiveError, setTimezone, WEB_TIMEZONE_SOURCE, type AssistantScheduleBackend } from './assistant-tools.js';
+import {
+  assistantNotActiveError,
+  setTimezone,
+  WEB_TIMEZONE_SOURCE,
+  type AssistantNotifyBackend,
+  type AssistantScheduleBackend,
+} from './assistant-tools.js';
+import { ChannelDispatcher, type AssistantChannel } from './assistant-channels.js';
+import { WebPushChannel, resolveVapidSubject, validateSubscription } from './web-push.js';
 import { DEFAULT_GRACE_MS } from './assistant-schedule.js';
 import { createCliRequestRouter, assistantInfoChangedFrame, type AssistantInfo, type CliRequestRouter } from './cli-requests.js';
 import { readStarredSet, setSessionStarred, validateStarInput, forgetStar } from './session-stars.js';
@@ -1095,6 +1103,11 @@ async function main(): Promise<void> {
   // until then, and for a server refused by the folder lock, every tool answers
   // the lock-state error. Unset = no hooks, so sessions are exactly as before.
   let assistantBackend: AssistantScheduleBackend | null = null;
+  // `assistant_notify`'s backend (the channel dispatcher + the scheduler's job
+  // mapping), set below once the channels have started. The tool itself is
+  // registered ONLY while the assistant is active (a refused server's sessions
+  // do not see it), see AssistantSessionHooks.notify.
+  let notifyBackend: AssistantNotifyBackend | null = null;
   if (assistant.status.configured && assistant.status.folder) {
     sessionPool.setAssistantSessionHooks({
       folder: assistant.status.folder,
@@ -1102,6 +1115,14 @@ async function main(): Promise<void> {
         assistantBackend
           ? { ok: true, backend: assistantBackend }
           : { ok: false, error: assistantNotActiveError(assistant.status.lock) },
+      ...(assistant.status.active
+        ? {
+            notify: () =>
+              notifyBackend
+                ? { ok: true as const, backend: notifyBackend }
+                : { ok: false as const, error: 'the assistant channels are still starting; try again in a moment' },
+          }
+        : {}),
     });
   }
   const currentTimezone = (): string | null => {
@@ -1128,6 +1149,8 @@ async function main(): Promise<void> {
   uploadGcTimer.unref?.();
 
   const clients = new Map<string, WSClient>();
+  /** The assistant's channel dispatcher, set once the channels start (below; only while active). */
+  let channelDispatcher: ChannelDispatcher | null = null;
 
   // The assistant controller (assistant-controller.ts): which session is the
   // current assistant session, and its reset. Built, and the pool's
@@ -1145,6 +1168,10 @@ async function main(): Promise<void> {
             if (!c.isCliBridge) sendWS(c.ws, update);
           }
         },
+        // Messages a reset or an aborted settle dropped: reported to the
+        // channels they came from (the dispatcher exists by then; before it
+        // does, nothing has been sent from a channel, so nothing is lost).
+        onDropped: (dropped) => channelDispatcher?.reportDropped(dropped),
       })
     : null;
   if (assistantController) {
@@ -1175,6 +1202,44 @@ async function main(): Promise<void> {
     : null;
   await assistantScheduler?.start();
   assistantBackend = assistantScheduler;
+
+  // The assistant's CHANNELS (assistant-channels.ts): built and started ONLY
+  // while the assistant is active, like the scheduler. Web Push (web-push.ts,
+  // ADR 0017) is on unless `assistantWebPush.enabled` is false; it writes
+  // nothing until a device subscribes (the VAPID keys are made on first use).
+  const webPushChannel =
+    assistantController && getWhereverConfig().assistantWebPush?.enabled !== false
+      ? new WebPushChannel({
+          stateDir: getWhereverStateDir(),
+          subject: resolveVapidSubject({
+            subject: getWhereverConfig().assistantWebPush?.subject,
+            publicUrl: getWhereverConfig().publicUrl,
+          }),
+        })
+      : null;
+  const assistantChannels: AssistantChannel[] = webPushChannel ? [webPushChannel] : [];
+  channelDispatcher = assistantController
+    ? new ChannelDispatcher({ controller: assistantController, pool: sessionPool, channels: assistantChannels })
+    : null;
+  await channelDispatcher?.start();
+  if (channelDispatcher && assistantScheduler) {
+    const scheduler = assistantScheduler;
+    const dispatcher = channelDispatcher;
+    notifyBackend = {
+      notify: (n) => dispatcher.notify(n),
+      jobOrigin: (jobId) => {
+        const job = scheduler.store.read().valid.find((v) => v.job.id === jobId)?.job;
+        return job ? { originSessionId: job.originSessionId, originCwd: job.originCwd } : null;
+      },
+      jobForSession: (sessionFile) => scheduler.jobForSession(sessionFile),
+    };
+  }
+  /** The Web Push part of the assistant status (only while active). */
+  const webPushStatus = () => ({
+    enabled: !!webPushChannel,
+    publicKey: webPushChannel?.existingPublicKey() ?? null,
+    subscriptions: webPushChannel?.subscriptions().length ?? 0,
+  });
   /** Re-send the live assistant status (pointer + timezone) to every dashboard. */
   const broadcastAssistantStatus = (): void => {
     if (!assistantController) return;
@@ -1566,7 +1631,7 @@ async function main(): Promise<void> {
 
   const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') {
@@ -1592,7 +1657,10 @@ async function main(): Promise<void> {
                           pathname.startsWith('/check-remote-repo') || 
                           pathname.startsWith('/remote-candidates') || 
                           pathname.startsWith('/autocomplete-path') || 
-                          pathname.startsWith('/session/');
+                          pathname.startsWith('/session/') ||
+                          // Only while Web Push runs (assistant active): otherwise
+                          // /push/* is an unknown route, exactly as before.
+                          (!!webPushChannel && pathname.startsWith('/push/'));
 
     if (isApiRequest && !authenticate(req, token)) {
       sendJSON(res, 401, { error: 'Unauthorized' });
@@ -1736,6 +1804,54 @@ async function main(): Promise<void> {
       return;
     }
 
+    // --- Web Push subscriptions (web-push.ts, ADR 0017) ----------------------
+    // Token-gated via isApiRequest, and only while Web Push runs (assistant
+    // active): otherwise these fall through to the static handler like any
+    // unknown route. `GET .../vapid-public-key` generates the keypair on first use.
+    if (webPushChannel && pathname.startsWith('/push/')) {
+      try {
+        if (pathname === '/push/vapid-public-key' && req.method === 'GET') {
+          sendJSON(res, 200, { publicKey: webPushChannel.publicKey() });
+          return;
+        }
+        if (pathname === '/push/subscription' && req.method === 'GET') {
+          const endpoint = url.searchParams.get('endpoint') || '';
+          sendJSON(res, 200, { subscribed: !!endpoint && webPushChannel.isSubscribed(endpoint) });
+          return;
+        }
+        if (pathname === '/push/subscription' && (req.method === 'POST' || req.method === 'DELETE')) {
+          let parsed: any;
+          try {
+            parsed = JSON.parse((await readBody(req)) || '{}');
+          } catch {
+            sendJSON(res, 400, { error: 'Invalid request' });
+            return;
+          }
+          if (req.method === 'POST') {
+            const v = validateSubscription(parsed?.subscription ?? parsed);
+            if (!v.ok) {
+              sendJSON(res, 400, { error: v.error });
+              return;
+            }
+            const subscriptions = await webPushChannel.subscribe(v.subscription);
+            sendJSON(res, 200, { subscribed: true, subscriptions });
+            return;
+          }
+          const endpoint = typeof parsed?.endpoint === 'string' ? parsed.endpoint : '';
+          if (!endpoint) {
+            sendJSON(res, 400, { error: 'Missing "endpoint"' });
+            return;
+          }
+          const removed = await webPushChannel.unsubscribe(endpoint);
+          sendJSON(res, 200, { subscribed: false, removed });
+          return;
+        }
+      } catch (err) {
+        sendJSON(res, 500, { error: (err as Error).message || 'Web Push failed' });
+        return;
+      }
+    }
+
     if (pathname === '/config' && req.method === 'GET') {
       const config = getWhereverConfig();
       let searchFolder: string | undefined = config.searchFolder;
@@ -1772,8 +1888,11 @@ async function main(): Promise<void> {
         // Plus, while active, the controller's pointer (currentSessionId /
         // currentSessionFile), which is live, not a start-time snapshot.
         // While active, also the user's current timezone (live).
+        // While active, also the Web Push state (enabled, the VAPID public key
+        // once generated, how many devices are subscribed; whether THIS device
+        // is, the web asks `GET /push/subscription`).
         assistant: assistantController
-          ? { ...assistant.status, ...assistantController.status(), timezone: currentTimezone() }
+          ? { ...assistant.status, ...assistantController.status(), timezone: currentTimezone(), webPush: webPushStatus() }
           : assistant.status,
         appearance: {
           label,
@@ -2849,6 +2968,7 @@ This encrypts all network traffic securely and enables safe, private remote acce
       c.ws.close();
     }
     assistantScheduler?.stop();
+    await channelDispatcher?.stop();
     await sessionPool.disposeAll();
     assistant.release();
     server.close();

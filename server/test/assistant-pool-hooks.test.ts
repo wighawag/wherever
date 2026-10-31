@@ -174,7 +174,7 @@ describe('SessionPool.clearQueuedMessages', () => {
   it('returns empty queues for an idle server session', async () => {
     const pool = new SessionPool(300_000);
     const a = await pool.createNewSession(freshCwd(), undefined, false, false);
-    expect(pool.clearQueuedMessages(a.tracked.sessionFile)).toEqual({ steering: [], followUp: [] });
+    expect(pool.clearQueuedMessages(a.tracked.sessionFile)).toEqual({ steering: [], followUp: [], origins: { steering: [], followUp: [] } });
     await pool.disposeAll();
   }, 30_000);
 });

@@ -16,7 +16,7 @@ import {
   type AssistantSessionHooks,
   type AssistantToolCaller,
 } from '../src/assistant-tools.ts';
-import { ASSISTANT_TOOL_TEXTS, timezoneLine } from '../src/assistant-tool-text.ts';
+import { ASSISTANT_SCHEDULE_TOOL_TEXTS, timezoneLine } from '../src/assistant-tool-text.ts';
 import { composeServerAgentParts } from '../src/session-pool.ts';
 import { serverBuiltinExtensions } from '../src/builtin-extensions.ts';
 
@@ -320,14 +320,14 @@ describe('lock held by another server', () => {
 describe('the tool text', () => {
   it('registers the four tools with the shared text', async () => {
     const { tools } = await setup();
-    for (const text of ASSISTANT_TOOL_TEXTS) {
+    for (const text of ASSISTANT_SCHEDULE_TOOL_TEXTS) {
       const t = tools[text.name] as unknown as Record<string, unknown>;
       expect(t).toBeDefined();
       expect(t.description).toBe(text.description);
       expect(t.promptSnippet).toBe(text.promptSnippet);
       expect(t.promptGuidelines).toEqual(text.promptGuidelines);
     }
-    expect(Object.keys(tools)).toEqual(ASSISTANT_TOOL_TEXTS.map((t) => t.name));
+    expect(Object.keys(tools)).toEqual(ASSISTANT_SCHEDULE_TOOL_TEXTS.map((t) => t.name));
   });
 });
 
@@ -393,7 +393,7 @@ describe('composeServerAgentParts (what buildServerAgent registers)', () => {
   it('assistantFolder set: the tools in every session, the timezone line only in the folder', () => {
     const hooks: AssistantSessionHooks = { folder: '/home/u/assistant', access: () => ({ ok: false, error: 'off' }) };
     const elsewhere = composeServerAgentParts({ cwd: '/home/u/code', conversationExtension, extraExtensionFactories: [], assistant: hooks, caller });
-    expect(elsewhere.customTools.map((t) => t.name)).toEqual(['attach_file', 'say', ...ASSISTANT_TOOL_TEXTS.map((t) => t.name)]);
+    expect(elsewhere.customTools.map((t) => t.name)).toEqual(['attach_file', 'say', ...ASSISTANT_SCHEDULE_TOOL_TEXTS.map((t) => t.name)]);
     expect(elsewhere.extensionFactories).toEqual([...serverBuiltinExtensions, conversationExtension]);
     const inFolder = composeServerAgentParts({ cwd: '/home/u/assistant', conversationExtension, extraExtensionFactories: [], assistant: hooks, caller });
     expect(inFolder.extensionFactories.map((f) => f.name)).toEqual([

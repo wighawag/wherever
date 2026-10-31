@@ -95,6 +95,8 @@ describe('assistantFolder (real server)', () => {
       currentSessionFile: null,
       // The user's current timezone (assistant-schedule-tools-server).
       timezone: expect.any(String),
+      // The Web Push channel (channel-seam-notify-and-web-push): no key until first use.
+      webPush: { enabled: true, publicKey: null, subscriptions: 0 },
     });
     expect(fs.existsSync(path.join(folder, 'AGENTS.md'))).toBe(true);
     expect(fs.existsSync(path.join(folder, 'jobs', 'AGENTS.md'))).toBe(true);

@@ -4,7 +4,7 @@
  * `promptGuidelines`, plus the per-turn timezone line.
  *
  * Owned by `assistant-schedule-tools-server` (which created it with the schedule
- * and timezone tools). `channel-seam-notify-and-web-push` ADDS `assistant_notify`
+ * and timezone tools); `channel-seam-notify-and-web-push` added `assistant_notify`
  * here, and `cli-assistant-tool-twins` reuses every entry for the extension's
  * `pi.registerTool` twins under a drift test (like `say-tool.test.ts`): the
  * extension is a separate published package that cannot import from the server,
@@ -82,13 +82,38 @@ export const ASSISTANT_SET_TIMEZONE_TEXT: AssistantToolText = {
   ],
 };
 
-/** Every assistant tool's text, in registration order. */
-export const ASSISTANT_TOOL_TEXTS: readonly AssistantToolText[] = [
+export const ASSISTANT_NOTIFY_TEXT: AssistantToolText = {
+  name: 'assistant_notify',
+  label: 'Assistant: Notify',
+  description:
+    "Notify the user NOW through the wherever assistant's channels (a push notification on their subscribed " +
+    'devices, and any other configured channel such as Telegram). It is delivered immediately, even while a ' +
+    'conversation is running, and is the ONLY way to reach the user with something that is not a reply to ' +
+    'their message: a scheduled job, or work in another session, is silent unless it calls this. Give a short ' +
+    '`title` and a `body`. Tapping the notification opens `navigateSessionId` when given; otherwise, for a ' +
+    'scheduled job (pass `jobId`, or call it from an isolated job session), the session that scheduled the ' +
+    'job; otherwise this session. It fails with a clear error when no channel can deliver.',
+  promptSnippet: "Notify the user immediately (push / Telegram); the only way to reach them with anything that is not a reply",
+  promptGuidelines: [
+    'Use assistant_notify only for things the user should know about now (a finished job, a result they asked to be told about, something urgent); never for routine chatter, and not to repeat what you are already replying.',
+    'In a scheduled job, call assistant_notify with the result when the user should hear about it: a scheduled turn reaches the user ONLY through assistant_notify.',
+  ],
+};
+
+/** The schedule and timezone tools' text (registered in every server session while configured). */
+export const ASSISTANT_SCHEDULE_TOOL_TEXTS: readonly AssistantToolText[] = [
   ASSISTANT_SCHEDULE_ADD_TEXT,
   ASSISTANT_SCHEDULE_LIST_TEXT,
   ASSISTANT_SCHEDULE_REMOVE_TEXT,
   ASSISTANT_SET_TIMEZONE_TEXT,
 ];
+
+/**
+ * Every assistant tool's text, in registration order (the schedule tools, then
+ * `assistant_notify`, which a server session gets only while the assistant is
+ * ACTIVE: see assistant-tools.ts).
+ */
+export const ASSISTANT_TOOL_TEXTS: readonly AssistantToolText[] = [...ASSISTANT_SCHEDULE_TOOL_TEXTS, ASSISTANT_NOTIFY_TEXT];
 
 /** The line appended to the system prompt of every turn in the assistant folder (and `jobs/`). */
 export function timezoneLine(timezone: string): string {

@@ -55,6 +55,8 @@ const regexesApiOnlineFirst = [
 	'/autocomplete-path(\\?|$|/)',
 	'/session/',
 	'/health(\\?|$)',
+	// The assistant's Web Push subscription API (server/src/web-push.ts).
+	'/push/',
 ];
 for (const r of regexesApiOnlineFirst) {
 	regexesOnlineFirst.push(r);
