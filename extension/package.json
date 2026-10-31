@@ -1,6 +1,6 @@
 {
   "name": "@wherever-dev/pi",
-  "version": "0.5.7",
+  "version": "0.6.0",
   "description": "pi coding agent extension that bridges a terminal pi session to a Wherever server, to follow and steer it from your phone or any browser (wherever.dev)",
   "keywords": [
     "pi-package",

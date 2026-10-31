@@ -1,6 +1,6 @@
 {
   "name": "wherever-dev",
-  "version": "0.21.1",
+  "version": "0.22.0",
   "description": "Drive pi coding agent sessions from your phone or any browser: a multi-session server with a mobile web dashboard, native MCP and a live bridge to the terminal pi",
   "keywords": [
     "pi",

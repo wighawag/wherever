@@ -1,5 +1,13 @@
 # @wherever-dev/pi
 
+## 0.6.0
+
+### Minor Changes
+
+- 1a5ed97: A terminal `pi` attached to wherever now has the assistant's five tools (`assistant_schedule_add`, `assistant_schedule_list`, `assistant_schedule_remove`, `assistant_set_timezone`, `assistant_notify`). They are registered inactive and only become active once the server says its assistant is configured (and are removed again if it says otherwise), so a session whose wherever has no assistant, a disabled bridge or no reachable server keeps exactly the tools and system prompt it had before. Each call goes to the server over the bridge and returns its result, or a clear error when the bridge is disconnected or disabled, the server is too old, or the assistant is not configured. In the assistant folder (and its `jobs/`), every turn's system prompt gets `User's current timezone: <tz>` from the cached assistant info, without waiting on the network.
+- 2ba32b4: The bridge now tells the server more and can ask it things. `cli_register` carries `isNew` (true only on the first register of a session that had no messages when it started, so a fresh `pi` in the assistant folder becomes the current assistant session) and a `capabilities` list. The extension forwards `agent_settled` to the server (it still beeps as before). A new request/response path (`cli_request` / `cli_response`, correlated by id, with an unref'd timeout so `pi -p` exits as fast as before) lets the extension call the server; it asks `assistant_info` once after each register and caches the answer, including negative ones (not configured, older server, disconnected, disabled), and updates it on an `assistant_info_changed` push. Against an older server nothing changes.
+- 65bfb8b: A message relayed from wherever can now carry images (for example a photo sent to the assistant on Telegram): the extension passes them to `pi.sendUserMessage` as image content beside the text, so the terminal pi shows them to the model. Messages without images are sent as the plain text, exactly as before.
+
 ## 0.5.7
 
 ### Patch Changes
