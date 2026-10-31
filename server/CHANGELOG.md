@@ -1,5 +1,13 @@
 # wherever-dev
 
+## 0.22.1
+
+### Patch Changes
+
+- a86638c: Assistant notifications settings: a failed "Push notifications on this device" toggle no longer stays checked; it rolls back to the device's real subscription state. Errors now show their name with the message, plus a hint for an `AbortError` (browser push disabled or unreachable: on Firefox and LibreWolf check `about:config` `dom.push.enabled` and `dom.push.connection.enabled`) and for a denied permission. New "Send test notification" button (while subscribed), backed by the token-gated `POST /push/test`, which delivers through the same path as `assistant_notify` and reports the result per channel.
+- a86638c: The Telegram pairing code can be selected again (the sidebar's unlayered `user-select: none` rule beat Tailwind's `select-all`), and has Copy buttons for the code and for `/pair <code>`, with a "Copied" confirmation and a fallback when the clipboard API is unavailable. A new `.selectable` opt-in also makes the Telegram and push error messages, the paired user line, the version string and form fields in the sidebar selectable.
+- a86638c: Telegram: stop sending an empty `sendMessageDraft` to "clear" a reply draft. The Bot API shows an empty draft as a "Thinking..." placeholder, so after every assistant message (right before each tool call) the chat showed a lingering animated indicator and clients could notify an unsupported message. A draft is now always ended by a real message: the final text at the message end, the text so far when a tool call starts or the turn ends first, and on abort the partial text that was shown (marked `⏹ (stopped)`, sent silently). New option `assistantTelegram.toolCalls`: `"off"` (default, a tool call shows nothing) or `"compact"` (one silent plain-text line per call, such as `🔧 bash: git status` or `🔧 read: <path>`, with secret-looking values redacted).
+
 ## 0.22.0
 
 ### Minor Changes
