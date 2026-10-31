@@ -27,6 +27,12 @@ import {
   BridgeRequestClient,
   sessionHasNoMessages,
 } from "./bridge-requests.js";
+import {
+  appendTimezoneLine,
+  cliTimezoneLine,
+  createAssistantToolTwins,
+  syncTwinActivation,
+} from "./assistant-tool-twins.js";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -474,6 +480,19 @@ export default async function (pi: ExtensionAPI) {
   // extension: the `assistant_*` tool twins activate on it and the CLI timezone
   // line reads it, neither ever waiting on the network.
   const assistantInfo = new AssistantInfoCache();
+
+  // The `assistant_*` tool twins (./assistant-tool-twins.ts, ADR 0016): always
+  // registered, but INACTIVE (`defaultActive: false`), so a terminal pi whose
+  // wherever has no active assistant (or no reachable wherever at all) keeps
+  // exactly today's tools and prompt. They are activated only while the cached
+  // `assistant_info` says configured, and each call goes to the server over
+  // `cli_request`, which runs the same op code as the server's own tools.
+  for (const twin of createAssistantToolTwins((op, args, opts) => requests.request(op, args, opts))) {
+    pi.registerTool(twin);
+  }
+  assistantInfo.subscribe((info) => {
+    syncTwinActivation(pi, info);
+  });
 
   function updateCliWidget(status: 'disconnected' | 'connecting' | 'connected') {
     if (!ctxVal) return;
@@ -1134,8 +1153,15 @@ export default async function (pi: ExtensionAPI) {
     bridgeEnabled = isBridgeEnabled;
     if (!isBridgeEnabled) {
       assistantInfo.setDisabled();
+      // Also when the cache was already disabled (no change event): a resumed
+      // session's recorded loadout may carry twins from an earlier run.
+      syncTwinActivation(pi, assistantInfo.get());
       return;
     }
+    // Match the twins to what is cached NOW (a fresh process: not configured
+    // yet, so a loadout restored from the transcript loses them until the
+    // server says configured; a session switch: the last server answer).
+    syncTwinActivation(pi, assistantInfo.get());
 
     ctxVal = ctx;
     sessionFile = ctx.sessionManager.getSessionFile() || "";
@@ -1223,8 +1249,16 @@ export default async function (pi: ExtensionAPI) {
   // the prompt), only for a turn whose relayed message carried the flag. Ephemeral
   // by construction: a system-prompt addition is not stored in the user message and
   // renders as no chat line on web or CLI: only the resulting `say` call shows.
-  pi.on("before_agent_start", async (event: any) => {
-    const systemPrompt = conversationSignal.applyToSystemPrompt(event.systemPrompt);
+  //
+  // Then the CLI timezone line (ADR 0015/0016, the twin of the server's inline
+  // extension in server/src/assistant-tools.ts): in the assistant folder or its
+  // `jobs/`, `User's current timezone: <tz>` is appended on EVERY turn, read from
+  // the CACHED `assistant_info` only (so a pushed change shows next turn and a
+  // turn never waits on the network). A no-op unless the cache says configured.
+  pi.on("before_agent_start", async (event: any, ctx: any) => {
+    let systemPrompt = conversationSignal.applyToSystemPrompt(event.systemPrompt);
+    const line = cliTimezoneLine(assistantInfo.get(), ctx?.cwd ?? ctxVal?.cwd);
+    if (line) systemPrompt = appendTimezoneLine(systemPrompt ?? event.systemPrompt, line);
     if (systemPrompt === undefined) return;
     return { systemPrompt };
   });
