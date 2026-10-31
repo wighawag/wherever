@@ -20,6 +20,18 @@ import {
   type PairingState,
 } from './telegram-pairing.js';
 import { TelegramReplies, splitTelegramText } from './telegram-replies.js';
+import {
+  FILES_UNAVAILABLE_REPLY,
+  TELEGRAM_DOWNLOAD_MAX_BYTES,
+  UNSUPPORTED_MEDIA_REPLY,
+  hasUnsupportedMedia,
+  inboundFailedNote,
+  inboundFilesOf,
+  inboundTooLargeNote,
+  saveUploaded,
+  type TelegramInboundFile,
+} from './telegram-files.js';
+import type { ChannelFile } from './assistant-channels.js';
 
 /**
  * The assistant's TELEGRAM channel: the secure base (task
@@ -42,6 +54,11 @@ import { TelegramReplies, splitTelegramText } from './telegram-replies.js';
  *   body below, then a link to the target session when `publicUrl` is
  *   configured; sent at once, even mid-reply, never folded into a reply.
  * - DROPPED messages (a reset, an aborted settle): reported back as a list.
+ * - FILES (task `telegram-files`, telegram-files.ts): a photo or a document
+ *   (an ALBUM is its messages gathered for `mediaGroupDelayMs`, then handled as
+ *   one message) is downloaded into the upload dir and reaches the assistant as
+ *   paths in the text, as a web upload does; its caption is the text. An
+ *   `attach_file` in a Telegram-routed reply sends the file back.
  *
  * Bot API LONG POLLING (`getUpdates` with a server-side `timeout`), the
  * mechanics ported from the MIT `badlogic/pi-telegram` extension, but NOT its
@@ -75,22 +92,36 @@ export const TELEGRAM_OFFSET_FILE = 'assistant-telegram-offset.json';
 export const TELEGRAM_PAIRING_FILE = 'assistant-telegram-pairing.json';
 export const TELEGRAM_API_BASE = 'https://api.telegram.org';
 
-/** The HTTP boundary (the global `fetch` by default; mocked in tests). */
+/**
+ * The HTTP boundary (the global `fetch` by default; mocked in tests): JSON
+ * calls, multipart file sends (a `FormData` body) and file downloads (`GET`).
+ */
 export type TelegramFetch = (
   url: string,
-  init: { method: 'POST'; headers: Record<string, string>; body: string; signal?: AbortSignal },
-) => Promise<{ status: number; json(): Promise<unknown> }>;
+  init: { method: 'POST' | 'GET'; headers?: Record<string, string>; body?: string | FormData; signal?: AbortSignal },
+) => Promise<{ status: number; json(): Promise<unknown>; arrayBuffer?(): Promise<ArrayBuffer> }>;
 
 /** The slice of a Bot API `Update` this channel reads. */
 export interface TelegramUpdate {
   update_id: number;
-  message?: {
-    message_id: number;
-    from?: { id: number; is_bot?: boolean; username?: string; first_name?: string };
-    chat: { id: number; type: string };
-    text?: string;
-  };
+  message?: TelegramMessage;
 }
+
+/** The slice of a Bot API `Message` this channel reads. */
+export interface TelegramMessage {
+  message_id: number;
+  from?: { id: number; is_bot?: boolean; username?: string; first_name?: string };
+  chat: { id: number; type: string };
+  text?: string;
+  caption?: string;
+  media_group_id?: string;
+  photo?: Array<{ file_id: string; file_size?: number; width?: number; height?: number }>;
+  document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
+  [k: string]: unknown;
+}
+
+/** How long an album's messages are gathered before it is handled (pi-telegram's 1200 ms). */
+export const MEDIA_GROUP_DELAY_MS = 1200;
 
 /** What the web shows (`GET /config` `assistant.telegram`, beside `enabled`). */
 export type TelegramChannelStatus =
@@ -118,6 +149,16 @@ export interface TelegramChannelOptions {
   publicUrl?: string;
   /** Reply preview throttle, ms (default 750; tests use 0). */
   replyThrottleMs?: number;
+  /**
+   * Where a file from Telegram is saved: the upload dir a web upload of the
+   * assistant session lands in (index.ts: `resolveUploadDir(config, folder)`).
+   * Unset: files are refused with `FILES_UNAVAILABLE_REPLY`.
+   */
+  uploadDir?: () => string;
+  /** The upload size limit (`uploads.maxBytes`); a file over it, or over Telegram's 20 MB, is refused with a note. */
+  maxUploadBytes?: () => number;
+  /** How long an album is gathered, ms (default `MEDIA_GROUP_DELAY_MS`). */
+  mediaGroupDelayMs?: number;
   log?: Pick<Console, 'log' | 'warn' | 'error'>;
 }
 
@@ -204,6 +245,13 @@ export class TelegramChannel implements AssistantChannel {
   private loopDone: Promise<void> | null = null;
   private readonly publicUrl: string | undefined;
   private readonly replies: TelegramReplies;
+  private readonly uploadDir: (() => string) | undefined;
+  private readonly maxUploadBytes: () => number;
+  private readonly mediaGroupDelayMs: number;
+  /** Albums being gathered, by `media_group_id`. */
+  private readonly groups = new Map<string, { messages: TelegramMessage[]; fromId: string; timer: ReturnType<typeof setTimeout> }>();
+  /** Every inbound message is handled through this one chain (an album's timer and the polling loop never interleave). */
+  private inbound: Promise<void> = Promise.resolve();
 
   constructor(opts: TelegramChannelOptions) {
     this.token = opts.token;
@@ -219,8 +267,12 @@ export class TelegramChannel implements AssistantChannel {
     this.log = opts.log ?? console;
     this.configuredUserId = opts.configuredUserId;
     this.publicUrl = opts.publicUrl;
+    this.uploadDir = opts.uploadDir;
+    this.maxUploadBytes = opts.maxUploadBytes ?? (() => TELEGRAM_DOWNLOAD_MAX_BYTES);
+    this.mediaGroupDelayMs = opts.mediaGroupDelayMs ?? MEDIA_GROUP_DELAY_MS;
     this.replies = new TelegramReplies({
       call: (method, params) => this.call(method, params),
+      upload: (method, fields, fileField, filePath, fileName) => this.callMultipart(method, fields, fileField, filePath, fileName),
       chatId: () => (this.started ? this.pairedChatId() : null),
       throttleMs: opts.replyThrottleMs,
       log: this.log,
@@ -245,6 +297,8 @@ export class TelegramChannel implements AssistantChannel {
     this.started = false;
     this.abort?.abort();
     this.replies.stop();
+    for (const g of this.groups.values()) clearTimeout(g.timer);
+    this.groups.clear();
     await this.loopDone?.catch(() => {});
     this.loopDone = null;
     this.ctx = null;
@@ -299,6 +353,19 @@ export class TelegramChannel implements AssistantChannel {
     return this.replies.idle();
   }
 
+  /** Resolves once every gathered album and inbound message has been handled (tests). */
+  async inboundIdle(): Promise<void> {
+    for (;;) {
+      const chain = this.inbound;
+      await chain;
+      if (this.groups.size > 0) {
+        await new Promise((r) => setTimeout(r, Math.max(5, this.mediaGroupDelayMs)));
+        continue;
+      }
+      if (chain === this.inbound) return;
+    }
+  }
+
   /** `assistant_notify`: its own `🔔` message, sent now (never waits for, or joins, a reply). */
   async notify(n: ChannelNotification): Promise<ChannelNotifyResult> {
     const chatId = this.started ? this.pairedChatId() : null;
@@ -330,6 +397,26 @@ export class TelegramChannel implements AssistantChannel {
       body: JSON.stringify(params),
       ...(signal ? { signal } : {}),
     });
+    return this.answer<T>(method, res);
+  }
+
+  /** A multipart Bot API call sending the local `filePath` as `fileField`. */
+  async callMultipart<T>(method: string, fields: Record<string, string>, fileField: string, filePath: string, fileName: string): Promise<T> {
+    const form = new FormData();
+    for (const [k, v] of Object.entries(fields)) form.set(k, v);
+    const bytes = await fs.promises.readFile(filePath);
+    form.set(fileField, new Blob([bytes]), fileName);
+    const res = await this.fetchImpl(`${this.apiBase}/bot${this.token}/${method}`, {
+      method: 'POST',
+      body: form,
+      ...(this.abort ? { signal: this.abort.signal } : {}),
+    });
+    return this.answer<T>(method, res);
+  }
+
+  // -------------------------------------------------------------------------
+
+  private async answer<T>(method: string, res: { status: number; json(): Promise<unknown> }): Promise<T> {
     let body: any = null;
     try {
       body = await res.json();
@@ -342,8 +429,6 @@ export class TelegramChannel implements AssistantChannel {
       typeof body?.parameters?.retry_after === 'number' ? body.parameters.retry_after : undefined,
     );
   }
-
-  // -------------------------------------------------------------------------
 
   private async run(signal: AbortSignal): Promise<void> {
     let attempt = 0;
@@ -415,14 +500,19 @@ export class TelegramChannel implements AssistantChannel {
 
   private async handle(u: TelegramUpdate): Promise<void> {
     const m = u.message;
-    if (!m || !m.from || m.from.is_bot || typeof m.text !== 'string') return;
+    if (!m || !m.from || m.from.is_bot) return;
+    const text = typeof m.text === 'string' ? m.text : typeof m.caption === 'string' ? m.caption : undefined;
+    const hasMedia = inboundFilesOf(m).length > 0 || hasUnsupportedMedia(m);
+    if (text === undefined && !hasMedia) return;
     const fromId = String(m.from.id);
     const name = m.from.username ? `@${m.from.username}` : m.from.first_name;
+    // Pairing decides on the text alone (a caption here), BEFORE anything is
+    // downloaded: a stranger's file is never fetched.
     const decision = decideInbound(this.pairing, {
       fromId,
       chatId: String(m.chat.id),
       chatType: m.chat.type,
-      text: m.text,
+      text: text ?? '',
       ...(name ? { name } : {}),
     });
     switch (decision.kind) {
@@ -440,32 +530,101 @@ export class TelegramChannel implements AssistantChannel {
       case 'refuse':
         await this.reply(m.chat.id, decision.reply);
         return;
-      case 'forward':
-        await this.converse(m.chat.id, m.message_id, m.text, fromId);
+      case 'forward': {
+        const groupId = typeof m.media_group_id === 'string' && m.media_group_id ? m.media_group_id : null;
+        if (groupId) {
+          // Albums before this one go first, in order.
+          for (const key of [...this.groups.keys()]) if (key !== groupId) void this.flushGroup(key);
+          this.gather(groupId, m, fromId);
+          return;
+        }
+        // Any album still being gathered was sent before this message.
+        for (const key of [...this.groups.keys()]) void this.flushGroup(key);
+        await this.serial(() => this.converse([m], fromId));
         return;
+      }
     }
   }
 
-  /** The paired user's message: a command, a refusal, or a message for the assistant. */
-  private async converse(chatId: number, messageId: number, text: string, fromId: string): Promise<void> {
+  /** Run `fn` after every inbound message before it has been handled. */
+  private serial(fn: () => Promise<void>): Promise<void> {
+    const run = this.inbound.then(fn, fn);
+    this.inbound = run.catch((err) => this.log.error(`[wherever] telegram: handling a message failed: ${errMessage(err)}`));
+    return this.inbound;
+  }
+
+  /** Add an album message; the album is handled `mediaGroupDelayMs` after its LAST message. */
+  private gather(groupId: string, m: TelegramMessage, fromId: string): void {
+    const g = this.groups.get(groupId);
+    if (g) clearTimeout(g.timer);
+    const messages = [...(g?.messages ?? []), m];
+    const timer = setTimeout(() => void this.flushGroup(groupId), this.mediaGroupDelayMs);
+    this.groups.set(groupId, { messages, fromId, timer });
+  }
+
+  private flushGroup(groupId: string): Promise<void> {
+    const g = this.groups.get(groupId);
+    if (!g) return Promise.resolve();
+    this.groups.delete(groupId);
+    clearTimeout(g.timer);
+    return this.serial(() => this.converse(g.messages, g.fromId));
+  }
+
+  /**
+   * The paired user's message (one, or an album's): a command, a refusal, or a
+   * message for the assistant, with its files downloaded into the upload dir.
+   */
+  private async converse(messages: TelegramMessage[], fromId: string): Promise<void> {
     const ctx = this.ctx;
-    if (!ctx) return;
+    const first = messages[0];
+    if (!ctx || !first) return;
+    const chatId = first.chat.id;
+    const messageId = first.message_id;
+    const textOf = (m: TelegramMessage) => (typeof m.text === 'string' ? m.text : typeof m.caption === 'string' ? m.caption : '');
+    // One message's text goes to the assistant untouched; an album's captions are joined.
+    const text =
+      messages.length === 1
+        ? textOf(first)
+        : messages
+            .map((m) => textOf(m).trim())
+            .filter(Boolean)
+            .join('\n\n');
+    const wanted = messages.flatMap((m) => inboundFilesOf(m));
+    const unsupported = messages.some((m) => hasUnsupportedMedia(m));
     const trimmed = text.trim();
     const cmd = parseCommand(trimmed);
-    if (trimmed.toLowerCase() === 'stop' || cmd?.command === 'stop') {
-      const r = await ctx.abortTurn();
-      await this.reply(chatId, r.aborted ? STOPPED_REPLY : NOTHING_RUNNING_REPLY);
-      return;
-    }
-    if (cmd && (cmd.command === 'new' || cmd.command === 'reset')) {
-      const r = await ctx.resetSession();
-      await this.reply(chatId, r.ok ? RESET_REPLY : `⚠️ Could not reset the assistant: ${r.error}`);
-      return;
+    // Commands are a TEXT message's; a caption is text for the assistant.
+    if (wanted.length === 0 && !unsupported) {
+      if (trimmed.toLowerCase() === 'stop' || cmd?.command === 'stop') {
+        const r = await ctx.abortTurn();
+        await this.reply(chatId, r.aborted ? STOPPED_REPLY : NOTHING_RUNNING_REPLY);
+        return;
+      }
+      if (cmd && (cmd.command === 'new' || cmd.command === 'reset')) {
+        const r = await ctx.resetSession();
+        await this.reply(chatId, r.ok ? RESET_REPLY : `⚠️ Could not reset the assistant: ${r.error}`);
+        return;
+      }
     }
     if (trimmed.startsWith('!')) {
       await this.reply(chatId, SHELL_REFUSAL_REPLY);
       return;
     }
+    if (unsupported) await this.reply(chatId, UNSUPPORTED_MEDIA_REPLY);
+    const files: ChannelFile[] = [];
+    if (wanted.length > 0) {
+      const dir = this.uploadDir?.();
+      if (!dir) {
+        await this.reply(chatId, FILES_UNAVAILABLE_REPLY);
+      } else {
+        for (const f of wanted) {
+          const r = await this.download(f, dir);
+          if (r.ok) files.push(r.file);
+          else await this.reply(chatId, r.note);
+        }
+      }
+    }
+    if (!trimmed && files.length === 0) return;
     // Wait until the message is DISPATCHED (handed to the session as a start or
     // a steer), not until its turn ends: the next message is then decided
     // against the right state (steer vs start), and polling goes on.
@@ -478,7 +637,7 @@ export class TelegramChannel implements AssistantChannel {
       };
       ctx
         .onUserMessage(
-          { channel: TELEGRAM_CHANNEL, text, senderId: fromId },
+          { channel: TELEGRAM_CHANNEL, text, ...(files.length ? { files } : {}), senderId: fromId },
           {
             onDispatched: ({ steered }) => {
               dispatched();
@@ -495,6 +654,37 @@ export class TelegramChannel implements AssistantChannel {
         })
         .finally(dispatched);
     });
+  }
+
+  /**
+   * Fetch one file from Telegram (`getFile`, then its download URL) into `dir`.
+   * Refused, with a note for the user, over the upload limit (`maxUploadBytes`,
+   * capped at Telegram's 20 MB), before downloading when Telegram announced the
+   * size and after it otherwise.
+   */
+  private async download(f: TelegramInboundFile, dir: string): Promise<{ ok: true; file: ChannelFile } | { ok: false; note: string }> {
+    const limit = Math.min(TELEGRAM_DOWNLOAD_MAX_BYTES, this.maxUploadBytes());
+    if (typeof f.size === 'number' && f.size > limit) return { ok: false, note: inboundTooLargeNote(f.name, f.size, limit) };
+    try {
+      const info = await this.call<{ file_path?: string; file_size?: number }>('getFile', { file_id: f.fileId }, this.abort?.signal);
+      if (typeof info?.file_size === 'number' && info.file_size > limit) return { ok: false, note: inboundTooLargeNote(f.name, info.file_size, limit) };
+      if (!info?.file_path) throw new Error('Telegram gave no download path');
+      const res = await this.fetchImpl(`${this.apiBase}/file/bot${this.token}/${info.file_path.split('/').map(encodeURIComponent).join('/')}`, {
+        method: 'GET',
+        ...(this.abort ? { signal: this.abort.signal } : {}),
+      });
+      if (res.status < 200 || res.status >= 300 || !res.arrayBuffer) throw new Error(`download failed: HTTP ${res.status}`);
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (bytes.byteLength > limit) return { ok: false, note: inboundTooLargeNote(f.name, bytes.byteLength, limit) };
+      const saved = await saveUploaded(dir, f.name, bytes);
+      this.log.log(`[wherever] telegram: received ${f.name} (${bytes.byteLength} bytes) into ${saved}`);
+      return { ok: true, file: { path: saved, name: f.name, ...(f.mimeType ? { mimeType: f.mimeType } : {}) } };
+    } catch (err) {
+      const msg = errMessage(err).split(this.token).join('<token>');
+      if (/file is too big/i.test(msg)) return { ok: false, note: inboundTooLargeNote(f.name, f.size, limit) };
+      this.log.warn(`[wherever] telegram: receiving ${f.name} failed: ${msg}`);
+      return { ok: false, note: inboundFailedNote(f.name, msg) };
+    }
   }
 
   /** Show that a message steered the running turn: a reaction, else a short note replying to it. */

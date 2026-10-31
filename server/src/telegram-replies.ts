@@ -19,6 +19,12 @@
  *   an ABORTED one (`stop`) clears its draft (a fallback preview message stays
  *   as it was); an ERROR one is reported as `⚠️ The assistant failed: ...`.
  *
+ * - FILES (task `telegram-files`): a successful `attach_file` call's
+ *   `tool_execution_end` sends its file (`sendPhoto` / `sendDocument`, by
+ *   telegram-files.ts's `attachmentPlan`), or a clear note when it is too large
+ *   or Telegram refuses it. It joins the same serial chain, so the file lands
+ *   after the text the assistant wrote before the call.
+ *
  * One stream per session file (a reply in an old session, after a reset, never
  * mixes with the new one), and every Bot API call of every stream goes through
  * ONE serial chain, so the messages arrive in the order the events did.
@@ -32,6 +38,8 @@
  * sessions.
  */
 
+import { attachedFileOf, attachmentFailedNote, attachmentPlan, attachmentTooLargeNote, fileSize } from './telegram-files.js';
+
 /**
  * The longest text sent in one message. Telegram's limit is 4096 characters;
  * JavaScript lengths are UTF-16 code units (never fewer than Telegram counts),
@@ -43,8 +51,13 @@ const DRAFT_ID_MAX = 2_147_483_647;
 
 export type BotCall = <T>(method: string, params: Record<string, unknown>) => Promise<T>;
 
+/** A multipart Bot API call sending one local file in `fileField` (`sendPhoto` / `sendDocument`). */
+export type BotUpload = (method: string, fields: Record<string, string>, fileField: string, filePath: string, fileName: string) => Promise<unknown>;
+
 export interface TelegramRepliesOptions {
   call: BotCall;
+  /** Sends attached files; without it an `attach_file` is not delivered. */
+  upload?: BotUpload;
   /** The paired chat (null while unpaired: nothing is sent). */
   chatId: () => string | null;
   throttleMs?: number;
@@ -129,6 +142,7 @@ export function assistantText(content: unknown): string {
 
 export class TelegramReplies {
   private readonly call: BotCall;
+  private readonly upload: BotUpload | undefined;
   private readonly chatId: () => string | null;
   private readonly throttleMs: number;
   private readonly log: Pick<Console, 'log' | 'warn' | 'error'>;
@@ -140,6 +154,7 @@ export class TelegramReplies {
 
   constructor(opts: TelegramRepliesOptions) {
     this.call = opts.call;
+    this.upload = opts.upload;
     this.chatId = opts.chatId;
     this.throttleMs = opts.throttleMs ?? PREVIEW_THROTTLE_MS;
     this.log = opts.log ?? console;
@@ -147,6 +162,11 @@ export class TelegramReplies {
 
   /** One pool event whose destination is Telegram. */
   handle(sessionFile: string, event: { type: string; [k: string]: unknown }): void {
+    const attached = attachedFileOf(event);
+    if (attached) {
+      this.enqueue(() => this.sendAttachment(attached.path, attached.filename));
+      return;
+    }
     const message = event.message as { role?: string; content?: unknown; stopReason?: unknown; errorMessage?: unknown } | undefined;
     if (!message || message.role !== 'assistant') return;
     if (event.type === 'message_update') {
@@ -279,6 +299,37 @@ export class TelegramReplies {
     }
     if (stopReason === 'error') {
       await this.call('sendMessage', { chat_id: chatId, text: `⚠️ The assistant failed: ${errorMessage || 'unknown error'}` });
+    }
+  }
+
+  /** An `attach_file`'s file: sent as a photo or a document, else a note saying why not. */
+  private async sendAttachment(filePath: string, filename: string): Promise<void> {
+    const chatId = this.chatId();
+    if (!chatId || !this.upload) return;
+    const size = fileSize(filePath);
+    if (size === null) {
+      await this.call('sendMessage', { chat_id: chatId, text: attachmentFailedNote(filename, 'the file is no longer there') });
+      return;
+    }
+    const plan = attachmentPlan(filePath, size);
+    if (plan.kind === 'too-large') {
+      await this.call('sendMessage', { chat_id: chatId, text: attachmentTooLargeNote(filename, size, plan.limit, filePath) });
+      return;
+    }
+    if (plan.kind === 'photo') {
+      try {
+        await this.upload('sendPhoto', { chat_id: chatId }, 'photo', filePath, filename);
+        return;
+      } catch (err) {
+        // Telegram refuses some images as photos (dimensions, ratio): send the file as is.
+        this.log.log(`[wherever] telegram: sendPhoto refused ${filename} (${errMessage(err)}); sending it as a document`);
+      }
+    }
+    try {
+      await this.upload('sendDocument', { chat_id: chatId }, 'document', filePath, filename);
+    } catch (err) {
+      this.log.warn(`[wherever] telegram: sending ${filename} failed: ${errMessage(err)}`);
+      await this.call('sendMessage', { chat_id: chatId, text: attachmentFailedNote(filename, errMessage(err)) });
     }
   }
 

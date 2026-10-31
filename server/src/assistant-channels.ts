@@ -152,6 +152,22 @@ export const CHANNEL_SHELL_REFUSAL = 'shell commands ("!") cannot be run from a 
 export const NO_CHANNEL_ERROR =
   'no notification channel is enabled on this server (turn on push notifications in the wherever settings on a device, or configure a channel such as Telegram)';
 
+/**
+ * The text a channel message reaches the assistant as: its text, then one
+ * `[Uploaded file: <path>]` line per file, or, with no text of its own, an
+ * explicit "I have uploaded the following file(s) for you:" before them.
+ * EXACTLY what the web composer sends for an upload (`buildAttachmentMessage`
+ * in web/src/lib/core/attachments.ts; keep the two in step), so the agent reads
+ * a Telegram file as it reads a web one.
+ */
+export function channelMessageText(text: string, files: ChannelFile[] | undefined): string {
+  const trimmed = text.trim();
+  const paths = (files ?? []).map((f) => f.path).filter((p) => typeof p === 'string' && p);
+  if (paths.length === 0) return trimmed;
+  const fileLines = paths.map((p) => `[Uploaded file: ${p}]`).join('\n');
+  return trimmed ? `${trimmed}\n\n${fileLines}` : `I have uploaded the following file(s) for you:\n${fileLines}`;
+}
+
 /** True when a routing destination belongs to `channel` (`telegram`, or `telegram:<sub>`). */
 export function destinationIsChannel(destination: string | null, channel: string): boolean {
   return !!destination && (destination === channel || destination.startsWith(`${channel}:`));
@@ -289,18 +305,21 @@ export class ChannelDispatcher {
    * A channel's inbound message: to the controller with origin = the channel.
    * `!` / `!!` (the pool's shell path) is refused here for every channel, so no
    * transport can run a shell command without an agent turn (story 16).
-   * Attached files are not forwarded yet (`telegram-files` adds them).
+   * Attached files (already saved by the channel) are written into the text
+   * as the web composer does (`channelMessageText`).
    */
   private async onUserMessage(channel: AssistantChannel, m: ChannelUserMessage, hooks?: ChannelInboundHooks): Promise<ChannelInboundResult> {
     if (!this.started.has(channel)) return { accepted: false, reason: 'the channel is not running' };
-    if (typeof m.text !== 'string' || !m.text.trim()) return { accepted: false, reason: 'empty message' };
-    if (m.text.trimStart().startsWith('!')) {
+    const raw = typeof m.text === 'string' ? m.text : '';
+    const text = channelMessageText(raw, m.files);
+    if (!text) return { accepted: false, reason: 'empty message' };
+    if (raw.trimStart().startsWith('!')) {
       return { accepted: false, reason: CHANNEL_SHELL_REFUSAL };
     }
     // Always 'steer': pi only uses it when a turn is running (ADR 0003), and it
     // keeps a message that races the start of a turn from being refused by pi
     // ("already processing") instead of steering it.
-    await this.controller.send(m.text, channel.name, 'steer', {
+    await this.controller.send(m.files?.length ? text : raw, channel.name, 'steer', {
       onDispatch: (d) => {
         try {
           hooks?.onDispatched?.({ steered: d.steered });
