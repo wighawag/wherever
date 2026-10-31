@@ -344,3 +344,34 @@ describe('AssistantController: restart and idle eviction', () => {
     expect(pool.sent).toEqual([{ file: now, text: 'hi', streamingBehavior: undefined, origin: 'schedule:j1' }]);
   });
 });
+
+describe('AssistantController: channel commands (telegram-conversation)', () => {
+  it('send reports, before delivering, whether the message starts a turn or steers the running one', async () => {
+    const { ctl, pool } = make();
+    const cur = await ctl.ensureCurrent();
+    fs.writeFileSync(cur.sessionFile, '{}\n');
+    const seen: boolean[] = [];
+    await ctl.send('first', 'telegram', 'steer', { onDispatch: (d) => seen.push(d.steered) });
+    pool.sessions.get(cur.sessionFile)!.streaming = true;
+    await ctl.send('second', 'telegram', 'steer', { onDispatch: (d) => seen.push(d.steered) });
+    expect(seen).toEqual([false, true]);
+    expect(pool.sent.map((s) => [s.text, s.streamingBehavior])).toEqual([
+      ['first', 'steer'],
+      ['second', 'steer'],
+    ]);
+  });
+
+  it('abortCurrent aborts only a running turn of the current session', async () => {
+    const { ctl, pool } = make();
+    expect(await ctl.abortCurrent()).toBe(false);
+    const cur = await ctl.ensureCurrent();
+    pool.calls.length = 0;
+    expect(await ctl.abortCurrent()).toBe(false);
+    expect(pool.calls).toEqual([]);
+    pool.sessions.get(cur.sessionFile)!.streaming = true;
+    expect(await ctl.abortCurrent()).toBe(true);
+    expect(pool.calls).toEqual([`abort:${path.basename(cur.sessionFile)}`]);
+    // An abort is not a reset: the pointer stays.
+    expect(ctl.status().currentSessionFile).toBe(cur.sessionFile);
+  });
+});

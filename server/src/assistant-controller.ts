@@ -68,6 +68,18 @@ export interface AssistantPoolPort {
   unpinSession(sessionFile: string): void;
 }
 
+/** Options of `AssistantController.send`. */
+export interface AssistantSendOptions {
+  /**
+   * Called once the target session is known, right BEFORE the message is handed
+   * to the pool: `steered` is true when it goes into a running turn as a steer
+   * (ADR 0003), false when it starts one. A channel uses it to show the steer
+   * marker and to order its next message after this one, since the send itself
+   * resolves only when a started turn ends.
+   */
+  onDispatch?: (d: { sessionFile: string; steered: boolean }) => void;
+}
+
 /** What `GET /config`'s `assistant` gains from the controller. */
 export interface AssistantPointerStatus {
   currentSessionId: string | null;
@@ -222,7 +234,7 @@ export class AssistantController {
    * `origin` is recorded by the pool's reply routing (ADR 0014), so the reply
    * to this message is attributed to it.
    */
-  async send(text: string, origin: AssistantOrigin, streamingBehavior?: 'steer' | 'followUp'): Promise<void> {
+  async send(text: string, origin: AssistantOrigin, streamingBehavior?: 'steer' | 'followUp', opts?: AssistantSendOptions): Promise<void> {
     const cur = await this.serial(async () => {
       const c = await this.ensureCurrentUnqueued();
       const loaded = await this.pool.loadSession(c.sessionFile);
@@ -230,8 +242,28 @@ export class AssistantController {
       // The file vanished between the check and the load: start afresh.
       return this.createAndPoint();
     });
-    const behavior = streamingBehavior ?? (this.pool.isStreaming(cur.sessionFile) ? 'steer' : undefined);
+    const streaming = this.pool.isStreaming(cur.sessionFile);
+    const behavior = streamingBehavior ?? (streaming ? 'steer' : undefined);
+    try {
+      opts?.onDispatch?.({ sessionFile: cur.sessionFile, steered: streaming && behavior === 'steer' });
+    } catch (err) {
+      console.error(`[wherever] assistant: onDispatch failed: ${errMessage(err)}`);
+    }
     await this.pool.sendUserMessage(cur.sessionFile, text, behavior, false, origin);
+  }
+
+  /**
+   * Abort the CURRENT session's running turn (a channel's `stop`), leaving the
+   * pointer where it is (an abort is not a reset). False when there is no
+   * current session or nothing is running. What the abort leaves queued is
+   * cleared and reported by the aborted settle (`clearAfterAbort`, called by
+   * the scheduler), exactly as for a web stop.
+   */
+  async abortCurrent(): Promise<boolean> {
+    const file = this.pointer?.sessionFile;
+    if (!file || !this.pool.isStreaming(file)) return false;
+    await this.pool.abortSession(file);
+    return true;
   }
 
   /**

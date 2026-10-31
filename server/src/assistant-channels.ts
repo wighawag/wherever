@@ -41,10 +41,32 @@ export interface ChannelUserMessage {
 /** What `onUserMessage` answers: refused messages never reach the pool. */
 export type ChannelInboundResult = { accepted: true } | { accepted: false; reason: string };
 
+/** Hooks of one inbound message. */
+export interface ChannelInboundHooks {
+  /**
+   * Called once the message is handed to the assistant session, BEFORE the
+   * send resolves (which, for a message that starts a turn, is only at the end
+   * of that turn): `steered` is true when it went into a running turn as a
+   * steer (ADR 0003), false when it started one.
+   */
+  onDispatched?(d: { steered: boolean }): void;
+}
+
+/** A channel command's answer (`/new`, `/reset`). */
+export type ChannelCommandResult = { ok: true } | { ok: false; error: string };
+
 /** The context a channel gets at `start`. */
 export interface ChannelContext {
-  /** Feed a user message to the CURRENT assistant session (controller `send`, origin = the channel). */
-  onUserMessage(message: ChannelUserMessage): Promise<ChannelInboundResult>;
+  /**
+   * Feed a user message to the CURRENT assistant session (controller `send`,
+   * origin = the channel). Into a running turn it STEERS, as the web composer
+   * does (ADR 0003); `hooks.onDispatched` tells which happened.
+   */
+  onUserMessage(message: ChannelUserMessage, hooks?: ChannelInboundHooks): Promise<ChannelInboundResult>;
+  /** Reset the assistant (a channel's `/new` / `/reset`): the controller's reset. Never throws. */
+  resetSession(): Promise<ChannelCommandResult>;
+  /** Abort the current assistant session's running turn (a channel's `stop`). Never throws. */
+  abortTurn(): Promise<{ aborted: boolean }>;
 }
 
 /**
@@ -95,7 +117,16 @@ export interface AssistantChannel {
 
 /** The slice of the controller the dispatcher drives (faked in tests). */
 export interface ChannelControllerPort {
-  send(text: string, origin: string): Promise<void>;
+  send(
+    text: string,
+    origin: string,
+    streamingBehavior?: 'steer' | 'followUp',
+    opts?: { onDispatch?: (d: { sessionFile: string; steered: boolean }) => void },
+  ): Promise<void>;
+  /** The assistant reset (optional in fakes; a channel's `/new` then answers an error). */
+  reset?(): Promise<unknown>;
+  /** Abort the current session's running turn; true when one was running. */
+  abortCurrent?(): Promise<boolean>;
 }
 
 /** The slice of the session pool the dispatcher listens to (faked in tests). */
@@ -113,6 +144,9 @@ export interface NotifyDelivery {
 export type NotifyOutcome =
   | { ok: true; deliveries: NotifyDelivery[] }
   | { ok: false; error: string; deliveries: NotifyDelivery[] };
+
+/** Why a channel's `!` / `!!` message is refused (the pool's shell path is never reached). */
+export const CHANNEL_SHELL_REFUSAL = 'shell commands ("!") cannot be run from a channel; ask the assistant instead';
 
 /** The error `assistant_notify` answers when no channel can notify. */
 export const NO_CHANNEL_ERROR =
@@ -177,7 +211,11 @@ export class ChannelDispatcher {
     this.unsubscribe = this.pool.subscribeEvents((file, event, destination) => this.route(file, event, destination));
     for (const channel of this.channels) {
       try {
-        await channel.start({ onUserMessage: (m) => this.onUserMessage(channel, m) });
+        await channel.start({
+          onUserMessage: (m, hooks) => this.onUserMessage(channel, m, hooks),
+          resetSession: () => this.resetSession(channel),
+          abortTurn: () => this.abortTurn(channel),
+        });
         this.started.add(channel);
       } catch (err) {
         console.error(`[wherever] assistant channel "${channel.name}" failed to start: ${errMessage(err)}`);
@@ -253,14 +291,48 @@ export class ChannelDispatcher {
    * transport can run a shell command without an agent turn (story 16).
    * Attached files are not forwarded yet (`telegram-files` adds them).
    */
-  private async onUserMessage(channel: AssistantChannel, m: ChannelUserMessage): Promise<ChannelInboundResult> {
+  private async onUserMessage(channel: AssistantChannel, m: ChannelUserMessage, hooks?: ChannelInboundHooks): Promise<ChannelInboundResult> {
     if (!this.started.has(channel)) return { accepted: false, reason: 'the channel is not running' };
     if (typeof m.text !== 'string' || !m.text.trim()) return { accepted: false, reason: 'empty message' };
     if (m.text.trimStart().startsWith('!')) {
-      return { accepted: false, reason: 'shell commands ("!") cannot be run from a channel; ask the assistant instead' };
+      return { accepted: false, reason: CHANNEL_SHELL_REFUSAL };
     }
-    await this.controller.send(m.text, channel.name);
+    // Always 'steer': pi only uses it when a turn is running (ADR 0003), and it
+    // keeps a message that races the start of a turn from being refused by pi
+    // ("already processing") instead of steering it.
+    await this.controller.send(m.text, channel.name, 'steer', {
+      onDispatch: (d) => {
+        try {
+          hooks?.onDispatched?.({ steered: d.steered });
+        } catch (err) {
+          console.error(`[wherever] assistant channel "${channel.name}" dispatch hook failed: ${errMessage(err)}`);
+        }
+      },
+    });
     return { accepted: true };
+  }
+
+  /** A channel's `/new` / `/reset`: the controller's reset. */
+  private async resetSession(channel: AssistantChannel): Promise<ChannelCommandResult> {
+    if (!this.started.has(channel)) return { ok: false, error: 'the channel is not running' };
+    if (!this.controller.reset) return { ok: false, error: 'reset is not available' };
+    try {
+      await this.controller.reset();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: errMessage(err) };
+    }
+  }
+
+  /** A channel's `stop`: abort the current session's running turn. */
+  private async abortTurn(channel: AssistantChannel): Promise<{ aborted: boolean }> {
+    if (!this.started.has(channel) || !this.controller.abortCurrent) return { aborted: false };
+    try {
+      return { aborted: await this.controller.abortCurrent() };
+    } catch (err) {
+      console.error(`[wherever] assistant channel "${channel.name}": stopping the turn failed: ${errMessage(err)}`);
+      return { aborted: false };
+    }
   }
 
   private route(sessionFile: string, event: { type: string; [k: string]: unknown }, destination: string | null): void {

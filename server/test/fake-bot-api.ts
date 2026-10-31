@@ -27,6 +27,8 @@ export class FakeBotApi {
   /** Tokens the fake accepts (any other answers 401). Empty = accept all. */
   validTokens = new Set<string>();
   username = 'wherever_test_bot';
+  /** Methods answered with a 400 (e.g. `sendMessageDraft` on an older Bot API). */
+  failMethods = new Set<string>();
 
   constructor(private readonly holdMs = 150) {}
 
@@ -99,7 +101,12 @@ export class FakeBotApi {
       return { status: 401, body: { ok: false, error_code: 401, description: 'Unauthorized' } };
     }
     if (method === 'getMe') return ok({ id: Number(token.split(':')[0]) || 1, is_bot: true, username: this.username });
+    if (this.failMethods.has(method)) {
+      return { status: 400, body: { ok: false, error_code: 400, description: `Bad Request: ${method} is not available` } };
+    }
     if (method === 'sendMessage') return ok({ message_id: this.nextSentId++, chat: { id: params.chat_id }, text: params.text });
+    if (method === 'editMessageText') return ok({ message_id: params.message_id, chat: { id: params.chat_id }, text: params.text });
+    if (method === 'sendMessageDraft' || method === 'setMessageReaction') return ok(true);
     if (method === 'getUpdates') {
       const offset = typeof params.offset === 'number' ? params.offset : undefined;
       if (offset !== undefined) this.pending = this.pending.filter((u) => u.update_id >= offset);

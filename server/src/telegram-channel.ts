@@ -1,21 +1,47 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AssistantChannel, ChannelContext } from './assistant-channels.js';
+import type {
+  AssistantChannel,
+  ChannelContext,
+  ChannelDroppedReport,
+  ChannelNotification,
+  ChannelNotifyResult,
+  ChannelReply,
+} from './assistant-channels.js';
 import {
   applyPairing,
   decideInbound,
   effectivePairing,
   generatePairingCode,
   initialPairingState,
+  parseCommand,
   repair as repairState,
   type PairedUser,
   type PairingState,
 } from './telegram-pairing.js';
+import { TelegramReplies, splitTelegramText } from './telegram-replies.js';
 
 /**
- * The assistant's TELEGRAM channel, the secure base (task
- * `telegram-token-and-pairing`; the conversation itself, replies, steer marker,
- * commands and notifications, is `telegram-conversation`'s).
+ * The assistant's TELEGRAM channel: the secure base (task
+ * `telegram-token-and-pairing`: token, polling, pairing) and the CONVERSATION
+ * (task `telegram-conversation`):
+ *
+ * - INBOUND, from the paired user only (telegram-pairing.ts): `stop` / `/stop`
+ *   aborts the running turn; `/new` / `/reset` reset the assistant (the
+ *   controller's reset, never sent to pi); `!` / `!!` text is refused with an
+ *   explanation (it never reaches the pool's shell path); anything else,
+ *   including other `/` text such as `/skill:`, goes to the controller
+ *   untouched (the origin `telegram` rides the pool's routing queue, never a
+ *   text prefix). Into a running turn it STEERS (ADR 0003), shown by a
+ *   `STEER_REACTION` on the user's message, or, when reactions are refused,
+ *   the short `STEER_NOTE`. Each message is handled once it is DISPATCHED
+ *   (not when its turn ends), so messages keep their order and polling goes on.
+ * - REPLIES: output whose current destination is `telegram` (ADR 0014), from
+ *   the dispatcher, streamed and split by telegram-replies.ts.
+ * - NOTIFY (`assistant_notify`): its OWN message `🔔 <source>: <title>`, the
+ *   body below, then a link to the target session when `publicUrl` is
+ *   configured; sent at once, even mid-reply, never folded into a reply.
+ * - DROPPED messages (a reset, an aborted settle): reported back as a list.
  *
  * Bot API LONG POLLING (`getUpdates` with a server-side `timeout`), the
  * mechanics ported from the MIT `badlogic/pi-telegram` extension, but NOT its
@@ -88,7 +114,53 @@ export interface TelegramChannelOptions {
   /** Called whenever the status changes (paired, re-paired, error). */
   onChange?: () => void;
   newCode?: () => string;
+  /** The wherever public URL (`publicUrl`): a notification links to `<publicUrl>/#<sessionId>`. */
+  publicUrl?: string;
+  /** Reply preview throttle, ms (default 750; tests use 0). */
+  replyThrottleMs?: number;
   log?: Pick<Console, 'log' | 'warn' | 'error'>;
+}
+
+/** The reaction marking a message that STEERED the running turn (one of Telegram's allowed reaction emoji). */
+export const STEER_REACTION = '✍';
+/** The fallback when the reaction is refused. */
+export const STEER_NOTE = '↪️ Added to the current reply.';
+export const SHELL_REFUSAL_REPLY =
+  'Shell commands ("!" or "!!") cannot be run from Telegram. Ask the assistant in words instead, and it can run what is needed itself.';
+export const RESET_REPLY = '🆕 Started a fresh assistant session. What it wrote down in its folder is kept.';
+export const STOPPED_REPLY = '⏹ Stopped the current reply.';
+export const NOTHING_RUNNING_REPLY = 'Nothing is running.';
+
+/** The `🔔` notification text (an `assistant_notify`), before splitting. */
+export function formatTelegramNotification(n: ChannelNotification, publicUrl?: string): string {
+  let text = `🔔 ${n.source}: ${n.title}`;
+  if (n.body && n.body.trim()) text += `\n\n${n.body.trim()}`;
+  const link = sessionLink(publicUrl, n.navigate);
+  if (link) text += `\n\n${link}`;
+  return text;
+}
+
+/** `<publicUrl>/#<sessionId>`, or null without a usable http(s) public URL. */
+export function sessionLink(publicUrl: string | undefined, sessionId: string): string | null {
+  if (typeof publicUrl !== 'string' || !publicUrl.trim() || !sessionId) return null;
+  try {
+    const u = new URL(publicUrl.trim());
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  } catch {
+    return null;
+  }
+  return `${publicUrl.trim().replace(/[/#]+$/, '')}/#${sessionId}`;
+}
+
+/** The report of messages a reset or an aborted settle dropped, before splitting. */
+export function formatDroppedReport(report: ChannelDroppedReport): string {
+  const n = report.messages.length;
+  const what = n === 1 ? 'this message' : `these ${n} messages`;
+  const head =
+    report.reason === 'reset'
+      ? `⚠️ The assistant was reset before it read ${what}; send again if still needed:`
+      : `⚠️ The turn was stopped before the assistant read ${what}; send again if still needed:`;
+  return [head, ...report.messages.map((m) => `• ${m}`)].join('\n\n');
 }
 
 class BotApiError extends Error {
@@ -130,6 +202,8 @@ export class TelegramChannel implements AssistantChannel {
   private ctx: ChannelContext | null = null;
   private abort: AbortController | null = null;
   private loopDone: Promise<void> | null = null;
+  private readonly publicUrl: string | undefined;
+  private readonly replies: TelegramReplies;
 
   constructor(opts: TelegramChannelOptions) {
     this.token = opts.token;
@@ -144,6 +218,13 @@ export class TelegramChannel implements AssistantChannel {
     this.onChange = opts.onChange ?? (() => {});
     this.log = opts.log ?? console;
     this.configuredUserId = opts.configuredUserId;
+    this.publicUrl = opts.publicUrl;
+    this.replies = new TelegramReplies({
+      call: (method, params) => this.call(method, params),
+      chatId: () => (this.started ? this.pairedChatId() : null),
+      throttleMs: opts.replyThrottleMs,
+      log: this.log,
+    });
     // Nothing is read before start(): the state lives in memory from there.
     this.pairing = { configuredUserId: opts.configuredUserId, stored: null, code: null };
   }
@@ -163,6 +244,7 @@ export class TelegramChannel implements AssistantChannel {
     if (!this.started) return;
     this.started = false;
     this.abort?.abort();
+    this.replies.stop();
     await this.loopDone?.catch(() => {});
     this.loopDone = null;
     this.ctx = null;
@@ -205,6 +287,39 @@ export class TelegramChannel implements AssistantChannel {
     this.log.log('[wherever] telegram: pairing reset from the web; a new pairing code was issued');
     this.onChange();
     return { ok: true };
+  }
+
+  /** Output answering a Telegram message (its destination is `telegram`): streamed to the paired chat. */
+  deliverReply(reply: ChannelReply): void {
+    this.replies.handle(reply.sessionFile, reply.event);
+  }
+
+  /** Resolves once every pending reply preview and send has run (tests). */
+  replyIdle(): Promise<void> {
+    return this.replies.idle();
+  }
+
+  /** `assistant_notify`: its own `🔔` message, sent now (never waits for, or joins, a reply). */
+  async notify(n: ChannelNotification): Promise<ChannelNotifyResult> {
+    const chatId = this.started ? this.pairedChatId() : null;
+    if (!chatId) return { ok: false, error: this.started ? 'Telegram is not paired yet' : 'the Telegram channel is not running' };
+    try {
+      for (const part of splitTelegramText(formatTelegramNotification(n, this.publicUrl))) {
+        await this.call('sendMessage', { chat_id: chatId, text: part });
+      }
+      return { ok: true, detail: 'sent' };
+    } catch (err) {
+      return { ok: false, error: errMessage(err).split(this.token).join('<token>') };
+    }
+  }
+
+  /** Messages from Telegram that a reset or an aborted settle dropped: listed back to the user. */
+  async reportDropped(report: ChannelDroppedReport): Promise<void> {
+    const chatId = this.started ? this.pairedChatId() : null;
+    if (!chatId || report.messages.length === 0) return;
+    for (const part of splitTelegramText(formatDroppedReport(report))) {
+      await this.reply(chatId, part);
+    }
   }
 
   /** One Bot API call; resolves `result`, throws `BotApiError` on `ok: false`. */
@@ -325,24 +440,82 @@ export class TelegramChannel implements AssistantChannel {
       case 'refuse':
         await this.reply(m.chat.id, decision.reply);
         return;
-      case 'forward': {
-        // Not awaited: the send resolves when the turn ends, and polling must go
-        // on meanwhile. The conversation (replies, steer marker, refusals shown
-        // on Telegram) is `telegram-conversation`'s.
-        const ctx = this.ctx;
-        if (!ctx) return;
-        void ctx
-          .onUserMessage({ channel: TELEGRAM_CHANNEL, text: m.text, senderId: fromId })
-          .then((r) => {
-            if (!r.accepted) this.log.log(`[wherever] telegram: message not sent to the assistant (${r.reason})`);
-          })
-          .catch((err) => this.log.error(`[wherever] telegram: sending a message to the assistant failed: ${errMessage(err)}`));
+      case 'forward':
+        await this.converse(m.chat.id, m.message_id, m.text, fromId);
         return;
+    }
+  }
+
+  /** The paired user's message: a command, a refusal, or a message for the assistant. */
+  private async converse(chatId: number, messageId: number, text: string, fromId: string): Promise<void> {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const trimmed = text.trim();
+    const cmd = parseCommand(trimmed);
+    if (trimmed.toLowerCase() === 'stop' || cmd?.command === 'stop') {
+      const r = await ctx.abortTurn();
+      await this.reply(chatId, r.aborted ? STOPPED_REPLY : NOTHING_RUNNING_REPLY);
+      return;
+    }
+    if (cmd && (cmd.command === 'new' || cmd.command === 'reset')) {
+      const r = await ctx.resetSession();
+      await this.reply(chatId, r.ok ? RESET_REPLY : `⚠️ Could not reset the assistant: ${r.error}`);
+      return;
+    }
+    if (trimmed.startsWith('!')) {
+      await this.reply(chatId, SHELL_REFUSAL_REPLY);
+      return;
+    }
+    // Wait until the message is DISPATCHED (handed to the session as a start or
+    // a steer), not until its turn ends: the next message is then decided
+    // against the right state (steer vs start), and polling goes on.
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const dispatched = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      ctx
+        .onUserMessage(
+          { channel: TELEGRAM_CHANNEL, text, senderId: fromId },
+          {
+            onDispatched: ({ steered }) => {
+              dispatched();
+              if (steered) void this.markSteer(chatId, messageId);
+            },
+          },
+        )
+        .then((r) => {
+          if (!r.accepted) this.log.log(`[wherever] telegram: message not sent to the assistant (${r.reason})`);
+        })
+        .catch((err) => {
+          this.log.error(`[wherever] telegram: sending a message to the assistant failed: ${errMessage(err)}`);
+          void this.reply(chatId, `⚠️ The assistant could not take your message: ${errMessage(err)}`);
+        })
+        .finally(dispatched);
+    });
+  }
+
+  /** Show that a message steered the running turn: a reaction, else a short note replying to it. */
+  private async markSteer(chatId: number, messageId: number): Promise<void> {
+    try {
+      await this.call('setMessageReaction', { chat_id: chatId, message_id: messageId, reaction: [{ type: 'emoji', emoji: STEER_REACTION }] });
+    } catch (err) {
+      this.log.log(`[wherever] telegram: setMessageReaction failed (${errMessage(err)}); sending the steer note instead`);
+      try {
+        await this.call('sendMessage', {
+          chat_id: chatId,
+          text: STEER_NOTE,
+          reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
+        });
+      } catch (err2) {
+        this.log.warn(`[wherever] telegram: sending the steer note failed: ${errMessage(err2)}`);
       }
     }
   }
 
-  private async reply(chatId: number, text: string): Promise<void> {
+  private async reply(chatId: number | string, text: string): Promise<void> {
     try {
       await this.call('sendMessage', { chat_id: chatId, text });
     } catch (err) {

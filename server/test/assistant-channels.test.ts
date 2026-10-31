@@ -294,3 +294,42 @@ describe('dropped messages are reported to the channels of their origins', () =>
     ).toEqual(new Map([['telegram', ['a', 'b']]]));
   });
 });
+
+describe('channel commands and the dispatch hook (telegram-conversation)', () => {
+  it('a channel message is sent as a steer-if-busy with the dispatch hook; reset and abort reach the controller', async () => {
+    const calls: Array<unknown[]> = [];
+    const controller = {
+      send: async (text: string, origin: string, behavior?: string, opts?: { onDispatch?: (d: { sessionFile: string; steered: boolean }) => void }) => {
+        calls.push(['send', text, origin, behavior]);
+        opts?.onDispatch?.({ sessionFile: '/s.jsonl', steered: true });
+      },
+      reset: async () => {
+        calls.push(['reset']);
+      },
+      abortCurrent: async () => {
+        calls.push(['abort']);
+        return true;
+      },
+    };
+    const t = new FakeChannel('telegram');
+    const d = new ChannelDispatcher({ controller, pool: new FakeEvents(), channels: [t] });
+    await d.start();
+    const dispatched: boolean[] = [];
+    expect(await t.ctx!.onUserMessage({ channel: 'telegram', text: '/skill:x go' }, { onDispatched: (r) => dispatched.push(r.steered) })).toEqual({ accepted: true });
+    expect(dispatched).toEqual([true]);
+    expect(await t.ctx!.resetSession()).toEqual({ ok: true });
+    expect(await t.ctx!.abortTurn()).toEqual({ aborted: true });
+    expect(calls).toEqual([['send', '/skill:x go', 'telegram', 'steer'], ['reset'], ['abort']]);
+
+    // A controller failing to reset answers an error, never throws to the channel.
+    const failing = new ChannelDispatcher({
+      controller: { send: async () => {}, reset: async () => Promise.reject(new Error('disk full')), abortCurrent: async () => false },
+      pool: new FakeEvents(),
+      channels: [new FakeChannel('telegram')],
+    });
+    await failing.start();
+    const ft = (failing as any).channels[0] as FakeChannel;
+    expect(await ft.ctx!.resetSession()).toEqual({ ok: false, error: 'disk full' });
+    expect(await ft.ctx!.abortTurn()).toEqual({ aborted: false });
+  });
+});
