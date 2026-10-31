@@ -51,3 +51,22 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions taken while building this task are recorded in [work/notes/observations/telegram-conversation-decisions.md](../../notes/observations/telegram-conversation-decisions.md), with JSDoc at the choice sites in `server/src/telegram-channel.ts`, `server/src/telegram-replies.ts`, `server/src/assistant-channels.ts` and `server/src/assistant-controller.ts`. They cover:
+- channel messages always sent with `'steer'`;
+- "steered" decided by `isStreaming` at dispatch, via the new `onDispatch` / `onDispatched` hooks;
+- the context's `resetSession()` / `abortTurn()` and the controller's `abortCurrent()`, which bypasses the serial queue;
+- the ✍ reaction and its fallback note;
+- handling each message once dispatched, so order holds and polling goes on;
+- how `stop`, `/new` and `/reset` are matched, and pi-telegram's `/status` and `/compact` not ported;
+- `!` refused in the channel as well as the dispatcher;
+- delivery per assistant message at its own `message_end`;
+- the 4000-character limit;
+- the preview cadence;
+- the aborted, error and tool-only endings;
+- the notification and dropped-report formats;
+- the typing indicator not ported;
+- the test-harness additions;
+- the `minor` changeset bump.

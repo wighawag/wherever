@@ -1259,6 +1259,8 @@ async function main(): Promise<void> {
         stateDir: getWhereverStateDir(),
         configuredUserId,
         apiBaseUrl: typeof telegramConfig?.apiBaseUrl === 'string' && telegramConfig.apiBaseUrl.trim() ? telegramConfig.apiBaseUrl.trim() : undefined,
+        // A notification links to the target session when the public URL is set.
+        publicUrl: getWhereverConfig().publicUrl,
       });
     }
   }
