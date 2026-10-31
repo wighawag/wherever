@@ -1,3 +1,6 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import type { ImageContent } from '@earendil-works/pi-ai';
 import type { DroppedMessages } from './assistant-controller.js';
 
 /**
@@ -121,7 +124,7 @@ export interface ChannelControllerPort {
     text: string,
     origin: string,
     streamingBehavior?: 'steer' | 'followUp',
-    opts?: { onDispatch?: (d: { sessionFile: string; steered: boolean }) => void },
+    opts?: { onDispatch?: (d: { sessionFile: string; steered: boolean }) => void; images?: ImageContent[] },
   ): Promise<void>;
   /** The assistant reset (optional in fakes; a channel's `/new` then answers an error). */
   reset?(): Promise<unknown>;
@@ -166,6 +169,44 @@ export function channelMessageText(text: string, files: ChannelFile[] | undefine
   if (paths.length === 0) return trimmed;
   const fileLines = paths.map((p) => `[Uploaded file: ${p}]`).join('\n');
   return trimmed ? `${trimmed}\n\n${fileLines}` : `I have uploaded the following file(s) for you:\n${fileLines}`;
+}
+
+/** Image extensions recognised for a channel file that carries no MIME type. */
+const IMAGE_EXTENSION_MIME: Record<string, string> = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+};
+
+/**
+ * The model IMAGE INPUTS of a channel message (task `pool-send-images`): every
+ * file whose MIME type is `image/*` (a Telegram photo, or an image sent as a
+ * document), or, with no MIME type, whose extension is a common image one,
+ * read from its saved path as base64. The file stays a path in the text as well
+ * (`channelMessageText`), so the agent can still open, move or attach it; pi
+ * converts or resizes what the model needs, and drops it with a note for a
+ * text-only model. A file that cannot be read is logged and left as a path only.
+ */
+export async function channelImages(files: ChannelFile[] | undefined): Promise<ImageContent[]> {
+  const out: ImageContent[] = [];
+  for (const f of files ?? []) {
+    if (typeof f?.path !== 'string' || !f.path) continue;
+    const mimeType = f.mimeType
+      ? f.mimeType.toLowerCase().startsWith('image/')
+        ? f.mimeType
+        : null
+      : (IMAGE_EXTENSION_MIME[path.extname(f.path).toLowerCase()] ?? null);
+    if (!mimeType) continue;
+    try {
+      const bytes = await fs.readFile(f.path);
+      out.push({ type: 'image', data: bytes.toString('base64'), mimeType });
+    } catch (err) {
+      console.warn(`[wherever] assistant channel: could not read image ${f.path} (${errMessage(err)}); sending its path only`);
+    }
+  }
+  return out;
 }
 
 /** True when a routing destination belongs to `channel` (`telegram`, or `telegram:<sub>`). */
@@ -306,7 +347,8 @@ export class ChannelDispatcher {
    * `!` / `!!` (the pool's shell path) is refused here for every channel, so no
    * transport can run a shell command without an agent turn (story 16).
    * Attached files (already saved by the channel) are written into the text
-   * as the web composer does (`channelMessageText`).
+   * as the web composer does (`channelMessageText`), and image files are also
+   * sent as model image inputs (`channelImages`).
    */
   private async onUserMessage(channel: AssistantChannel, m: ChannelUserMessage, hooks?: ChannelInboundHooks): Promise<ChannelInboundResult> {
     if (!this.started.has(channel)) return { accepted: false, reason: 'the channel is not running' };
@@ -319,7 +361,9 @@ export class ChannelDispatcher {
     // Always 'steer': pi only uses it when a turn is running (ADR 0003), and it
     // keeps a message that races the start of a turn from being refused by pi
     // ("already processing") instead of steering it.
+    const images = await channelImages(m.files);
     await this.controller.send(m.files?.length ? text : raw, channel.name, 'steer', {
+      ...(images.length ? { images } : {}),
       onDispatch: (d) => {
         try {
           hooks?.onDispatched?.({ steered: d.steered });

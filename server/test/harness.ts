@@ -64,6 +64,12 @@ export interface HarnessOptions {
   idleTimeoutMs?: number;
   /** Extra env for the server process. */
   env?: Record<string, string>;
+  /**
+   * The fake model's input modalities (models.json `input`). Default: pi's
+   * default (text only), so pi replaces any image with an omission note; pass
+   * `['text', 'image']` for a test that asserts an image reaches the request.
+   */
+  modelInput?: Array<'text' | 'image'>;
 }
 
 export interface Harness {
@@ -126,7 +132,7 @@ export async function startHarness(opts?: HarnessOptions): Promise<Harness> {
             baseUrl: fake.url,
             api: 'anthropic-messages',
             apiKey: 'test-key',
-            models: [{ id: 'fake-model' }],
+            models: [{ id: 'fake-model', ...(opts?.modelInput ? { input: opts.modelInput } : {}) }],
           },
         },
       },

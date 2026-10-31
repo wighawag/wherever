@@ -1013,7 +1013,7 @@ const EXTENSION_DISCOVERY_WAIT_MS = 10_000;
 import { matchRemoteRepoRule } from './remote-candidates.js';
 import { ReplyRouting, WEB_ORIGIN, type ReplyOrigin, type RoutingSnapshot } from './reply-routing.js';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import type { Model, Api } from '@earendil-works/pi-ai';
+import type { Model, Api, ImageContent } from '@earendil-works/pi-ai';
 import type { SessionMessageEntry, SessionEntry } from '@earendil-works/pi-coding-agent';
 import type { SessionInfo, HistoryMessage, FolderWithSessions, ModelInfo, FolderSessionInfo, ContextUsageInfo, SkillCommand } from './session-types.js';
 import type { WebSocket } from 'ws';
@@ -2508,6 +2508,15 @@ export class SessionPool {
    * recorded in the session's reply routing only for a send that WILL produce a
    * user message: never for a `!`/`!!` shell send or a non-resident session,
    * and dropped again when pi reports the message `handled` or the send throws.
+   *
+   * `images` are model IMAGE INPUTS sent with the message (task
+   * `pool-send-images`, for a channel's photos): a server session passes them
+   * to `prompt()` (pi normalizes and resizes them; a text-only model gets pi's
+   * omission note instead), a CLI-bridge session relays them on `cli_message`
+   * for the extension's `pi.sendUserMessage`. None (absent or empty) = exactly
+   * the text-only send: `images: undefined` to `prompt()`, no `images` key on
+   * `cli_message`. They never change routing (one send, one origin entry) and
+   * are ignored by a `!`/`!!` shell send, which has no user message.
    */
   async sendUserMessage(
     sessionFileOrId: string,
@@ -2515,7 +2524,9 @@ export class SessionPool {
     streamingBehavior?: 'steer' | 'followUp',
     conversationMode = false,
     origin: ReplyOrigin = WEB_ORIGIN,
+    images?: ImageContent[],
   ): Promise<void> {
+    const imageInputs = images && images.length > 0 ? images : undefined;
     const tracked = this.getSession(sessionFileOrId);
     if (!tracked) return;
     // Backstop for the WS layer's own check: mid-reload the tracked agent is the
@@ -2604,6 +2615,7 @@ export class SessionPool {
         if (text.startsWith('/')) {
           await tracked.agentSession.prompt(text, {
             expandPromptTemplates: true,
+            images: imageInputs,
             streamingBehavior,
             source: 'interactive',
             preflightResult,
@@ -2611,6 +2623,7 @@ export class SessionPool {
         } else {
           await tracked.agentSession.prompt(text, {
             expandPromptTemplates: false,
+            images: imageInputs,
             streamingBehavior,
             source: 'extension',
             preflightResult,
@@ -2638,6 +2651,7 @@ export class SessionPool {
           message: text,
           streamingBehavior,
           ...(conversationMode ? { conversationMode: true } : {}),
+          ...(imageInputs ? { images: imageInputs } : {}),
         }));
         routing.relayed(ticket);
       } catch (err) {

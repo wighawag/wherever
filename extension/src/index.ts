@@ -20,6 +20,7 @@ import * as path from "node:path";
 import { Type } from "typebox";
 import { WhereverClient } from "@wherever-dev/client";
 import { createConversationModeSignal } from "./conversation-mode-hint.js";
+import { cliMessageContent } from "./cli-message.js";
 import { isInsideWhereverServer } from "./server-process-marker.js";
 import {
   AssistantInfoCache,
@@ -848,7 +849,8 @@ export default async function (pi: ExtensionAPI) {
             // Arm/disarm the conversation-mode hint for the turn this message
             // starts (absent flag = off), then let before_agent_start consume it.
             conversationSignal.arm(msg.conversationMode === true);
-            pi.sendUserMessage(msg.message, {
+            // Images (a channel's photos) go as image content; none = the plain string.
+            pi.sendUserMessage(cliMessageContent(msg), {
               deliverAs: msg.streamingBehavior,
             });
             break;
