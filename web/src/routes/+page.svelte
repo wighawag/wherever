@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Head from '$lib/Head.svelte';
 	import ConnectionSettings from '$lib/components/ConnectionSettings.svelte';
+	import AssistantPushSettings from '$lib/components/AssistantPushSettings.svelte';
 	import ChatMessageList from '$lib/components/ChatMessageList.svelte';
 	import ChatInput from '$lib/components/ChatInput.svelte';
 	import SessionBrowser from '$lib/components/SessionBrowser.svelte';
@@ -621,6 +622,10 @@
 					token=""
 					onConnected={handleConnected}
 				/>
+
+				{#if $assistantStatusStore.active && $assistantStatusStore.webPush?.enabled}
+					<AssistantPushSettings />
+				{/if}
 
 				<div class="mt-2 border-t border-brand-border p-4">
 					<h3

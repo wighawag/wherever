@@ -47,8 +47,16 @@ export interface AssistantPoolPort {
   getSession(sessionFile: string): { sessionId: string; sessionFile: string; cwd: string } | null;
   isStreaming(sessionFile: string): boolean;
   abortSession(sessionFile: string): Promise<void>;
-  /** Clear pi's steer + followUp queues, returning what was dropped; null when not resident / not readable (CLI). */
-  clearQueuedMessages(sessionFile: string): { steering: string[]; followUp: string[] } | null;
+  /**
+   * Clear pi's steer + followUp queues, returning what was dropped; null when not
+   * resident / not readable (CLI). `origins`, when given, is each text's routing
+   * origin (aligned by index, null = unknown).
+   */
+  clearQueuedMessages(sessionFile: string): {
+    steering: string[];
+    followUp: string[];
+    origins?: { steering: Array<string | null>; followUp: Array<string | null> };
+  } | null;
   sendUserMessage(
     sessionFile: string,
     text: string,
@@ -76,7 +84,7 @@ export interface AssistantCurrentSession {
 /**
  * Messages pi still held queued (steer / followUp) on a session the controller
  * retired. An abort leaves pi's queues populated (ADR 0014), so a reset clears
- * them and RECORDS them here; `channel-seam-notify-and-web-push` reports them to
+ * them and RECORDS them here; the channel seam (`assistant-channels.ts`) reports them to
  * the channels of their routing origins.
  */
 export interface DroppedMessages {
@@ -85,6 +93,12 @@ export interface DroppedMessages {
   reason: 'reset' | 'aborted';
   steering: string[];
   followUp: string[];
+  /**
+   * The routing origin of each dropped text (ADR 0014), aligned by index with
+   * `steering` / `followUp`; null where unknown. The channel seam reports each
+   * message to the channel it came from (assistant-channels.ts).
+   */
+  origins?: { steering: Array<AssistantOrigin | null>; followUp: Array<AssistantOrigin | null> };
   at: string;
 }
 
@@ -226,7 +240,7 @@ export class AssistantController {
    * followUp messages an abort leaves behind (ADR 0014), so "settled with
    * nothing queued", which inline jobs wait for, would never be reached again.
    * Clear them and record what was dropped, exactly as a reset does (reported
-   * to their channels once `channel-seam-notify-and-web-push` exists). A no-op
+   * to the channels of their origins through `onDropped`, assistant-channels.ts). A no-op
    * for any other session, and for a CLI-bridge session (whose queues the
    * server cannot read or clear).
    */
@@ -278,7 +292,7 @@ export class AssistantController {
 
   /** Clear pi's queues of a session and record what was dropped (null when nothing was). Never throws. */
   private clearAndRecord(sessionFile: string, reason: DroppedMessages['reason']): DroppedMessages | null {
-    let cleared: { steering: string[]; followUp: string[] } | null = null;
+    let cleared: ReturnType<AssistantPoolPort['clearQueuedMessages']> = null;
     try {
       cleared = this.pool.clearQueuedMessages(sessionFile);
     } catch (err) {
@@ -290,6 +304,9 @@ export class AssistantController {
       reason,
       steering: [...cleared.steering],
       followUp: [...cleared.followUp],
+      ...(cleared.origins
+        ? { origins: { steering: [...cleared.origins.steering], followUp: [...cleared.origins.followUp] } }
+        : {}),
       at: new Date().toISOString(),
     };
     this.dropped.push(record);

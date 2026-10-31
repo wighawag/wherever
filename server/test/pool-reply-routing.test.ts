@@ -253,6 +253,28 @@ describe('pool reply routing (server sessions)', () => {
     expect(users(seen)).toEqual([['first', 'none']]);
   }, 60_000);
 
+  it('clearQueuedMessages returns each dropped text with its routing origin (for the channel seam)', async () => {
+    fake.setNext({ kind: 'slow-reply', text: 'streaming for a while', charDelayMs: 30 });
+    const pool = newPool();
+    const s = await newServerSession(pool);
+    const { seen, settled } = record(pool, s.sessionFile);
+
+    void pool.sendUserMessage(s.sessionFile, 'first', undefined, false, 'none');
+    await until(() => seen.some((x) => x.role === 'user'));
+    await pool.sendUserMessage(s.sessionFile, 'steer me', 'steer', false, 'telegram');
+    await pool.sendUserMessage(s.sessionFile, 'from the web', 'steer', false, 'none');
+    await pool.sendUserMessage(s.sessionFile, 'later', 'followUp', false, 'schedule:j1');
+    const cleared = pool.clearQueuedMessages(s.sessionFile);
+    expect(cleared).toEqual({
+      steering: ['steer me', 'from the web'],
+      followUp: ['later'],
+      origins: { steering: ['telegram', 'none'], followUp: ['schedule:j1'] },
+    });
+    expect(pool.getRoutingSnapshot(s.sessionFile)).toEqual({ promptOrSteer: [], followUp: [] });
+    await pool.abortSession(s.sessionFile);
+    await until(() => settled() > 0);
+  }, 60_000);
+
   it('a message sent from an agent_settled listener keeps its entry (trim runs before the fan-out)', async () => {
     const pool = newPool();
     const s = await newServerSession(pool);

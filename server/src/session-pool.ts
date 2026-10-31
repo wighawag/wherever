@@ -243,6 +243,22 @@ export interface WhereverConfig {
    * recorded). Read at start, like `assistantFolder`.
    */
   assistantScheduleGraceMinutes?: number;
+  /**
+   * The assistant's Web Push channel (web-push.ts, ADR 0017). Only used while the
+   * assistant is ACTIVE. `enabled` defaults to true (a device still has to turn
+   * push on in the settings before anything is sent); `subject` is the VAPID
+   * `sub` contact (`mailto:...` or an https URL), defaulting from `publicUrl`.
+   * Read at start.
+   */
+  assistantWebPush?: {
+    enabled?: boolean;
+    subject?: string;
+  };
+  /**
+   * The URL the user reaches this wherever server at (e.g. behind a reverse
+   * proxy), for links a channel sends out. Optional; nothing derives it.
+   */
+  publicUrl?: string;
   /** When true, the on-demand search folder gets a remote, forced to private visibility. Default false. */
   searchCreateRemote?: boolean;
   /** Session listing controls. */
@@ -1093,7 +1109,7 @@ export function composeServerAgentParts(opts: {
   conversationExtension: InlineExtension;
   extraExtensionFactories: readonly InlineExtension[];
   assistant: AssistantSessionHooks | undefined;
-  caller: () => { sessionId: string | null; cwd: string };
+  caller: () => { sessionId: string | null; cwd: string; sessionFile?: string | null };
 }): { extensionFactories: InlineExtension[]; customTools: ToolDefinition[] } {
   const assistant = assistantSessionParts(opts.assistant, opts.cwd, opts.caller);
   return {
@@ -1109,6 +1125,13 @@ export function composeServerAgentParts(opts: {
       ...assistant.customTools,
     ],
   };
+}
+
+/** `origins` aligned to `count` texts from the newest end; missing older ones are null. */
+function alignFromEnd(count: number, origins: readonly ReplyOrigin[]): Array<ReplyOrigin | null> {
+  const out: Array<ReplyOrigin | null> = new Array(count).fill(null);
+  for (let i = 1; i <= Math.min(count, origins.length); i++) out[count - i] = origins[origins.length - i]!;
+  return out;
 }
 
 export class SessionPool {
@@ -2822,13 +2845,30 @@ export class SessionPool {
    * (the assistant reset records them, ADR 0014: an abort leaves them queued).
    * Null when the session is not resident or is a CLI bridge (whose queues the
    * server cannot see).
+   *
+   * `origins` gives each dropped text its routing origin (aligned by index,
+   * null = not known), so the channel seam can report a dropped message to the
+   * channel it came from. The routing entries are paired with pi's texts from
+   * the NEWEST end, the same alignment the settle trim keeps (`trimToPiQueues`
+   * keeps the newest): an older text with no entry left (e.g. a message typed
+   * before the routing state existed) gets null.
    */
-  clearQueuedMessages(sessionFileOrId: string): { steering: string[]; followUp: string[] } | null {
+  clearQueuedMessages(sessionFileOrId: string): {
+    steering: string[];
+    followUp: string[];
+    origins: { steering: Array<ReplyOrigin | null>; followUp: Array<ReplyOrigin | null> };
+  } | null {
     const tracked = this.getSession(sessionFileOrId);
     if (!tracked || tracked.type !== 'server') return null;
     const cleared = tracked.agentSession.clearQueue();
-    this.routing.get(tracked.sessionFile)?.clear();
-    return { steering: [...cleared.steering], followUp: [...cleared.followUp] };
+    const dropped = this.routing.get(tracked.sessionFile)?.clear() ?? { promptOrSteer: [], followUp: [] };
+    const steering = [...cleared.steering];
+    const followUp = [...cleared.followUp];
+    return {
+      steering,
+      followUp,
+      origins: { steering: alignFromEnd(steering.length, dropped.promptOrSteer), followUp: alignFromEnd(followUp.length, dropped.followUp) },
+    };
   }
 
   /**
@@ -3206,7 +3246,11 @@ export class SessionPool {
       conversationExtension: conversationSignal.inlineExtension,
       extraExtensionFactories: this.extraExtensionFactories,
       assistant: this.assistantHooks,
-      caller: () => ({ sessionId: opts.sessionManager.getSessionId() ?? null, cwd: opts.cwd }),
+      caller: () => ({
+        sessionId: opts.sessionManager.getSessionId() ?? null,
+        cwd: opts.cwd,
+        sessionFile: opts.sessionManager.getSessionFile() ?? null,
+      }),
     });
     const resourceLoader = new DefaultResourceLoader({
       cwd: opts.cwd,

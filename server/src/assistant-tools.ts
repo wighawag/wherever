@@ -4,7 +4,9 @@ import type { BeforeAgentStartEvent, ExtensionAPI, InlineExtension, ToolDefiniti
 import { isValidTimeZone } from './assistant-cron.js';
 import { ScheduleFileError, ScheduleValidationError, type JobMode, type ScheduleJob } from './assistant-schedule.js';
 import type { ListedJob, ScheduleListing } from './assistant-scheduler.js';
+import type { ChannelNotification, NotifyOutcome } from './assistant-channels.js';
 import {
+  ASSISTANT_NOTIFY_TEXT,
   ASSISTANT_SCHEDULE_ADD_TEXT,
   ASSISTANT_SCHEDULE_LIST_TEXT,
   ASSISTANT_SCHEDULE_REMOVE_TEXT,
@@ -29,6 +31,10 @@ import {
  *   lock could not be taken), the tools stay registered and answer a clear
  *   lock-state error (decision: same tool set whatever the lock says, so the
  *   agent learns WHY it cannot schedule instead of not seeing the tools).
+ * - `assistant_notify` (channel-seam-notify-and-web-push, ADR 0014): the one way
+ *   to reach the user proactively, delivered at once to every channel through
+ *   the dispatcher (assistant-channels.ts). Registered ONLY while the assistant
+ *   is ACTIVE (`hooks.notify` set), so a refused server's sessions do not see it.
  * - The timezone line (`User's current timezone: <tz>`) is an INLINE pi extension
  *   (ADR 0004's conversation-mode pattern): `before_agent_start` APPENDS it to
  *   the prompt the event carries, never replacing it. It is added only to a
@@ -57,7 +63,26 @@ export type AssistantAccess = { ok: true; backend: AssistantScheduleBackend } | 
 export interface AssistantToolCaller {
   sessionId: string | null;
   cwd: string;
+  /** The caller's session file (`assistant_notify` maps an isolated job session to its job). */
+  sessionFile?: string | null;
 }
+
+/** A job's origin, as recorded in `schedule.json` (context: who scheduled it). */
+export interface JobOrigin {
+  originSessionId?: string;
+  originCwd?: string;
+}
+
+/** What `assistant_notify` drives: the channel dispatcher plus the scheduler's job mapping. */
+export interface AssistantNotifyBackend {
+  notify(notification: ChannelNotification): Promise<NotifyOutcome>;
+  /** The origin of the job `jobId` (null when there is no such job). */
+  jobOrigin(jobId: string): JobOrigin | null;
+  /** The job an isolated job session was started for (the scheduler's job mapping), or null. */
+  jobForSession(sessionFile: string): string | null;
+}
+
+export type AssistantNotifyAccess = { ok: true; backend: AssistantNotifyBackend } | { ok: false; error: string };
 
 /**
  * What the pool needs to give a server session its assistant tools and, in the
@@ -69,6 +94,14 @@ export interface AssistantSessionHooks {
   folder: string;
   /** Read at every tool call: the scheduler while active, else the lock-state error. */
   access(): AssistantAccess;
+  /**
+   * `assistant_notify`'s backend, read at every call. Set ONLY while the
+   * assistant is ACTIVE (configured AND this server holds the folder lock):
+   * without it the tool is not registered at all (decision, per the task's
+   * acceptance criteria: unlike the schedule tools, a refused server's sessions
+   * do not see `assistant_notify`, since no channel could run there).
+   */
+  notify?: () => AssistantNotifyAccess;
 }
 
 export type OpResult = { ok: true; text: string; details: unknown } | { ok: false; error: string };
@@ -204,6 +237,97 @@ export function setTimezone(backend: AssistantScheduleBackend, args: unknown, so
   };
 }
 
+/** How the tap target was chosen (the precedence of `resolveNotifyTarget`). */
+export type NotifyTargetVia = 'navigateSessionId' | 'job' | 'caller';
+
+export interface NotifyTarget {
+  /** The session the notification opens (null only for a caller without a session id). */
+  sessionId: string | null;
+  via: NotifyTargetVia;
+  /** The job the notification is about (given, or the caller's own isolated job), or null. */
+  jobId: string | null;
+  /** That job's origin, when the job exists. */
+  job: JobOrigin | null;
+}
+
+/**
+ * The tap target precedence of `assistant_notify` (pure): `navigateSessionId`
+ * when given; else, when a `jobId` is given or the caller is an isolated job
+ * session (the scheduler's job mapping), the job's ORIGIN session; else the
+ * calling session. A job that is unknown (removed) or has no origin session
+ * falls through to the calling session (decision: a notification is never
+ * refused over its tap target).
+ */
+export function resolveNotifyTarget(input: {
+  navigateSessionId?: string;
+  jobId?: string;
+  callerSessionId: string | null;
+  callerJobId: string | null;
+  jobOrigin: (jobId: string) => JobOrigin | null;
+}): NotifyTarget {
+  const jobId = input.jobId || input.callerJobId || null;
+  const job = jobId ? input.jobOrigin(jobId) : null;
+  if (input.navigateSessionId) return { sessionId: input.navigateSessionId, via: 'navigateSessionId', jobId, job };
+  if (job?.originSessionId) return { sessionId: job.originSessionId, via: 'job', jobId, job };
+  return { sessionId: input.callerSessionId, via: 'caller', jobId, job };
+}
+
+/**
+ * The notification's `source` (WHO notified): the origin FOLDER's name. For a
+ * job (given or the caller's own), the folder it was scheduled from; otherwise
+ * the calling session's folder. Decision: folder names, not session names
+ * (sessions are mostly unnamed, and the folder is what the sidebar groups by).
+ */
+export function notifySource(callerCwd: string, job: JobOrigin | null): string {
+  const cwd = job?.originCwd || callerCwd;
+  return path.basename(path.resolve(cwd)) || cwd;
+}
+
+/** `assistant_notify`: deliver to every channel at once, with the tap target per `resolveNotifyTarget`. */
+export async function notifyOp(backend: AssistantNotifyBackend, caller: AssistantToolCaller, args: unknown): Promise<OpResult> {
+  const a = (args ?? {}) as Record<string, unknown>;
+  const title = str(a.title)?.trim();
+  const body = str(a.body)?.trim() ?? '';
+  if (!title) return { ok: false, error: 'a non-empty "title" is required' };
+  const navigateSessionId = str(a.navigateSessionId)?.trim() || undefined;
+  const jobId = str(a.jobId)?.trim() || undefined;
+  let callerJobId: string | null = null;
+  try {
+    callerJobId = caller.sessionFile ? backend.jobForSession(caller.sessionFile) : null;
+  } catch {
+    callerJobId = null;
+  }
+  const target = resolveNotifyTarget({
+    navigateSessionId,
+    jobId,
+    callerSessionId: caller.sessionId,
+    callerJobId,
+    jobOrigin: (id) => {
+      try {
+        return backend.jobOrigin(id);
+      } catch {
+        return null;
+      }
+    },
+  });
+  if (!target.sessionId) return { ok: false, error: 'this session has no id yet, so there is nothing to open; pass navigateSessionId' };
+  const source = notifySource(caller.cwd, target.job);
+  const outcome = await backend.notify({ title, body, source, navigate: target.sessionId });
+  if (!outcome.ok) return { ok: false, error: outcome.error };
+  const reached = outcome.deliveries
+    .filter((d) => d.result.ok)
+    .map((d) => `${d.channel}${d.result.ok && d.result.detail ? ` (${d.result.detail})` : ''}`);
+  const failed = outcome.deliveries.filter((d) => !d.result.ok).map((d) => `${d.channel}: ${d.result.ok ? '' : d.result.error}`);
+  const unknownJob = jobId && !target.job ? ` (no job "${jobId}" was found, so it opens this session)` : '';
+  return {
+    ok: true,
+    text:
+      `Notified the user via ${reached.join(', ')}; tapping it opens session ${target.sessionId}${unknownJob}.` +
+      (failed.length > 0 ? ` Not delivered on: ${failed.join('; ')}.` : ''),
+    details: { target, source, deliveries: outcome.deliveries },
+  };
+}
+
 function safeList(backend: AssistantScheduleBackend): ScheduleListing | null {
   try {
     return backend.list();
@@ -253,7 +377,11 @@ function tool(
   } as unknown as ToolDefinition;
 }
 
-/** The four tools for one server session. `caller` is read at call time (a session's id is stable). */
+/**
+ * The tools for one server session: the four schedule / timezone tools, plus
+ * `assistant_notify` while active (`hooks.notify`). `caller` is read at call
+ * time (a session's id is stable).
+ */
 export function createAssistantTools(hooks: AssistantSessionHooks, caller: () => AssistantToolCaller): ToolDefinition[] {
   return [
     tool(
@@ -291,7 +419,31 @@ export function createAssistantTools(hooks: AssistantSessionHooks, caller: () =>
       hooks,
       (backend, params) => setTimezone(backend, params),
     ),
+    ...(hooks.notify ? [createNotifyTool(hooks.notify, caller)] : []),
   ];
+}
+
+/** `assistant_notify` for one server session (only while active, see `AssistantSessionHooks.notify`). */
+export function createNotifyTool(access: () => AssistantNotifyAccess, caller: () => AssistantToolCaller): ToolDefinition {
+  const text = ASSISTANT_NOTIFY_TEXT;
+  return {
+    name: text.name,
+    label: text.label,
+    description: text.description,
+    promptSnippet: text.promptSnippet,
+    promptGuidelines: [...text.promptGuidelines],
+    parameters: Type.Object({
+      title: Type.String({ description: 'Short headline, e.g. "Deploy finished" or "CI is red".' }),
+      body: Type.String({ description: 'The message itself: one or two sentences the user can act on.' }),
+      navigateSessionId: Type.Optional(Type.String({ description: 'The session id a tap should open (default: see the description).' })),
+      jobId: Type.Optional(Type.String({ description: 'The scheduled job this is about; a tap then opens the session that scheduled it.' })),
+    }),
+    async execute(_toolCallId: string, params: unknown) {
+      const a = access();
+      if (!a.ok) return toResult(text.name, { ok: false, error: a.error });
+      return toResult(text.name, await notifyOp(a.backend, caller(), params));
+    },
+  } as unknown as ToolDefinition;
 }
 
 // ---------------------------------------------------------------------------
@@ -338,8 +490,8 @@ export function hooksTimezone(hooks: AssistantSessionHooks): string | null {
 }
 
 /**
- * What a server session in `cwd` gets from the assistant: the four tools (always,
- * while configured) and, only in the assistant folder or `jobs/`, the timezone
+ * What a server session in `cwd` gets from the assistant: the four schedule
+ * tools (always, while configured), `assistant_notify` (only while active) and, only in the assistant folder or `jobs/`, the timezone
  * line extension. Empty with `hooks` undefined (assistant not configured), so
  * the session's tools and extensions are exactly as without the feature.
  */

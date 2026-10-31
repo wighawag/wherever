@@ -53,3 +53,27 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions taken while building this task are recorded in [work/notes/observations/channel-seam-notify-and-web-push-decisions.md](../../notes/observations/channel-seam-notify-and-web-push-decisions.md), with JSDoc at the choice sites in `server/src/assistant-channels.ts`, `server/src/web-push.ts`, `server/src/assistant-tools.ts`, `server/src/session-pool.ts` (`clearQueuedMessages`, the `assistantWebPush` / `publicUrl` config keys), `server/src/index.ts` and `web/src/lib/core/notifications/index.ts`. They cover:
+- the dependency-free RFC 8291 / 8292 sender (no `web-push` package, `pnpmDepsHash` untouched);
+- Web Push being on by default while active, with the `assistantWebPush.enabled` off switch, and the coordination point with Telegram's channel list;
+- the new `assistantWebPush` and `publicUrl` config keys;
+- the VAPID subject fallback chain;
+- keys generated on first use and never replaced;
+- the state file names and mode 0600;
+- the `/push/*` route shapes, present only while Web Push runs, and CORS gaining `DELETE`;
+- the `webPush` status shape, with "this device subscribed" computed by the web;
+- `assistant_notify` registered only while active;
+- tap-target fallback to the calling session;
+- `source` being the origin folder name, and the push title prefixed with it;
+- notify succeeding when at least one channel delivered, and zero subscriptions counting as a failure;
+- channel name = routing origin, with `name:<sub>` matching;
+- `!` refused at the dispatcher, and files not forwarded yet;
+- dropped-message origins aligned from the newest end;
+- TTL 24 h and `Urgency: high`;
+- `ASSISTANT_TOOL_TEXTS` now listing five tools, the four schedule tools being `ASSISTANT_SCHEDULE_TOOL_TEXTS`;
+- the foreground click setting `location.hash`;
+- where the settings toggle sits;
+- the `minor` changeset bump.
