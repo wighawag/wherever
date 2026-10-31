@@ -193,6 +193,20 @@ wherever reaches the user proactively through CHANNELS, every transport behind o
 - **Status.** `GET /config` `assistant` gains `webPush: {enabled, publicKey (null until generated), subscriptions}` while active (absent otherwise). Whether THIS device is subscribed is the web's `isThisDeviceSubscribed` (a browser subscription the server knows).
 - **Web.** Settings show "Assistant notifications" (`AssistantPushSettings.svelte`, only while `active` and `webPush.enabled`): a toggle that subscribes this device with `PushManager.subscribe` and the server's key and registers it, or removes it (`web/src/lib/core/push-subscription.ts`). The service worker's existing `push` handler shows the notification, or posts it to a visible and focused page, whose in-app notification click now sets `location.hash` (`openNotificationTarget`), firing the page's `hashchange` so `/#<sessionId>` opens the session (it used SvelteKit `pushState`, which does not). The template's `service-worker/push-notifications/` module (built for `push-notification-server`) is deleted.
 
+### The Telegram channel: token, long polling and pairing (`server/src/telegram-token.ts`, `telegram-pairing.ts`, `telegram-channel.ts`, ADRs 0007 and 0018)
+
+The secure base of the Telegram channel (task `telegram-token-and-pairing`): it connects, and only the paired user can reach it. The bot gives a shell-capable agent an internet-reachable inbox, so the token and the pairing are the point; replies, the steer marker, commands and notifications are `telegram-conversation`'s. Decisions: `work/notes/observations/telegram-token-and-pairing-decisions.md`.
+
+- **Config** `assistantTelegram: {enabled, token, userId, apiBaseUrl}` in `~/.wherever/config.json`, read at start. OFF unless `enabled: true` (a per-channel block parallel to `assistantWebPush`; there is no channel list). The channel is built ONLY while the assistant is ACTIVE (configured AND this server holds the folder lock: two servers must never poll the same bot) AND enabled. Otherwise the token file is not read, nothing is logged, no polling happens and no Telegram state is written. `apiBaseUrl` (default `https://api.telegram.org`) points at another Bot API server (a self-hosted one; the tests' fake).
+- **Token** (ADR 0007's shape), first non-empty wins, never argv: `WHEREVER_TELEGRAM_TOKEN` (trimmed), then `WHEREVER_TELEGRAM_TOKEN_FILE` (the trimmed CONTENT of the file), then `assistantTelegram.token`. Set-but-blank variables warn and count as unset. Both variables are captured and SCRUBBED from `process.env` in `parseArgs` (`takeTelegramTokenEnv`, beside the auth-token scrub), ALWAYS, whether or not Telegram is enabled, because the agent's `bash` inherits the server environment.
+- **Failure is non-fatal (ADR 0018).** Unlike ADR 0007's auth token (whose loss fails OPEN), a missing bot token fails CLOSED, so an unreadable or empty token file, or no token at all, DISABLES Telegram with a loud `[wherever] ERROR: Telegram is DISABLED: ...` and the server keeps running. A set token file that cannot be read does NOT fall through to the config value. Once polling, a 401 / 404 from the Bot API (wrong token) stops the poller with `state: 'error'` (fix it and restart); any other failure (network, 409 another poller, 429, 5xx) is logged and retried with backoff (1 s doubling to 60 s, honouring `retry_after`). Error text has the token redacted.
+- **Pairing** (`telegram-pairing.ts`, a pure state machine; NOT `badlogic/pi-telegram`'s first-`/start` pairing). While unpaired the server holds a one-time CODE in memory only (8 characters of `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, about 40 bits, a new one each start), shown in the web. `/pair <code>` with the current code (case-insensitive, constant-time compare) pairs its sender and spends the code. Everything else while unpaired, from anyone, including `/start` and wrong codes, is IGNORED and never answered (no "the bot is live" signal, no wrong-code oracle). Once paired, messages from any other user are ignored, and the paired user's `/start` and `/pair` are refused with a short answer. A numeric `assistantTelegram.userId` WINS over a stored pairing (and no code exists); a malformed one is warned about and ignored. Only PRIVATE chats count (groups are ignored, even from the paired user), and bot senders are ignored. A paired user's other text goes to `ctx.onUserMessage` (origin `telegram`), not awaited, so polling goes on.
+- **Polling offset.** Bot API long polling (`getUpdates` with a server-side `timeout`). The next offset is persisted with the bot id (`{botId, offset}`, the token's numeric prefix) after EACH handled update, so a restart neither replays nor loses updates (a crash between handling and writing replays at most that one); an offset left by another bot is ignored.
+- **State files** at the state-dir root (ADR 0006), mode 0600, atomic tmp + rename: `assistant-telegram-offset.json` and `assistant-telegram-pairing.json` (the paired user: ids, display name, `pairedAt`). An unpaired channel writes no pairing file.
+- **Re-pair** `POST /telegram/repair` (token-gated through `isApiRequest`, present only while the channel runs, else an unknown route like `/push/*`): forgets the stored pairing and issues a new code; 409 (`CONFIGURED_USER_REPAIR_ERROR`) while the user id comes from the config.
+- **Status.** `GET /config` `assistant` gains `telegram` while active: `{enabled: false, state: 'disabled'}`, `{enabled: true, state: 'disabled', error}` (no usable token), else `{enabled: true}` plus the channel's `starting`, `unpaired` (`code`, `bot`), `paired` (`user: {id, name?, source: 'config'|'pairing'}`, `bot`) or `error`, with an optional transient `error`. The code rides `/config`, which is behind the API token.
+- **Web.** Settings show "Assistant on Telegram" (`AssistantTelegramSettings.svelte`, `web/src/lib/core/telegram-settings.ts`) below "Assistant notifications", only while `active` and `telegram.enabled`: the code to send as `/pair <code>`, the paired user, a Re-pair button (hidden for a configured id), or the error. It refetches `/config` every 3 s while `unpaired` / `starting` and stops once paired.
+
 ### Per-user-message reply routing (`server/src/reply-routing.ts`, `SessionPool`)
 
 The pool knows WHERE each user message came from, so the assistant replies only to the channel a question came from and scheduled output stays silent (ADR 0014; rationale and rejected alternatives there). Always-on internal bookkeeping with no observable output: nothing a user, client or the model sees depends on it, with or without `assistantFolder`.
@@ -452,4 +466,314 @@ Full-text search over everything ever said in any session, so a user can find a 
 - Filtering is per THREAD, not per hit (one entry in shared history can be carried by both a visible and a hidden session), and `threadTotal` is RECOMPUTED from the survivors, so a hidden fork does not leak even as a count. A thread whose cwd is unknown is dropped (fail closed). A hit left with no visible thread is dropped and counted in `hiddenHits`. The matchers are compiled once per request, as `listSessions` does, not once per hit.
 - Like the session list, the globs are matched against the RESOLVED (`path.resolve`) cwd, which does not follow symlinks: a cwd reached through a symlink matches (or fails to match) a pattern exactly as it does in `/sessions`. Consistency between the two surfaces is the property that matters; a search-only symlink resolution would be a way for the two to disagree.
 
-**Never index on a request path.** `node:sqlite` is SYNCHRONOUS and so is memonaut's indexer: a full build is ~40 s of blocked event loop, which would freeze every WebSocket client (the same failure mode the `/sessions` cache exists to avoid). So the endpoint NEVER calls `index()`, and never calls `syncIfStale()` either (it opens the DB read-write and can itself trigger a full rebuild). Missing index -> `status: 'not-indexed'` naming the db path and `recall index`. Catch-up instead happens in a CHILD PROCESS (`maybeSpawnSync`: `node <memonaut>/dist/cli.js index`, TTL-gated at 60 s, at most one in flight, stdio ignored, never awaited), fired only AFTER the response is built, so a search is served from the index as it is and may be one sync behind. `conversationSearch.au
+**Never index on a request path.** `node:sqlite` is SYNCHRONOUS and so is memonaut's indexer: a full build is ~40 s of blocked event loop, which would freeze every WebSocket client (the same failure mode the `/sessions` cache exists to avoid). So the endpoint NEVER calls `index()`, and never calls `syncIfStale()` either (it opens the DB read-write and can itself trigger a full rebuild). Missing index -> `status: 'not-indexed'` naming the db path and `recall index`. Catch-up instead happens in a CHILD PROCESS (`maybeSpawnSync`: `node <memonaut>/dist/cli.js index`, TTL-gated at 60 s, at most one in flight, stdio ignored, never awaited), fired only AFTER the response is built, so a search is served from the index as it is and may be one sync behind. `conversationSearch.autoSync: false` in `~/.wherever/config.json` disables it; `conversationSearch.syncIntervalMs` changes the TTL.
+
+**Not implemented (deliberately):** a result opens the SESSION, not the matched message. memonaut reports the match's `seq` within each thread, but wherever's history windowing is by message offset, so scrolling straight to the entry would need a seq -> offset mapping; that is a separate change and search is useful without it.
+
+**What DOES run in-process** is one `search()` call against a cached read-only handle (`openDb(path, {readOnly: true})`, which also sets `PRAGMA query_only`; wherever never writes to the index). Measured on a real index (3,822 files / 464k entries): open ~0 ms, `indexStats` ~17 ms, `search()` 14-66 ms, end-to-end endpoint work ~100-120 ms. The same numbers are quoted in the module header, so keep the two in step if they are ever re-measured. That is the same order as a warm `/sessions` pass and only happens on a debounced human action, which is why it is acceptable in-process; anything heavier is not. The `memonaut` import is dynamic, so a server whose dependency is missing answers `status: 'unavailable'` instead of failing to boot.
+
+### Queued steers are memory-only state (`queue_update` is a snapshot, not just an event)
+
+A message sent while the agent is streaming is QUEUED by pi as a steer and injected at the next step boundary. Until that injection it exists ONLY in `AgentSession`'s in-memory queue: it is not in the session `.jsonl`, so `message_history` can never contain it. That makes the queue a piece of live state a client cannot reconstruct on its own, and it must be re-sent on every attach: `session_load` (the same handler serves a first load, a reload and a reconnect resync) replies with a `queue_update` snapshot built from `pool.getSteeringQueue()` (pi's `getSteeringMessages()`), after `message_history` / `session_ready`. CLI-bridge sessions have no readable queue, so they send no snapshot at all rather than asserting an empty one.
+
+On the client, `queue_update` both replaces `pendingSteering` AND re-materializes any queued text with no matching user message (`withRestoredQueuedMessages`), because a snapshot alone would set a pending-steer set with nothing on screen to badge. Matching is by CONTENT with occurrence COUNTING (pi exposes no per-entry id), so a locally-sent optimistic steer is not duplicated and a text queued twice restores two bubbles. Restored bubbles are tagged `restoredFromQueue` and carry NO `delivery` state: they are already held by the server, so tracking them would arm a confirmation watchdog and offer a bogus "Retry". When pi finally injects one, the server's user echo (`message_end` role:user) reconciles ONTO the tagged bubble instead of appending a duplicate: content-matching only the LAST user message is not enough, since a queue of several is delivered oldest-first.
+
+### Read-only is one verdict with THREE reasons (and a precedence between them)
+
+`readOnly` is a per-CLIENT verdict the server owns and re-states authoritatively; the client mirrors it and never invents one. Three different things can produce it, and they are not interchangeable:
+
+- **A configured read-only folder** (`sessions.readOnly` glob, `pool.isReadOnlyCwd`). A policy rule: observe-only by the user's own configuration. HARD, never lifted.
+- **FOLDER MISSING**: the session's working folder does not exist on this machine. HARD, but CURABLE: restore the folder, then RELOAD the session.
+- **A folder conflict**: another live session in the same folder. The only DISMISSIBLE one ("Continue anyway" -> `folder_conflict_continue`).
+
+Precedence lives in ONE function, `hasHardReadOnly()` in `server/src/index.ts`: every site that would LIFT read-only (the continue handler, and the conflict resolving on its own in `resolveFolderConflictState`) asks it first, so the dismissible reason can never dismiss a hard one. A missing folder that ALSO matches a `sessions.readOnly` rule stays locked after a restore, as it must.
+
+### A missing working folder is a first-class session state (`folder_missing`)
+
+Transcripts and the folders they refer to travel separately: a transcript syncs across machines (syncthing, a backup, a new laptop), the git clone it talks about does not. Such a session used to load as if nothing were wrong -- the cheap header+history read never needed the folder, and pi's `SettingsManager.create()` and `DefaultResourceLoader.reload()` both SUCCEED against a nonexistent cwd, so the cold path happily built a live agent whose every file/bash tool then misbehaved for no stated reason.
+
+- **Detection** is one `stat`, in `readSessionMeta` (`server/src/session-pool.ts`), beside the read-only verdict it already computes from the cwd, so the warm and the cold load branch share it. A path that exists but is not a directory counts as missing. Detection is **load-time only**: a folder that disappears UNDER a live session is deliberately out of scope (watching every session's cwd is a different mechanism), so a RESIDENT session is locked read-only for anyone loading it while its running agent is left alone.
+- **A restore IN FLIGHT produces the same state.** `session_load` ORs the `stat` with "a restore job is `running` for this cwd" (`restoreJobs.get(cwd)`), because `git clone` creates the target directory in its first breath: for the whole of a multi-minute clone the existence check says "present", and a client loading in that window (a reconnect, a second device) would be handed a live agent pointed at a HALF-CLONED tree -- the same silent breakage this state exists to replace. So the state means "this folder is not usable as a working folder", with two producers (absent, or being materialised) and one remedy, one rendering, one frame. It is NOT a second state: forking a `folder_restoring` concept would double the client state and the UI branch for something whose cure and appearance are identical.
+- **The cold path does NOT build the agent.** `session_load` paints `session_created` (`readOnly: true`, `folderMissing: true`, `pending: true`) + `message_history` + the new `folder_missing` frame, then STOPS: no `session_ready`, no agent, and the client is detached from whatever it was on (nothing was attached, so it must not keep a phantom viewer in the old folder). Since a live agent is a load-time decision, the cure is a restore plus a RELOAD.
+- **Frames.** `session_created` carries `folderMissing?: boolean` (the flag), and `folder_missing { sessionId, cwd, job? }` states it authoritatively with the ABSOLUTE missing path so the UI can name what to restore. `job` is any restore job already running (or just finished) for that path, so a client arriving MID-CLONE repaints it instead of being offered a second one. Remote CANDIDATES deliberately do NOT ride on this frame (see below): resolving them can shell out to a provider CLI, and this frame is on the session-load path. The shared client mirrors it into `WhereverState.folderMissing` (`FolderMissingInfo`) plus `WhereverState.restore` (`RestoreInfo`), and the web dashboard replaces the composer with the restore panel.
+- **Older clients degrade safely**: they simply do not render the notice or the panel. The protection is the SERVER's refusal -- a `message` from a client whose loaded session has a missing folder is refused by PATH (`client.folderMissingCwd`), before the attachment check that would otherwise drop it silently. The refusal names the folder, and says "still being restored" rather than "does not exist" while a job is running for it.
+
+**Vocabulary, pinned:** the STATE is `folder missing` (frame `folder_missing`, flag `folderMissing`, `WhereverState.folderMissing`); `restore` names only the ACTIONS that cure it (cloning or creating the folder) and everything in that family is namespaced `restore*` -- the frames `restore_start` / `restore_cancel` / `restore_started` / `restore_rejected` / `restore_progress` / `restore_complete`, the state `WhereverState.restore`, the client methods `startRestore` / `cancelRestore`. Do not fork either term: `restore` already has an unrelated in-codebase meaning for re-materialising queued steers and saved drafts after a reload (`restoredFromQueue`), so a missing folder is never "unrestored", a queued steer is never "missing", and a frame about queued steers is never `restore_*`.
+
+### The session browser marks folders that are not on this machine (`missing`)
+
+The LISTING view of the same state: on a freshly migrated machine most folders are absent, and opening every conversation one at a time is otherwise the only way to find that out. `GET /sessions` therefore stamps each folder with `missing: true` when its cwd is not a directory on this machine, and `SessionBrowser.svelte` renders a small **Missing** chip beside the folder name.
+
+- **It is a SECOND, ORTHOGONAL per-folder fact, not a second flavour of `readOnly`.** `readOnly` is a configured policy (`sessions.readOnly`), lives on its own page, and hides the create/delete controls; `missing` is a fact about the disk and is CURABLE by a restore. A folder can be either, both or neither, so the chip is its own marker (purple, uppercase, with a title naming the condition) and never the read-only treatment.
+- **Named `missing`, not `folderMissing`.** It is the SAME pinned `folder missing` state, seen per folder rather than per session; the object it sits on IS a folder, exactly as `readOnly` drops the prefix there. The session-level flag on `session_created` keeps its `folderMissing` name because the object there is a session.
+- **The chip says "Missing", not "not cloned".** CREATE is a first-class remedy for a folder that was never a clone, so "not cloned" would be wrong for it and would fork the pinned vocabulary of the state it marks.
+- **The listing does NOT OR-in a running restore job**, unlike `session_load` (which must, because `git clone` makes the target directory in its first breath and a client loading mid-clone would otherwise be handed an agent on a half-cloned tree). A listing hands out no capability, and teaching the session pool about the job registry would fork the layering for a chip; so a folder briefly loses its mark while a clone runs, then keeps it if the clone fails (the settle invalidates the cache either way).
+- **Invalidation subscribes to the registry DIRECTLY** (`observeRestoreForFolderExistence` in `server/src/index.ts`), a second subscription beside the panel's broadcast relay, per the registry's path-keyed observation seam. Every terminal state invalidates the cached answer (a cancelled clone REMOVES a directory it created); only a `done` job additionally calls `onSessionsUpdated()`, so an open dashboard refetches and the chip disappears with no manual refresh. The new-session clone passes no callback: the session it then creates broadcasts on its own.
+
+### Restore jobs are path-keyed and live in one standalone module (`server/src/restore-jobs.ts`)
+
+A **restore job** materialises a missing working folder, either by CLONING a remote or by CREATING an empty folder (optionally `git init`ed). Both kinds are ONE state machine (`running` -> `done` / `failed` / `cancelled`) so a caller never drives two.
+
+- **Keyed by the resolved absolute TARGET PATH**, never by socket, client or session (`docs/adr/0009`). That is what makes a clone survive a dropped phone socket, be shared by two tabs, and never be started twice for one folder. A second request for a path with a RUNNING job COALESCES: the result says `outcome: 'joined'` and carries the job INCLUDING the url it is really cloning, so a requester whose edited URL differs is told a clone of the other URL is in flight rather than silently answered as though its own was accepted. Terminal jobs are RETAINED briefly (`retainMs`, default 60s) so a late reconnect still learns the outcome, then reaped.
+- **The module owns the observation seam.** `subscribe(targetPath, { onProgress, onSettled })` returns an unsubscribe function, and subscription is keyed by PATH (independent of any one job), because two independent consumers are coming: the WS broadcast to matching clients, and a per-folder existence-cache invalidation. Neither reaches into the registry's internals, and neither is wired through the other.
+- **Progress is honest.** `git clone --progress` REWRITES one line in place, so frames are separated by CARRIAGE RETURNS inside a single newline-terminated chunk; `GitProgressParser` treats `\r` as a separator (a newline-only parser sees almost nothing during the receiving phase, which is where a long clone spends its time). Each frame carries a `phase`, a `scope` and either a `percent` or `indeterminate: true` (explicitly, never a fake 0). Submodules report under their OWN scope (their path relative to the target), never folded into one global percentage. Emission is throttled to ~5 fps, with a phase or scope change always emitted.
+- **Safety, all refused before anything is spawned:** the target must resolve INSIDE the home directory (`isWithinHome`, mirroring the HTTP layer's guard in `index.ts`, resolved at CALL time), the leaf must be absent or empty (the parent is created), and the URL must match a SHAPE ALLOWLIST (scp-style SSH, `ssh://`, plus `file://` for fixtures) that rejects control characters, newlines and a leading dash. The clone runs through an argv ARRAY with no shell (`buildCloneArgs`), and that argv NEVER carries a relaxation of git's file-transport protection: the tests inject `protocol.file.allow` through their own `GIT_CONFIG_COUNT` environment instead.
+- **SSH only, and the failure message is the deliverable** (`docs/adr/0010`). `buildCloneEnv` disables every interactive prompt (`GIT_TERMINAL_PROMPT=0`, no askpass, no `DISPLAY`, `ssh -o BatchMode=yes -o ConnectTimeout=10`) so an unprovisioned box fails FAST instead of hanging invisibly at zero percent, and `mapCloneFailure` names the cause (`no-key`, `unknown-host`, `not-found`, `network`, else verbatim) while keeping git's raw stderr underneath. Git's "correct access rights and the repository exists" trailer is deliberately NOT used as a signature: it is printed for a missing key AND a missing repo.
+- **Cancel is AUTHORITATIVE**: the child is signalled and the job settles `cancelled` even if it happened to finish in the same breath, and the target directory is removed ONLY when the job created it.
+
+### Remote candidates are advisory, SSH-only, and fetched on demand (`GET /remote-candidates`)
+
+A **remote candidate** is a suggested SSH URL for the repository a MISSING folder probably is: it pre-fills the restore panel's editable URL field so a repo can be restored from a phone without typing one. It is ADVISORY and never an authority -- the restore job clones what it is finally GIVEN (after its own validation), not what was guessed. `server/src/remote-candidates.ts` resolves an ORDERED list from two sources, in decreasing confidence:
+
+- **The provider PROBE**, when the folder matches a configured `remoteRepoRules` entry: the same provider CLI the create-session path uses (`detectRemoteRepo`) is asked whether the repository exists, and its SSH URL is taken. This covers what the configured account OWNS.
+- **The PATH CONVENTION**, `<...>/<host-token>/<owner>/<repo>` read back into `git@host:owner/repo.git` from the LAST THREE segments. This is the load-bearing half, not a nicety: it covers repositories owned by SOMEONE ELSE, which the probe structurally cannot find, and those dominate the machine migration this feature exists for (one rule, one personal namespace, a tree full of other people's repos). Known tokens are `github`, `codeberg`, `gitlab`, plus any token that is ALREADY a dotted hostname (`git.example.com`); `gitea`/`forgejo` are absent on purpose (software, not a host). An unknown token or a too-shallow path yields NO candidate rather than a confidently wrong one, and an empty list is an honest answer.
+
+**SSH only** (`docs/adr/0010`): no HTTPS candidate is ever synthesised, and a probe result that is not an SSH URL is dropped rather than offered. **A probe failure of any kind** (CLI missing, not authenticated, repository absent, a throw) degrades to the derived candidate instead of erroring, and a folder no rule covers is never probed at all. The probe function is INJECTED (`resolveRemoteCandidates(path, rules, probe?)`), so the module stays standalone like `restore-jobs.ts` and its tests never need a provider CLI installed or logged in.
+
+**Placement:** `GET /remote-candidates?path=` sits beside `/check-remote-repo`, behind the same token gate (`isApiRequest`), and refuses a path outside the home directory as `/check-path` does. It is called ON DEMAND (the panel opening), never per keystroke and never on session load, because the probe shells out. Rule matching is now ONE implementation, `matchRemoteRepoRule`, shared by `/check-path`, `/check-remote-repo`, the resolver and the new-session clone branch (`session-pool.ts` still has its own untilded copy in the remote-CREATION path; see `work/notes/observations/remote-repo-rules-untilded-in-session-pool.md`).
+
+### The restore panel: path-addressed frames, DERIVED subscription, and a reload to go live
+
+The user-facing half of the restore: in place of a folder-missing session's composer the dashboard renders `web/src/lib/components/RestorePanel.svelte` -- the missing path, an editable URL pre-filled from `GET /remote-candidates`, a Clone button, honest progress, a Cancel while it runs, and on success a RELOAD. The wiring lives in `server/src/index.ts` and drives `restore-jobs.ts`; nothing about the job moved into the WebSocket layer.
+
+- **Frames** (all `restore_*`, all addressed by `targetPath`, never by session id, because the job's key IS the path). Client -> server: `restore_start { targetPath, action: 'clone' | 'create', url?, gitInit? }` and `restore_cancel { targetPath }`. Server -> client: `restore_started { targetPath, outcome: 'started' | 'joined', job }` and `restore_rejected { targetPath, reason, message }` (answers to THIS client's request, sent to it alone), plus `restore_progress { targetPath, job }` and `restore_complete { targetPath, job }` (broadcasts; `restore_complete` carries every terminal state -- read `job.state` for `done` / `failed` / `cancelled`). Each frame carries the whole `RestoreJobSnapshot`, so ONE frame is enough to repaint a panel from scratch.
+- **Subscription is DERIVED, never registered.** `clientWatchesRestorePath()` matches the job path against each connected client's attached session cwd, its `pendingCwd` (a load painted but not yet attached) and its `folderMissingCwd` -- the last of which is the load-bearing one, since a folder-missing load deliberately attaches to NOTHING and clears `pendingCwd` with it. Because the match is evaluated per frame, a dropped phone leaves no bookkeeping behind and a reconnecting one is matched again for free. The server holds ONE registry subscription per observed path (`restoreObservers`), taken before the request (a request can settle synchronously) and released inside `onSettled`, so an observer cannot outlive its job.
+- **A second tap JOINS.** The registry coalesces on the path, and `restore_started` reports `outcome: 'joined'` with `job.url` = the url REALLY in flight. The client keeps its own `requestedUrl` beside it precisely so the panel can say "a clone of X is already running, your URL was not used" instead of silently answering as though the edited URL had won.
+- **A rejection is not a job.** An unsafe target, a non-empty folder or a URL outside the allowlist is refused before anything is spawned, so there is no job, no id, and no completion coming: `restore_rejected` is a separate frame rather than a synthetic failed job, and the panel stays in its offer state.
+- **Cancel is not authorised per client.** Any client watching the folder may cancel the job, including one that did not start it -- which is the point when the device that did is the one that went away. Safety comes from the registry's own guards (inside the home directory, empty leaf, URL allowlist, argv arrays), the same layer that protects `session_new`.
+- **Progress rendering is honest** (story 8): a phase, a scope, and either a real percentage or an explicit indeterminate bar with the words "no percentage". Submodules render under their own scope with a standing note that each is counted separately, so there is never a single fake global percentage.
+- **TWO remedies, ONE state machine, and the second one is SECONDARY.** Beside Clone the panel offers CREATE (`action: 'create'`), for a folder that was never a clone: it makes the directory and any missing parents, optionally `git init`s it, and lands in the SAME running / ready / failed states and the same reload ending, because it is the same path-keyed job with the same guards (inside the home directory, empty leaf). Create sits behind a disclosure ("This folder was never a clone? Create it instead") with a secondary button, deliberately: it is the rare case, and an accidental tap makes an EMPTY folder that then LOOKS restored while the non-empty guard refuses the clone that should have happened. The panel is kind-aware (`job.kind`) for its wording, and drops the submodule note and the scope label for a create, which has exactly one scope.
+- **The git-init checkbox is the CONFIGURED default, not a second one.** It seeds from `gitInitDefault` (`GET /config` -> `gitInitDefaultStore`), the same value the new-session dialog reads, so a user who turned it off gets no surprise repository here either; the user's own tick then wins for that panel. The panel refreshes `/config` itself when it opens for a folder (beside the candidates call, same token gate) rather than depending on the session browser having fetched it, and the choice travels EXPLICITLY as `gitInit` in both states so no default is re-decided server-side.
+- **It ends in a RELOAD** (`client.reloadSession()` -> a fresh `session_load` of the same file). Whether a session has a live agent is a load-time decision and the load that found the folder missing built none, so re-loading is the actual remedy, not a refresh hint. The NEW-SESSION path cannot do this (there is no session to reload until the clone lands) and continues into creation itself instead; see the next section and `docs/adr/0009`.
+
+### The new-session clone is the SAME job, and it is the only clone left
+
+Creating a session in a folder that does not exist can CLONE AN EXISTING REMOTE instead of creating one (the clone-or-create dialog, offered when `/check-remote-repo` says the repository the create WOULD provision already exists). That branch is the second entry point of `docs/adr/0009` and it runs through the same restore registry, so there is exactly ONE clone implementation in the codebase: the same recursive engine, the same URL allowlist and home guard, the same honest progress. The old synchronous `cloneRemoteRepo()` in `session-pool.ts` is DELETED -- it cloned non-recursively, reported nothing, and ran inside the create, so a large repository always lost the race with the client's 25s create watchdog.
+
+- **Where it runs.** `cloneForNewSession()` in `server/src/index.ts` resolves the target the way `createNewSession` does (`resolveCreateCwd`), matches a `remoteRepoRules` entry with the SHARED `matchRemoteRepoRule`, probes it with `detectRemoteRepo`, and requests a clone job. `SessionPool.createNewSession` no longer takes `cloneRemote` at all: by the time it is called the folder is there. If no rule matches or the probe finds nothing, the clone is SKIPPED and an ordinary create follows, which is exactly what the synchronous path did.
+- **The URL is resolved server-side**, unlike the panel's editable field: the create flow has no URL input, so a client-supplied URL would be a new authority nobody asked for. Both entry points are validated by the registry regardless.
+- **The ending is the asymmetry.** A loaded session offers a Reload; here there is nothing to reload until the clone lands, so the server AWAITS the job and continues into `createNewSession` itself when it is `done`. A `failed` or `cancelled` job fails the create with the mapped cause on `session_error` (the create's own channel) and makes no session; the `restore_complete` frame carrying git's raw output is broadcast beside it.
+- **Frames are the ordinary ones.** The requester gets `restore_started`; progress and completion arrive through the same derived path-matching broadcast, which reaches this client because the handler records the target as its `pendingCwd` before starting (a create has no session yet). Cancel needs nothing new either: the job is path-keyed and server-owned, so a plain `restore_cancel` settles it and thereby abandons the create.
+- **The client adopts the job as the create's own.** `restore_started` arriving while `creatingSession` is true with no restore state sets `WhereverState.restore` with `forSessionCreate: true`, drops `creatingSession` and DISARMS the create watchdog -- a watched job is not something to time out. The dashboard then renders `RestoreProgress.svelte` (the display shared with the panel) in place of the blocking overlay. On `restore_complete` with `done` the client re-arms `creatingSession` for the last, ordinary step the server is already performing; on a failure it clears the restore and lets `session_error` speak.
+- **`POST /session/new` takes the same branch** (its `cloneRemote` still works, now recursive), it simply has no progress channel and waits for the job.
+- Leaving or switching sessions mid-clone stops the PAINTING, not the job: it is server-owned, so it finishes and the session it was for is created and shows up in the session list.
+
+### Message routing authority (the client-stamped sessionId is authoritative)
+
+Every WS `message` (and `abort`) carries the `sessionId` of the session the client is actually viewing (`{ type: 'message'; message; sessionId }`). The server treats that stamp as AUTHORITATIVE: in `server/src/index.ts` the `message`/`abort` handlers resolve `msg.sessionId` through the pool and verify it resolves to the SAME `TrackedSession` this connection is attached to (`client.sessionId`). On a mismatch the message is REFUSED with a `session_error` (the client surfaces it as a recoverable, retryable failure via its delivery watchdog + Retry) instead of being delivered to whatever `client.sessionId` currently points at. This closes a switch/reconnect/resync race: `client.sessionId` is per-connection and is only (re)attached when a `session_load` completes (for a cold load, seconds later inside the async agent-build block; a reconnected socket starts with `client.sessionId = null`), so it could be stale relative to the session the client had already painted and targeted, silently misrouting a message into another session's agent. Never route a `message`/`abort` by `client.sessionId` alone without validating it against the client-stamped `msg.sessionId`.
+
+### The URL hash auto-join never retries a failed load
+
+The web keeps the active session id in the URL hash (`/#<sessionId>`), and `+page.svelte`'s auto-join effect loads the hash session whenever it is connected and not on it. The decision is the pure, unit-tested `decideHashJoin` (`web/src/lib/core/view-mode.ts`). It remembers the hash id it last issued a join for (`hashJoinAttempt`): if that load ends without the session becoming active (an untagged `session_error` such as "session not found", or the load watchdog), the result is `failed` (only when no session is active; otherwise `skip`). The effect then stops and clears the hash with `history.replaceState`, leaving the error banner to explain. `location.hash = ''` would push a history entry and fire `hashchange`, so Back would return to the dead hash and fail again. A hash set by navigation (`handleHashChange`) records its id as the attempt too, so its failure is not re-joined by the effect. Before this, the error cleared `loadingSession`, which re-ran the effect, so it re-joined about every 300 ms forever with a permanent spinner. The attempt is reset on success, on disconnect (a load cut by a dropped socket is retried after reconnecting) and on a hash change. `loadFailed` (an error showing, nothing loading, no session) also stops a lingering hash from counting as a pending open, in `isSessionPendingOpen` and in `ChatMessageList`'s spinner branch.
+
+### The client liveness watchdog probes before it tears a socket down (`docs/adr/0011`)
+
+`WhereverClient` (`client/src/client.ts`) records `lastInboundAt` on every inbound frame and runs a watchdog tick every `HEARTBEAT_MS` (25 s, which also sends the keepalive `ping`). Silence past the threshold (`TURN_STALL_MS` 45 s mid-turn, `STALE_SOCKET_MS` 60 s idle) does NOT tear the socket down: it starts a **liveness probe**, a `ping` plus a `PROBE_GRACE_MS` (5 s) grace timer. ANY inbound frame cancels the probe; only a socket still silent when the grace expires is torn down (`tearDownStaleSocket`: null `this.ws`, `uploadsLostSocket()`, `terminate()`, the mid-turn "Connection to relay stalled" `sessionError`, `scheduleReconnect()`). The reason: when a backgrounded phone page thaws (typically after the file picker / camera, which skips the 8 s `suspend()`), timers fire BEFORE the frames queued during the freeze are dispatched, so the raw silence verdict is routinely false. Two extra probe triggers, never gates: a wall-clock gap of more than 2x `HEARTBEAT_MS` between ticks (a detected freeze), and `client.noteVisible()`, which the page calls (via `noteVisible()` in `web/src/lib/wherever.ts`) on EVERY `visibilitychange: visible` and `pageshow`, before its `!connected` resume/connect branch. A user is waiting on a return, so `noteVisible()` avoids the slow paths meant for an unattended client: it always resets the reconnect backoff to its minimum (the delay may have grown while hidden); on an OPEN, watched socket it resets the stale baseline (frozen time is not silence) and restarts any pending probe with the SHORT `VISIBLE_PROBE_GRACE_MS` (2 s, safe because it is a fresh timer started after the thaw, so queued frames and a healthy pong arrive first), and a socket that probe condemns is replaced at once (`reconnectNow()`, no backoff); on a socket still CONNECTING after `STALLED_HANDSHAKE_MS` (8 s, well above an honest slow handshake) it restarts the connect; a younger CONNECTING socket is left alone (a ping on it would be dropped by `send()`). The page calls it only while visible (a hidden `pageshow` skips it). Without this, a dead socket on return cost the 5 s grace plus a 2-15 s backoff, slower than reloading the PWA. A grace check that itself fires more than 2x its grace late (the page froze during the grace) re-probes instead of tearing down, as an ordinary probe even if it was a return probe (the page froze again, so nobody is waiting). Every socket change cancels a pending probe (`stopLivenessWatchdog`). Cost: a truly dead socket is detected about one grace period later than before.
+
+### On-device conversation cache (`web/src/lib/core/conversation-cache.ts`)
+
+A bounded IndexedDB cache (`wherever-conversation-cache`, one `conversations` store keyed by `(serverKey, sessionId)`) of recently viewed conversations, so a reload after the OS killed the PWA can paint the last-seen conversation before the socket is up (rationale: ADR 0013). It is ONLY a cache: a miss, a stale record or a disabled cache must leave today's behaviour unchanged. The module takes the server key as a plain string (the client's STAMPED key, never re-derived from settings) and has no runtime dependency on the client package; WHEN to write and under which key are the caller's decisions.
+- **Normalized at write time** (`normalizeMessages`): `delivery`-tagged user messages are dropped (undelivered outbound messages are recovered separately from localStorage by `loadPersistedPending`, so caching them would double-surface them), `isStreaming` is forced to false, and tool `images` payloads are dropped.
+- **Bounded:** at most 5 records in total across ALL server keys (global LRU by `savedAt`, stamped by `put`), and ~2 MB of UTF-8 JSON per record, trimming the OLDEST messages (`trimToByteCap`). `historyTotalCount` / `historyOffset` are kept as-is: they only drive "Load older messages", which is gated on the authoritative history. A record none of whose messages fit is not stored, and any older record for that session is deleted, because an empty cached view would look like an empty session.
+- **Scoped:** `retainOnly(key)` deletes every other server key; `clear()` deletes everything; `remove(key, id)` evicts one record.
+- **Never fails loudly:** if `indexedDB` is missing or `open` throws or fails, the cache disables itself for the page and every call is a no-op (`get` resolves null); the open is not retried. Per-operation failures (quota) are swallowed without disabling.
+- **Writes are throttled by the caller** with `createWriteThrottle`: `schedule()` coalesces a streaming reply into at most one trailing write per 5 s, `flush()` writes now.
+- **Multi-tab: last write wins** on the same record. Accepted: the record is overwritten by the authoritative history anyway.
+
+### Client hydration seam and the stamped server key (`client/src/client.ts`, ADR 0013)
+
+The client half of instant resume. It never touches IndexedDB; the web reads/writes the cache and hands records to the client.
+- **`serverKey(config)`** (exported, synchronous, pure): `host:port#<fnv1a(token)>` (8 hex digits, non-crypto; the raw token never appears). The host is normalised exactly like the socket URL (an `http(s)://` prefix is dropped); `secure` (ws vs wss) is NOT part of the key.
+- **The stamp** (`WhereverState.serverKey`): `connect()` captures `serverKey(this.config)` next to the socket it opens, and `session_created` stamps THAT key on the store; `hydrateCachedSession` stamps the record's key. It is never re-derived from the current settings, so the web writes the cache under exactly this key. When any `connect()` (including `scheduleReconnect`'s automatic one) computes a key different from a non-null stamp, it wipes the store instead of preserving it (the stamp goes with it), clears `resumeSessionFile` / `resumeCwd` / `resumeModel` and the pending load, so onOpen rejoins nothing. Cleared also by `disconnect(true)` and by a `hydration_rejected`.
+- **`hydrateCachedSession(snapshot)`** (`HydrationSnapshot` in `types.ts`, structurally a subset of the cache record): a no-op unless there is no `activeSessionFile`, no load in flight (`pendingLoadFile === null`) and the client is not connected. It paints `session`, `sessionId`, `activeSessionFile`, `activeCwd`, `activeModel`, the messages (minus any `delivery`-tagged user message: recovery stays with `loadPersistedPending` on the history reply) and the paging state, with `resyncing: true`, `isStreaming: false`, `historyAuthoritative: false`. Server verdicts (`agentPending`, `folderConflict`, `sudoPrompt`, `readOnly`) stay at defaults. The caller then `connect(cfg, true)`; onOpen's existing rejoin sends the `session_load`.
+- **`hydration_rejected`** is a CLIENT-SYNTHESIZED event (never a wire frame), delivered to `onMessage` listeners as `{type: 'hydration_rejected', sessionId}` when an UNTAGGED `session_error` answers the hydrated load itself: `pendingLoadFile` is still the hydrated file and no `session_created` has landed. The session is cleared (the `sessionError` stays surfaced). With no session attached, the server's catch-all sends every handler error untagged, which is why the pending-load match is required. Never fired by `folder_missing` or a cold-build `session_error`: both arrive after `session_created`, which ends the hydration.
+- **`historyAuthoritative`** (`WhereverState`): true only once the active session's own `message_history` has landed; false at hydration, on `session_created`, and on every onOpen rejoin. `loadMoreHistory()` is a no-op while false, since the paging offset may come from the cache or a dropped socket.
+- `resume()` arms no load watchdog (it was dead code: `connect()` -> `disconnect(false)` cleared it at once). An offline boot over a hydrated cache, with the socket stuck CONNECTING, therefore shows no "Loading the session timed out" error; onOpen arms the watchdog for the rejoin it actually sends.
+
+### Instant resume wiring (`web/src/lib/core/instant-resume.ts`, ADR 0013)
+
+The web half that joins the cache and the client seam. Every decision is a pure, unit-tested function in `instant-resume.ts` (cache, client calls and `location`/`history` injected, like `decideHashJoin`); `wherever.ts`, `+page.svelte` and `ConnectionSettings.svelte` only call them.
+- **Boot** (`readBootCache` + `runBoot`): at mount, when the URL hash names a session, the page starts reading its record under `serverKey(currentConfig)`, raced against a 300 ms cap measured from mount (boot still defers 200 ms, so a fast read adds nothing). A hit is painted with `hydrateCachedSession` and boot connects with `connect({preserveState: true})`; a miss, a timeout, a failure, or a hydration the client refused connects exactly as before. The conversation then shows before the socket opens (`hasCachedSession` in `ChatMessageList`), the composer stays editable and Send is blocked by `resyncing` until the rejoin's `message_history`.
+- **Boot window guard** (`decideReturn`): until boot has ISSUED its connect, `pageshow` / `visibilitychange: visible` still call `noteVisible()` but neither `resume()` nor `connect()` (on a fresh load `pageshow` always fires, and its plain connect would reset a hydration in progress). The flag clears when boot calls connect, not when the socket opens, so an offline boot never holds the handlers off.
+- **Writes** (`cacheSnapshot`): under the client's STAMPED `serverKey`, never one derived from settings, and only once `historyAuthoritative` is true (before that the store holds the cached copy itself or a rejoin in flight). Triggers: `message_history` and `agent_end` (flushed on the next microtask, after the reducer), `visibilitychange: hidden`, `pagehide`, and a streaming reply throttled to one write per ~5 s.
+- **Wipes**: every `connect()` in `wherever.ts` calls `retainOnly(serverKey(cfg))`, so Reconnect and a same-server Connect keep the cache and another server drops the previous one's records. Both Disconnect actions (`+page.svelte`'s "Disconnect Server", `ConnectionSettings`' "Disconnect") call `clearConversationCache()`, which also drops a pending throttled write. Never the shared `disconnect()`: Connect and Reconnect call it before `connect()`.
+- **`hydration_rejected`** (`handleHydrationRejected`): clears the hash with `history.replaceState` SYNCHRONOUSLY in the `onMessage` listener (only a hash naming the rejected session), ahead of the page's hash effect, whose `location.hash = ''` would push a history entry; then evicts the record under the key it was hydrated from. With the hash gone the auto-join does not re-join the dead session.
+- **"Load older messages"** is hidden while `historyAuthoritative` is false (`hasMoreHistory` = `canLoadOlderHistory`).
+
+### Version reporting (frontend build id + server version)
+
+The two halves of the app version independently and can drift: the web build carries the short git commit baked in at build time (`web/svelte.config.js` sets `kit.version.name` from `git rev-parse --short HEAD`, plus a `-dirty` suffix), while the server is an installed npm package (`wherever-dev`) whose version is read at runtime from its own `package.json` (`getVersion()` in `server/src/index.ts`). A stale server behind a fresh frontend looks exactly like a frontend bug, so BOTH are surfaced: the `connected` WS message carries `serverVersion`, the client stores it in `WhereverState.serverVersion` (null until connected, and for servers old enough not to send it), and the connection panel renders `v<build> / srv <version>`.
+
+## Current Status
+
+✅ **Completed:**
+
+- Core extension with HTTP/WebSocket server
+- Reference client implementation
+- Complete API documentation
+- Package configuration
+- Git repository initialized
+- Initial commit made
+
+⏳ **Next Steps:**
+
+1. Install dependencies and test locally
+2. Push to GitHub
+3. ✅ Build web frontend (mobile-friendly)
+4. ✅ Build marketing site (GitHub Pages)
+5. Add more example clients
+6. Consider publishing to npm as pi package
+
+## Usage Commands
+
+```bash
+# Development
+cd /home/wighawag/dev/github/wighawag/wherever
+pnpm install
+pnpm run build
+
+# Test the extension
+pi --extension ./dist/index.js --remote-port 31415 --remote-token test123
+
+# Test the client
+pnpm run client -- --url ws://localhost:31415 --token test123
+
+# Push to GitHub
+git remote add origin git@github.com:wighawag/wherever.git
+git push -u origin main
+```
+
+## Security Considerations
+
+⚠️ **Important:**
+
+- Always use `--remote-token` for remote access
+- Default binding is localhost only (`127.0.0.1`)
+- For remote access, use SSH tunneling:
+  ```bash
+  ssh -L 31415:localhost:31415 user@remote-machine
+  ```
+- If binding to `0.0.0.0`, ensure strong authentication
+- Consider adding rate limiting for production use
+
+## Mobile Usage (Original Motivation)
+
+The extension was created to enable mobile control of pi without relying on SSH clients. Options:
+
+1. **Simple Web Interface** - Build a mobile-friendly web UI (not yet implemented)
+2. **WebSocket Apps** - Use existing mobile WebSocket clients
+3. **SSH Tunnel + Local Connect** - Tunnel to mobile, connect via localhost
+
+## File Structure
+
+```
+wherever/
+├── src/
+│   ├── index.ts          # Main extension (server)
+│   └── client.ts         # Reference client
+├── docs/
+│   └── USAGE.md          # Complete API docs
+├── web/                  # SvelteKit dashboard app (mobile-friendly)
+├── site/                 # Standalone marketing/info website (GitHub Pages)
+├── vscode/               # VS Code Companion extension (Sidebar Chat GUI)
+├── client/               # Isomorphic TS Client module
+├── server/               # Multi-session standalone server
+├── package.nix           # the derivation, a plain function of `pkgs` (consumer interface)
+├── flake.nix             # `nix develop` (toolchain) + `nix build`, a wrapper over package.nix
+├── nix/                  # pnpmDepsHash update + staleness-check scripts
+├── .github/
+│   └── workflows/
+│       └── deploy-gh-pages.yml  # CI/CD for marketing site
+├── package.json          # Dependencies + pi config
+├── tsconfig.json         # TypeScript config
+├── README.md             # Quick start
+├── CONTEXT.md            # This file
+├── LICENSE               # AGPL-3.0
+└── .gitignore
+```
+
+## Key Design Decisions
+
+1. **WebSocket-first** - Real-time streaming is essential for agent interaction
+2. **HTTP fallback** - Simple REST API for programmatic access
+3. **Optional auth** - Token-based, easy to disable for local dev
+4. **Event broadcasting** - All clients receive same events (multi-client support)
+5. **Message queuing** - Messages queued if no client connected (up to 100)
+6. **Separate web UI** - Dashboard (`web/`) and marketing site (`site/`) are independent SvelteKit apps
+7. **GitHub Pages** - Marketing site deployed via GitHub Actions to `github.com/wighawag/wherever`
+
+## Agent Guidelines
+
+⚠️ **Important for AI Agents:**
+Please review **`AGENTS.md`** in the root of the project before completing any work. It contains essential guidelines, including the requirement to **always create a changeset** with a good description when done.
+
+## Known Limitations
+
+- No rate limiting (add for production use)
+- No connection persistence/reconnection logic (client responsibility)
+- Single active WebSocket for broadcasting (all clients get same stream)
+- No extension UI dialog forwarding (confirmations happen on server side)
+
+## Future Enhancements
+
+Potential additions:
+
+- [ ] Multiple WebSocket rooms/sessions
+- [ ] Rate limiting middleware
+- [ ] WebSocket reconnection logic
+- [ ] Extension UI dialog forwarding to remote clients
+- [ ] Custom tool registration via API
+- [x] File transfer capabilities (upload via `/session/upload`; download via `/session/download`, surfaced as a download button + inline image preview on `read` tool cards plus the `attach_file` tool for explicit/"give me the X" deliverables)
+
+## Related Pi Documentation
+
+- [Pi Extensions](https://pi.dev/docs/extensions.md) - Extension API reference
+- [Pi RPC Mode](https://pi.dev/docs/rpc.md) - Alternative integration method
+- [Pi SDK](https://pi.dev/docs/sdk.md) - Programmatic usage
+
+## Contact & Contributing
+
+- Repository: `github.com/wighawag/wherever`
+- License: AGPL-3.0-only
+- Contributions welcome!
+
+## Conventions
+
+Standing per-change rules agents must follow in this repo.
+
+- **Always create a changeset when done** (`pnpm changeset`, or a hand-written
+  `.changeset/*.md`). See `AGENTS.md` §1 for the full rule. Package-mapping:
+  - **web** and **server** changes → `"wherever-dev": <bump>`.
+  - **extension** changes (`extension/`) → `"@wherever-dev/pi": <bump>`.
+  - Never use `"@wherever-dev/web"` — the `web` package is private and its built
+    artifacts ship inside `wherever-dev`.
+- **Never stage/commit** unless explicitly asked; leave changes unstaged.
+- **Never revert / do destructive git ops** without explicit confirmation.
+- Enforcement, if wanted, belongs in the `dorfl.json` `verify` gate (e.g.
+  `changeset status --since=main`) — not injected automatically.
+
+## The work/ contract
+
+This repo is onboarded onto the file-based **`work/` contract** (defined by the
+docs in `work/protocol/`, synced by the `setup` skill; `dorfl.json` carries the
+`verify` gate and `harness`). Layout — status is the FOLDER an item lives in,
+never a frontmatter field; the folder is the index (no hand-maintained lists):
+
+- `work/notes/{observations,ideas,findings}/` — capture buckets. `observations`
+  = spotted/unverified; `ideas` = proposed; `findings` = verified **external**
+  ground-truth, each with a `source:` (our own architecture goes in this
+  `CONTEXT.md` / `docs/`, never in `findings/`).
+- `work/tasks/{backlog,ready,…}/` — the build board (`backlog` = staging,
+  `ready` = the pool).
+- `work/specs/{proposed,ready,…}/` — the spec lifecycle (`proposed` = staging,
+  `ready` = the pool). The three specs in `specs/ready/` were migrated here from
+  the old `work/briefs/ready/`.
+- `work/questions/` — the "what needs me?" queue. `work/protocol/` — the synced
+  contract reference docs (protocol-owned; re-synced, never hand-edited).
+
+Architectural rationale lives in `docs/adr/` (decisions); product framing in
+`work/specs/`.
+
+---
+
+**Note:** This document is meant to provide full context when moving to a new conversation/session. All essential project information should be here.
