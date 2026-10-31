@@ -51,3 +51,16 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions are recorded in [work/notes/observations/cli-assistant-tool-twins-decisions.md](../../notes/observations/cli-assistant-tool-twins-decisions.md), with JSDoc at the choice sites in `extension/src/assistant-tool-twins.ts` (`syncTwinActivation`, `ASSISTANT_TWIN_REQUEST_TIMEOUT_MS`), `server/src/assistant-tools.ts` (`assistantCliOps`) and `server/src/cli-requests.ts`. They cover:
+- the twins being active exactly while the cache is `configured`, with every other state deactivating them and a sync at `session_start` (pi restores a resumed session's tool loadout from its transcript);
+- "configured" meaning active (lock held), and the lock-state error for every op, `notify` included, when called while not active;
+- the 30 s twin-op timeout;
+- the `{text, details}` / error wire shape and the new `ASSISTANT_NOT_CONFIGURED_ERROR`;
+- the caller resolved from the pool entry, and refusing a connection the pool no longer tracks;
+- one shared hooks object for the server tools and the twins;
+- a pi-runtime-free twin module imported by the drift test, which also compares parameter schemas;
+- the CLI timezone line's cwd check and append order;
+- the `minor` changeset bumps.

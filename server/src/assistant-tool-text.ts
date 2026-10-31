@@ -5,10 +5,12 @@
  *
  * Owned by `assistant-schedule-tools-server` (which created it with the schedule
  * and timezone tools); `channel-seam-notify-and-web-push` added `assistant_notify`
- * here, and `cli-assistant-tool-twins` reuses every entry for the extension's
- * `pi.registerTool` twins under a drift test (like `say-tool.test.ts`): the
- * extension is a separate published package that cannot import from the server,
- * so its copies must stay byte-identical to these.
+ * here, and `cli-assistant-tool-twins` copies every entry (and `timezoneLine`) into the
+ * extension's `pi.registerTool` twins (extension/src/assistant-tool-twins.ts)
+ * under a drift test (server/test/assistant-tool-twins.test.ts, like
+ * `say-tool.test.ts`): the extension is a separate published package that
+ * cannot import from the server, so its copies must stay identical to these.
+ * A change here must be made there too.
  *
  * Text only: no behaviour lives here, so a twin can copy it without dragging
  * server code along.

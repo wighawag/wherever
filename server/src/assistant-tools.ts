@@ -328,6 +328,49 @@ export async function notifyOp(backend: AssistantNotifyBackend, caller: Assistan
   };
 }
 
+/** What a CLI twin answers while `assistantFolder` is unset on this server. */
+export const ASSISTANT_NOT_CONFIGURED_ERROR =
+  'the wherever assistant is not configured on this server (set assistantFolder in the wherever config and restart it)';
+
+export type AssistantCliOp = (args: unknown, caller: AssistantToolCaller) => Promise<OpResult>;
+
+/**
+ * The ops behind the CLI bridge's `assistant_*` tool twins (`cli_request`, see
+ * cli-requests.ts and ADR 0016), keyed by op name. Each runs the SAME op as the
+ * server tool it twins, behind the same gates: `hooks` undefined (assistant not
+ * configured) answers `ASSISTANT_NOT_CONFIGURED_ERROR`; configured but not
+ * active answers the lock-state error, `notify` included (a server session has
+ * no `assistant_notify` then, a CLI twin has nothing to hide behind, so it gets
+ * the same error as the schedule tools). `caller` is resolved from the bridge
+ * registration, never from `args`.
+ */
+export function assistantCliOps(hooks: AssistantSessionHooks | undefined): Record<string, AssistantCliOp> {
+  const withBackend =
+    (run: (backend: AssistantScheduleBackend, args: unknown, caller: AssistantToolCaller) => OpResult | Promise<OpResult>): AssistantCliOp =>
+    async (args, caller) => {
+      if (!hooks) return { ok: false, error: ASSISTANT_NOT_CONFIGURED_ERROR };
+      const access = hooks.access();
+      if (!access.ok) return { ok: false, error: access.error };
+      return run(access.backend, args, caller);
+    };
+  return {
+    schedule_add: withBackend((backend, args, caller) => scheduleAdd(backend, caller, args)),
+    schedule_list: withBackend((backend, _args, caller) => scheduleList(backend, caller)),
+    schedule_remove: withBackend((backend, args) => scheduleRemove(backend, args)),
+    set_timezone: withBackend((backend, args) => setTimezone(backend, args)),
+    notify: async (args, caller) => {
+      if (!hooks) return { ok: false, error: ASSISTANT_NOT_CONFIGURED_ERROR };
+      if (!hooks.notify) {
+        const access = hooks.access();
+        return { ok: false, error: access.ok ? 'assistant_notify is not available on this server' : access.error };
+      }
+      const a = hooks.notify();
+      if (!a.ok) return { ok: false, error: a.error };
+      return notifyOp(a.backend, caller, args);
+    },
+  };
+}
+
 function safeList(backend: AssistantScheduleBackend): ScheduleListing | null {
   try {
     return backend.list();

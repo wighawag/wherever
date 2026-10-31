@@ -15,6 +15,7 @@ import {
   WEB_TIMEZONE_SOURCE,
   type AssistantNotifyBackend,
   type AssistantScheduleBackend,
+  type AssistantSessionHooks,
 } from './assistant-tools.js';
 import { ChannelDispatcher, type AssistantChannel } from './assistant-channels.js';
 import { WebPushChannel, resolveVapidSubject, validateSubscription } from './web-push.js';
@@ -1108,8 +1109,10 @@ async function main(): Promise<void> {
   // registered ONLY while the assistant is active (a refused server's sessions
   // do not see it), see AssistantSessionHooks.notify.
   let notifyBackend: AssistantNotifyBackend | null = null;
+  // The same hooks also answer the CLI bridge's tool-twin ops (cli-requests.ts).
+  let assistantHooks: AssistantSessionHooks | undefined;
   if (assistant.status.configured && assistant.status.folder) {
-    sessionPool.setAssistantSessionHooks({
+    assistantHooks = {
       folder: assistant.status.folder,
       access: () =>
         assistantBackend
@@ -1123,7 +1126,8 @@ async function main(): Promise<void> {
                 : { ok: false as const, error: 'the assistant channels are still starting; try again in a moment' },
           }
         : {}),
-    });
+    };
+    sessionPool.setAssistantSessionHooks(assistantHooks);
   }
   const currentTimezone = (): string | null => {
     try {
@@ -1266,7 +1270,7 @@ async function main(): Promise<void> {
     assistantFolder: assistantController ? assistant.status.folder : null,
     timezone: assistantController ? currentTimezone() : null,
   });
-  const cliRequests = createCliRequestRouter({ assistantInfo: currentAssistantInfo });
+  const cliRequests = createCliRequestRouter({ assistantInfo: currentAssistantInfo, assistantHooks: () => assistantHooks });
   // Push the current assistant info to every connected CLI bridge, which updates
   // its cached `assistant_info`. The folder takes effect on restart only, so the
   // one runtime change is the user's timezone: the scheduler's
@@ -3475,9 +3479,16 @@ async function handleWSMessage(
       // field of the request, so whatever an op stamps as origin is server-side.
       // Answered to the asker only. A request with no id cannot be answered.
       if (!cliRequests) return;
+      // The tool-twin ops also need the session's id and cwd (the origin they
+      // stamp), read from the pool's entry for it.
+      const tracked = client.isCliBridge && client.sessionId ? pool.getSession(client.sessionId) : null;
       const caller =
         client.isCliBridge && client.sessionId
-          ? { sessionFile: pool.getSession(client.sessionId)?.sessionFile ?? client.sessionId }
+          ? {
+              sessionFile: tracked?.sessionFile ?? client.sessionId,
+              sessionId: tracked?.sessionId ?? null,
+              ...(tracked ? { cwd: tracked.cwd } : {}),
+            }
           : null;
       const response = await cliRequests.handle(msg, caller);
       if (response) sendWS(client.ws, response);
