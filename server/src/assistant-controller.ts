@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { ImageContent } from '@earendil-works/pi-ai';
 
 /**
  * The assistant CONTROLLER (spec `assistant-session-and-channels`, ADRs 0014 to
@@ -63,6 +64,7 @@ export interface AssistantPoolPort {
     streamingBehavior?: 'steer' | 'followUp',
     conversationMode?: boolean,
     origin?: AssistantOrigin,
+    images?: ImageContent[],
   ): Promise<void>;
   pinSession(sessionFile: string): void;
   unpinSession(sessionFile: string): void;
@@ -78,6 +80,12 @@ export interface AssistantSendOptions {
    * resolves only when a started turn ends.
    */
   onDispatch?: (d: { sessionFile: string; steered: boolean }) => void;
+  /**
+   * Model image inputs sent with the message (a channel's photos, task
+   * `pool-send-images`); handed to the pool send unchanged. Absent or empty =
+   * the text-only send.
+   */
+  images?: ImageContent[];
 }
 
 /** What `GET /config`'s `assistant` gains from the controller. */
@@ -249,7 +257,7 @@ export class AssistantController {
     } catch (err) {
       console.error(`[wherever] assistant: onDispatch failed: ${errMessage(err)}`);
     }
-    await this.pool.sendUserMessage(cur.sessionFile, text, behavior, false, origin);
+    await this.pool.sendUserMessage(cur.sessionFile, text, behavior, false, origin, opts?.images);
   }
 
   /**

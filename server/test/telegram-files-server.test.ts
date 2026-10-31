@@ -144,4 +144,54 @@ describe('Telegram files (real server)', () => {
     expect(api.of('sendPhoto')).toHaveLength(0);
     expect(sent()).not.toContain('web attached');
   }, 180_000);
+
+  it('a photo reaches the model as an image input, with its staged path still in the text (pool-send-images)', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-tg-photo-srv-')));
+    cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
+    const api = new FakeBotApi(100);
+    const url = await api.listen();
+    cleanups.push(() => api.close());
+    const configDir = path.join(root, 'config');
+    const stateDir = path.join(root, 'state');
+    const folder = path.join(root, 'assistant');
+    const uploads = path.join(root, 'uploads');
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, 'config.json'),
+      JSON.stringify({
+        assistantFolder: folder,
+        uploads: { type: 'custom', dir: uploads },
+        assistantTelegram: { enabled: true, apiBaseUrl: url, userId: USER },
+      }),
+    );
+    const h = await startHarness({
+      initial: { kind: 'reply', text: 'ok' },
+      modelInput: ['text', 'image'],
+      env: { WHEREVER_CONFIG_DIR: configDir, WHEREVER_STATE_DIR: stateDir, TZ: 'UTC', WHEREVER_TELEGRAM_TOKEN: TOKEN, WHEREVER_TELEGRAM_TOKEN_FILE: '' },
+    });
+    cleanups.push(() => h.cleanup());
+    await until(() => api.of('getUpdates').length > 0, 30_000, 'polling');
+    const sent = () => api.of('sendMessage').map((c) => String(c.params.text));
+
+    // A 1x1 PNG as a Telegram photo (Telegram labels photos image/jpeg; pi detects the real format).
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+    h.setNext({ kind: 'reply', text: 'a tiny picture' });
+    const fileId = api.addFile(png, { ext: '.jpg' });
+    api.media(USER, { photo: [{ file_id: fileId, file_size: png.length, width: 1, height: 1 }], caption: 'what is this?' });
+    await until(() => sent().includes('a tiny picture'), 60_000, 'the reply to the photo');
+
+    const saved = fs.readdirSync(uploads);
+    expect(saved).toHaveLength(1);
+    const savedPath = path.join(uploads, saved[0]!);
+    const body = h.fake.requests().at(-1);
+    expect(lastUserText(body)).toContain(`[Uploaded file: ${savedPath}]`);
+    const msgs = (body?.messages ?? []) as Array<{ role: string; content: any }>;
+    const user = [...msgs].reverse().find((m) => m.role === 'user')!;
+    const images = (Array.isArray(user.content) ? user.content : []).filter((p: any) => p?.type === 'image');
+    expect(images).toHaveLength(1);
+    expect(images[0].source.type).toBe('base64');
+    expect(String(images[0].source.media_type)).toMatch(/^image\//);
+    expect(images[0].source.data.length).toBeGreaterThan(0);
+  }, 180_000);
 });

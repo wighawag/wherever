@@ -130,8 +130,16 @@ export type ClientMessage =
   // Server -> CLI bridge relay of a web user message. `conversationMode` carries
   // the same per-turn signal as the `message` payload above, so a bridged terminal
   // session driven from the web gets the same injection (the extension's own
-  // before_agent_start handler applies it).
-  | { type: 'cli_message'; message: string; streamingBehavior?: 'steer' | 'followUp'; conversationMode?: boolean }
+  // before_agent_start handler applies it). `images` (omitted when none) are
+  // model image inputs for the message (a channel's photos, task
+  // `pool-send-images`), passed to `pi.sendUserMessage` as image content.
+  | {
+      type: 'cli_message';
+      message: string;
+      streamingBehavior?: 'steer' | 'followUp';
+      conversationMode?: boolean;
+      images?: Array<{ type: 'image'; data: string; mimeType: string }>;
+    }
   | { type: 'cli_abort' }
   | { type: 'cli_bash'; command: string; excludeFromContext?: boolean }
   | { type: 'cli_model_change'; model: string }

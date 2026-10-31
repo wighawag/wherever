@@ -44,3 +44,14 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions taken while building this task are recorded in [work/notes/observations/pool-send-images-decisions.md](../../notes/observations/pool-send-images-decisions.md), with JSDoc at the choice sites in `server/src/session-pool.ts` (`sendUserMessage`), `server/src/assistant-channels.ts` (`channelImages`) and `extension/src/cli-message.ts`. They cover:
+- the CLI-bridge path carrying images (pi 1.4.0's `sendUserMessage` accepts image content), with prompt-template expansion unchanged;
+- `images` as the pool send's 6th positional parameter, and as an option of the controller's `send`;
+- the image rule, applied once in the dispatcher for every channel: `image/*` or, with no type, a common image file extension (images sent as documents included), with the path kept in the text;
+- no extra size or format check in wherever (pi resizes or converts, and adds a note for a text-only model); an unreadable file is sent as a path only;
+- shell sends ignoring images;
+- the opt-in `HarnessOptions.modelInput` for tests;
+- the `minor` changeset bumps.
