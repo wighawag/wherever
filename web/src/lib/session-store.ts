@@ -1,6 +1,7 @@
 import {writable, get} from 'svelte/store';
 import {defaultAppearance, type AppearanceInfo} from '$lib/theme';
 import {adoptTokenFromUrlOnce} from '$lib/core/token-adoption';
+import type {TelegramStatus} from '$lib/core/telegram-settings';
 
 // getToken()/getBaseUrl() below read the stored config STRAIGHT out of
 // localStorage, and a route can import this module without importing
@@ -507,6 +508,13 @@ export interface AssistantStatus {
 		publicKey: string | null;
 		subscriptions: number;
 	};
+	/**
+	 * The assistant's Telegram channel (server/src/telegram-channel.ts), only
+	 * while `active`: whether `assistantTelegram.enabled` is set, and its state
+	 * (disabled with an error, unpaired + the one-time code, paired + the user).
+	 * See core/telegram-settings.ts.
+	 */
+	telegram?: TelegramStatus;
 }
 export const assistantNotConfigured: AssistantStatus = {
 	configured: false,

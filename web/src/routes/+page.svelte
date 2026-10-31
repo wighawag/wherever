@@ -2,6 +2,8 @@
 	import Head from '$lib/Head.svelte';
 	import ConnectionSettings from '$lib/components/ConnectionSettings.svelte';
 	import AssistantPushSettings from '$lib/components/AssistantPushSettings.svelte';
+	import AssistantTelegramSettings from '$lib/components/AssistantTelegramSettings.svelte';
+	import {telegramSectionVisible} from '$lib/core/telegram-settings';
 	import ChatMessageList from '$lib/components/ChatMessageList.svelte';
 	import ChatInput from '$lib/components/ChatInput.svelte';
 	import SessionBrowser from '$lib/components/SessionBrowser.svelte';
@@ -625,6 +627,10 @@
 
 				{#if $assistantStatusStore.active && $assistantStatusStore.webPush?.enabled}
 					<AssistantPushSettings />
+				{/if}
+
+				{#if $assistantStatusStore.telegram && telegramSectionVisible($assistantStatusStore)}
+					<AssistantTelegramSettings status={$assistantStatusStore.telegram} />
 				{/if}
 
 				<div class="mt-2 border-t border-brand-border p-4">

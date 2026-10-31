@@ -255,6 +255,20 @@ export interface WhereverConfig {
     subject?: string;
   };
   /**
+   * The assistant's Telegram channel (telegram-channel.ts), read at start. OFF
+   * unless `enabled` is true (and the assistant is active). The bot token comes
+   * from `WHEREVER_TELEGRAM_TOKEN`, then `WHEREVER_TELEGRAM_TOKEN_FILE`, then
+   * `token` here (telegram-token.ts, ADRs 0007 and 0018). `userId`, a numeric
+   * Telegram user id, pairs that user and wins over a pairing made by code.
+   * `apiBaseUrl` points at another Bot API server (a local one; tests).
+   */
+  assistantTelegram?: {
+    enabled?: boolean;
+    token?: string;
+    userId?: number | string;
+    apiBaseUrl?: string;
+  };
+  /**
    * The URL the user reaches this wherever server at (e.g. behind a reverse
    * proxy), for links a channel sends out. Optional; nothing derives it.
    */

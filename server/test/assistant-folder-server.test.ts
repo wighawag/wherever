@@ -97,6 +97,8 @@ describe('assistantFolder (real server)', () => {
       timezone: expect.any(String),
       // The Web Push channel (channel-seam-notify-and-web-push): no key until first use.
       webPush: { enabled: true, publicKey: null, subscriptions: 0 },
+      // The Telegram channel (telegram-token-and-pairing): off unless enabled.
+      telegram: { enabled: false, state: 'disabled' },
     });
     expect(fs.existsSync(path.join(folder, 'AGENTS.md'))).toBe(true);
     expect(fs.existsSync(path.join(folder, 'jobs', 'AGENTS.md'))).toBe(true);

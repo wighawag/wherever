@@ -74,6 +74,8 @@ export interface Harness {
   /** The isolated PI_CODING_AGENT_DIR (sessions land under here). */
   agentDir: string;
   setNext(b: FakeBehavior): void;
+  /** Everything the server printed so far (stdout and stderr, interleaved). */
+  output(): string;
   /** Open a WS client and wait for the socket to open. `clientKey` is the stable
    *  per-viewer identity the server uses to retire a superseded connection. */
   connect(clientKey?: string): Promise<TestClient>;
@@ -192,8 +194,15 @@ export async function startHarness(opts?: HarnessOptions): Promise<Harness> {
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   );
-  child.stdout?.on('data', (d) => process.env.GATE_DEBUG && process.stdout.write(`[srv] ${d}`));
-  child.stderr?.on('data', (d) => process.env.GATE_DEBUG && process.stderr.write(`[srv!] ${d}`));
+  let output = '';
+  child.stdout?.on('data', (d) => {
+    output += String(d);
+    if (process.env.GATE_DEBUG) process.stdout.write(`[srv] ${d}`);
+  });
+  child.stderr?.on('data', (d) => {
+    output += String(d);
+    if (process.env.GATE_DEBUG) process.stderr.write(`[srv!] ${d}`);
+  });
 
   installExitHooks();
   if (child.pid != null) liveServers.add(child.pid);
@@ -244,6 +253,7 @@ export async function startHarness(opts?: HarnessOptions): Promise<Harness> {
     workspace,
     agentDir,
     setNext: (b) => fake.setNext(b),
+    output: () => output,
     async connect(clientKey?: string) {
       const c = await TestClient.open(port, workspace, clientKey);
       clients.push(c);
