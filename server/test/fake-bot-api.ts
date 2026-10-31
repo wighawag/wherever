@@ -105,6 +105,19 @@ export class FakeBotApi {
     return this.calls.filter((c) => c.method === method && (token === undefined || c.token === token));
   }
 
+  /**
+   * What the chat shows for a draft, per the Bot API docs (`sendMessageDraft`):
+   * a draft with text shows that text, an EMPTY one shows a "Thinking..."
+   * placeholder (it does NOT clear), and the draft disappears once the bot
+   * sends a message to the chat (or after ~30 s, not modelled). Null: no draft.
+   */
+  readonly drafts = new Map<string, { draftId: number; text: string } | null>();
+
+  /** The draft the chat shows now (`text: ''` is the "Thinking..." placeholder), or null. */
+  visibleDraft(chatId: number | string): { draftId: number; text: string } | null {
+    return this.drafts.get(String(chatId)) ?? null;
+  }
+
   /** Pending (unconfirmed) update ids. */
   pendingIds(): number[] {
     return this.pending.map((u) => u.update_id);
@@ -181,7 +194,19 @@ export class FakeBotApi {
     if (this.failMethods.has(method)) {
       return { status: 400, body: { ok: false, error_code: 400, description: `Bad Request: ${method} is not available` } };
     }
-    if (method === 'sendMessage') return ok({ message_id: this.nextSentId++, chat: { id: params.chat_id }, text: params.text });
+    if (method === 'sendMessage') {
+      // The real Bot API refuses an empty text.
+      if (typeof params.text !== 'string' || params.text.trim() === '') {
+        return { status: 400, body: { ok: false, error_code: 400, description: 'Bad Request: message text is empty' } };
+      }
+      this.drafts.set(String(params.chat_id), null);
+      return ok({ message_id: this.nextSentId++, chat: { id: params.chat_id }, text: params.text });
+    }
+    if (method === 'sendMessageDraft') {
+      this.drafts.set(String(params.chat_id), { draftId: Number(params.draft_id), text: typeof params.text === 'string' ? params.text : '' });
+      return ok(true);
+    }
+    if (method === 'sendPhoto' || method === 'sendDocument') this.drafts.set(String(params.chat_id), null);
     if (method === 'editMessageText') return ok({ message_id: params.message_id, chat: { id: params.chat_id }, text: params.text });
     if (method === 'sendMessageDraft' || method === 'setMessageReaction') return ok(true);
     if (method === 'sendPhoto' || method === 'sendDocument') return ok({ message_id: this.nextSentId++, chat: { id: Number(params.chat_id) } });

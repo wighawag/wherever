@@ -626,7 +626,7 @@
 				/>
 
 				{#if $assistantStatusStore.active && $assistantStatusStore.webPush?.enabled}
-					<AssistantPushSettings />
+					<AssistantPushSettings currentSessionId={currentSessionId ?? null} />
 				{/if}
 
 				{#if $assistantStatusStore.telegram && telegramSectionVisible($assistantStatusStore)}
@@ -679,7 +679,7 @@
 						{connected ? 'Connected' : 'Disconnected'}
 					</span>
 					<span
-						class="ml-auto font-mono text-xs text-brand-text-muted"
+						class="selectable ml-auto font-mono text-xs text-brand-text-muted"
 						title={appState.serverVersion
 							? `App build ${version} · server ${appState.serverVersion}${appState.piVersion ? ` · pi ${appState.piVersion}` : ''}`
 							: `App build ${version}`}
@@ -721,7 +721,7 @@
 					</div>
 				{/if}
 				{#if appState.error && !connected}
-					<div class="mt-2 text-xs text-rose-400">
+					<div class="selectable mt-2 text-xs text-rose-400">
 						{appState.error}
 					</div>
 				{/if}

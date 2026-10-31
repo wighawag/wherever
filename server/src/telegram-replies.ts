@@ -6,18 +6,30 @@
  *
  * - STREAMING: while an assistant message streams (`message_update`), its text
  *   is shown as a DRAFT with `sendMessageDraft`; at its `message_end` the final
- *   text is sent as a real message and the draft is cleared (an empty draft).
- *   When the Bot API refuses drafts (an older Bot API, a self-hosted server),
- *   the preview falls back to `sendMessage` + `editMessageText`, and that is
- *   remembered for every later reply (`draftSupport`).
+ *   text is sent as a real message. When the Bot API refuses drafts (an older
+ *   Bot API, a self-hosted server), the preview falls back to `sendMessage` +
+ *   `editMessageText`, and that is remembered for every later reply
+ *   (`draftSupport`).
+ * - CLEARING A DRAFT: the Bot API has NO call that removes a draft. An EMPTY
+ *   `sendMessageDraft` is not a clear: it shows a "Thinking..." placeholder
+ *   (the animated dots), which lingers until the draft's ~30 s expiry. A draft
+ *   disappears when the bot SENDS A MESSAGE to the chat. So an empty draft is
+ *   never sent, and a visible draft is always ended by a real message: the
+ *   final text at `message_end`; the text so far at a `tool_execution_start`,
+ *   `turn_end` or `agent_end` that arrives while its message is still open
+ *   (and not repeated at that message's `message_end`); on an ABORT, the
+ *   partial text the user saw plus `ABORTED_MARK`, silently.
  * - THROTTLE: the first preview of a message goes out at once (the user sees
  *   the assistant started); later ones at most every `throttleMs` (750 ms).
  * - SPLITTING: text longer than `TELEGRAM_TEXT_LIMIT` is split by paragraph,
  *   then by line, then hard (never inside a surrogate pair). A preview is
  *   truncated to the limit; the final message is sent in parts.
  * - ENDS: an assistant message with no text (tool calls only) sends nothing;
- *   an ABORTED one (`stop`) clears its draft (a fallback preview message stays
- *   as it was); an ERROR one is reported as `⚠️ The assistant failed: ...`.
+ *   an ERROR one is reported as `⚠️ The assistant failed: ...`.
+ * - TOOL CALLS (`assistantTelegram.toolCalls`): `off` (default) sends nothing
+ *   for a tool call; `compact` sends one plain line per call at its
+ *   `tool_execution_start` (`toolCallSummary`: `🔧 bash: <first line>`,
+ *   `🔧 read: <path>`, secrets redacted), with `disable_notification`.
  *
  * - FILES (task `telegram-files`): a successful `attach_file` call's
  *   `tool_execution_end` sends its file (`sendPhoto` / `sendDocument`, by
@@ -48,6 +60,18 @@ import { attachedFileOf, attachmentFailedNote, attachmentPlan, attachmentTooLarg
 export const TELEGRAM_TEXT_LIMIT = 4000;
 export const PREVIEW_THROTTLE_MS = 750;
 const DRAFT_ID_MAX = 2_147_483_647;
+/** Appended to the partial text of an aborted reply (kept, since the user saw it as a draft). */
+export const ABORTED_MARK = '⏹ (stopped)';
+/** The longest tool-call detail in a compact line (`assistantTelegram.toolCalls: "compact"`). */
+export const TOOL_SUMMARY_MAX = 80;
+
+/** `assistantTelegram.toolCalls`: what a tool call shows on Telegram. */
+export type TelegramToolCalls = 'off' | 'compact';
+
+/** The `toolCalls` config value, normalized (anything but `"compact"` is `"off"`). */
+export function normalizeToolCalls(value: unknown): TelegramToolCalls {
+  return value === 'compact' ? 'compact' : 'off';
+}
 
 export type BotCall = <T>(method: string, params: Record<string, unknown>) => Promise<T>;
 
@@ -61,6 +85,8 @@ export interface TelegramRepliesOptions {
   /** The paired chat (null while unpaired: nothing is sent). */
   chatId: () => string | null;
   throttleMs?: number;
+  /** `assistantTelegram.toolCalls` (default `off`: a tool call sends nothing). */
+  toolCalls?: TelegramToolCalls;
   log?: Pick<Console, 'log' | 'warn' | 'error'>;
 }
 
@@ -72,6 +98,72 @@ interface Stream {
   lastSent: string;
   flushed: boolean;
   timer?: ReturnType<typeof setTimeout>;
+  /**
+   * Text already sent as a real message for this (still open) assistant
+   * message, by a boundary that ended its draft early (a tool call start, a
+   * turn end); its `message_end` sends only what comes after it.
+   */
+  delivered?: string;
+}
+
+/** The argument a compact tool-call line shows, per tool (anything else shows the name only). */
+const SUMMARY_ARG: Record<string, string> = {
+  bash: 'command',
+  read: 'path',
+  write: 'path',
+  edit: 'path',
+  ls: 'path',
+  find: 'path',
+  grep: 'path',
+  attach_file: 'path',
+};
+
+/**
+ * Replace secret-looking values with `***`: `key=value` / `key: value` for
+ * secret-ish names, `Bearer` / `Basic` credentials, `--password x`-style flags,
+ * `user:pass@` in URLs, and any long opaque run of letters AND digits (API
+ * keys, bot tokens, hashes).
+ */
+export function redactSecrets(text: string): string {
+  const secretName = String.raw`[\w.-]*(?:token|secret|passw(?:or)?d|pwd|api[_-]?key|apikey|auth\w*|credential|private[_-]?key|access[_-]?key|session)[\w.-]*`;
+  return text
+    .replace(/:\/\/[^/\s:@]+:[^/\s@]+@/g, '://***@')
+    // curl -u user:pass, --user user:pass
+    .replace(/(\s(?:-u|--user)\s+)[^\s:]+:\S+/g, '$1***')
+    // mysql -pPASS (attached), sshpass -p PASS
+    .replace(/(\bmysql\b[^\n]*?\s-p)(?!\s)\S+/g, '$1***')
+    .replace(/(\bsshpass\s+-p\s+)\S+/g, '$1***')
+    .replace(/\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 ***')
+    .replace(new RegExp(String.raw`(--?${secretName})(=|\s+)("[^"]*"|'[^']*'|\S+)`, 'gi'), '$1$2***')
+    .replace(new RegExp(String.raw`\b(${secretName})(\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)`, 'gi'), '$1$2***')
+    .replace(/[A-Za-z0-9_+=-]{20,}/g, (run) => (/[0-9]/.test(run) && /[A-Za-z]/.test(run) ? '***' : run));
+}
+
+/**
+ * The compact line for one tool call: `🔧 <tool>`, plus `: <detail>` for the
+ * tools in `SUMMARY_ARG` (bash: the command's first non-empty line; file tools:
+ * the path). Control characters are dropped, secrets redacted BEFORE the cut,
+ * and the detail truncated to `TOOL_SUMMARY_MAX` characters. Never any other
+ * argument and never tool output.
+ */
+export function toolCallSummary(toolName: string, args: unknown): string {
+  const clean = (s: string) => s.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  const name = truncateWithEllipsis(clean(toolName) || 'tool', 60);
+  const field = SUMMARY_ARG[toolName];
+  const raw = field && args && typeof args === 'object' ? (args as Record<string, unknown>)[field] : undefined;
+  if (typeof raw !== 'string') return `🔧 ${name}`;
+  // Bounded before the regexes (a one-line heredoc can be huge); only the first
+  // TOOL_SUMMARY_MAX characters are shown, so a secret there is redacted whole.
+  const firstLine = (raw.split(/\r?\n/).find((l) => l.trim().length > 0) ?? '').slice(0, 1000);
+  const detail = truncateWithEllipsis(clean(redactSecrets(firstLine)), TOOL_SUMMARY_MAX);
+  return detail ? `🔧 ${name}: ${detail}` : `🔧 ${name}`;
+}
+
+function truncateWithEllipsis(text: string, max: number): string {
+  if (text.length <= max) return text;
+  let j = max;
+  if (/[\uD800-\uDBFF]/.test(text[j - 1]!)) j -= 1;
+  return `${text.slice(0, j).trimEnd()}…`;
 }
 
 /** Split `text` into parts of at most `limit` UTF-16 units (paragraph, line, then hard). */
@@ -145,6 +237,7 @@ export class TelegramReplies {
   private readonly upload: BotUpload | undefined;
   private readonly chatId: () => string | null;
   private readonly throttleMs: number;
+  private readonly toolCalls: TelegramToolCalls;
   private readonly log: Pick<Console, 'log' | 'warn' | 'error'>;
   private readonly streams = new Map<string, Stream>();
   private draftSupport: 'unknown' | 'supported' | 'unsupported' = 'unknown';
@@ -157,6 +250,7 @@ export class TelegramReplies {
     this.upload = opts.upload;
     this.chatId = opts.chatId;
     this.throttleMs = opts.throttleMs ?? PREVIEW_THROTTLE_MS;
+    this.toolCalls = normalizeToolCalls(opts.toolCalls);
     this.log = opts.log ?? console;
   }
 
@@ -165,6 +259,20 @@ export class TelegramReplies {
     const attached = attachedFileOf(event);
     if (attached) {
       this.enqueue(() => this.sendAttachment(attached.path, attached.filename));
+      return;
+    }
+    if (event.type === 'tool_execution_start') {
+      // A user `!` command (forceCommand) is not the assistant's tool call.
+      if (event.forceCommand === true) return;
+      this.closeOpenDraft(sessionFile);
+      if (this.toolCalls === 'compact' && typeof event.toolName === 'string') {
+        const line = toolCallSummary(event.toolName, event.args);
+        this.enqueue(() => this.sendSilent(line));
+      }
+      return;
+    }
+    if (event.type === 'turn_end' || event.type === 'agent_end') {
+      this.closeOpenDraft(sessionFile);
       return;
     }
     const message = event.message as { role?: string; content?: unknown; stopReason?: unknown; errorMessage?: unknown } | undefined;
@@ -194,6 +302,8 @@ export class TelegramReplies {
         stream.timer = undefined;
         this.timers -= 1;
       }
+      // The already-sent prefix (`delivered`) is cut inside the chain, in
+      // finish(): a queued boundary may not have recorded it yet.
       const text = assistantText(message.content);
       const stopReason = typeof message.stopReason === 'string' ? message.stopReason : undefined;
       const errorMessage = typeof message.errorMessage === 'string' ? message.errorMessage : undefined;
@@ -212,6 +322,37 @@ export class TelegramReplies {
       }
       if (chain === this.chain) return;
     }
+  }
+
+  /**
+   * A boundary (tool call start, turn end) while an assistant message's draft
+   * may still be showing: send its text so far as a real message (the only way
+   * to end a draft) and remember it, so the message's `message_end` sends only
+   * what comes after. Nothing happens without a shown draft.
+   */
+  private closeOpenDraft(sessionFile: string): void {
+    const stream = this.streams.get(sessionFile);
+    if (!stream || stream.mode !== 'draft') return;
+    if (stream.timer) {
+      clearTimeout(stream.timer);
+      stream.timer = undefined;
+      this.timers -= 1;
+    }
+    this.enqueue(async () => {
+      // Decided in the chain: an earlier flush may have just shown a draft.
+      if (stream.draftId === undefined || !stream.lastSent) return;
+      const chatId = this.chatId();
+      if (!chatId) return;
+      const text = afterDelivered(stream, stream.pending);
+      if (text) {
+        for (const part of splitTelegramText(text)) await this.call('sendMessage', { chat_id: chatId, text: part });
+      }
+      stream.delivered = stream.pending;
+      // The next text of this message (if any) is a new draft.
+      stream.draftId = undefined;
+      stream.lastSent = '';
+      stream.flushed = false;
+    });
   }
 
   /** Drop every stream's pending preview (the channel stopped). */
@@ -249,7 +390,7 @@ export class TelegramReplies {
   private async flush(stream: Stream): Promise<void> {
     const chatId = this.chatId();
     if (!chatId) return;
-    const text = truncate(stream.pending.trim());
+    const text = truncate(afterDelivered(stream, stream.pending));
     if (!text || text === stream.lastSent) return;
     if (stream.mode === 'draft' && this.draftSupport !== 'unsupported') {
       stream.draftId ??= this.allocateDraftId();
@@ -275,14 +416,23 @@ export class TelegramReplies {
     stream.lastSent = text;
   }
 
-  private async finish(stream: Stream | undefined, text: string, stopReason: string | undefined, errorMessage: string | undefined): Promise<void> {
+  private async finish(stream: Stream | undefined, fullText: string, stopReason: string | undefined, errorMessage: string | undefined): Promise<void> {
     const chatId = this.chatId();
     if (!chatId) return;
+    const text = stream ? afterDelivered(stream, fullText) : fullText.trim();
     if (stopReason === 'aborted') {
-      await this.clearDraft(chatId, stream);
+      // A shown draft can only be ended by a message: keep what the user saw, silently.
+      if (stream?.mode === 'draft' && stream.draftId !== undefined && stream.lastSent) {
+        const partial = text || stream.lastSent;
+        for (const part of splitTelegramText(`${partial}\n\n${ABORTED_MARK}`)) {
+          await this.call('sendMessage', { chat_id: chatId, text: part, disable_notification: true });
+        }
+      }
       return;
     }
     if (text) {
+      // Sending the final message also ends the draft (Telegram removes a draft
+      // once the bot sends a message); no empty draft, which would show "Thinking...".
       const parts = splitTelegramText(text);
       let rest = parts;
       if (stream?.mode === 'message' && stream.messageId !== undefined) {
@@ -293,13 +443,17 @@ export class TelegramReplies {
         rest = parts.slice(1);
       }
       for (const part of rest) await this.call('sendMessage', { chat_id: chatId, text: part });
-      await this.clearDraft(chatId, stream);
-    } else {
-      await this.clearDraft(chatId, stream);
     }
     if (stopReason === 'error') {
       await this.call('sendMessage', { chat_id: chatId, text: `⚠️ The assistant failed: ${errorMessage || 'unknown error'}` });
     }
+  }
+
+  /** A compact tool-call line: plain text, without a notification of its own. */
+  private async sendSilent(text: string): Promise<void> {
+    const chatId = this.chatId();
+    if (!chatId || !text.trim()) return;
+    await this.call('sendMessage', { chat_id: chatId, text, disable_notification: true });
   }
 
   /** An `attach_file`'s file: sent as a photo or a document, else a note saying why not. */
@@ -332,15 +486,16 @@ export class TelegramReplies {
       await this.call('sendMessage', { chat_id: chatId, text: attachmentFailedNote(filename, errMessage(err)) });
     }
   }
+}
 
-  private async clearDraft(chatId: string, stream: Stream | undefined): Promise<void> {
-    if (stream?.mode !== 'draft' || stream.draftId === undefined) return;
-    try {
-      await this.call('sendMessageDraft', { chat_id: chatId, draft_id: stream.draftId, text: '' });
-    } catch {
-      // An empty draft only hides the preview; nothing to do on failure.
-    }
+/** `text` without the prefix a boundary already sent as a message (`delivered`), trimmed. */
+function afterDelivered(stream: Stream, text: string): string {
+  const d = stream.delivered;
+  if (d !== undefined && d.length > 0) {
+    if (text.startsWith(d)) return text.slice(d.length).trim();
+    if (text.trimStart().startsWith(d.trim())) return text.trimStart().slice(d.trim().length).trim();
   }
+  return text.trim();
 }
 
 function errMessage(err: unknown): string {

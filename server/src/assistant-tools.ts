@@ -328,6 +328,32 @@ export async function notifyOp(backend: AssistantNotifyBackend, caller: Assistan
   };
 }
 
+/** The text of the settings' "Send test notification" (`POST /push/test`). */
+export const TEST_NOTIFICATION_TITLE = 'Test notification';
+export const TEST_NOTIFICATION_BODY = 'Sent from the wherever settings. If you can read this, notifications reach this device.';
+
+/**
+ * The settings' test notification (`POST /push/test`): the SAME delivery as
+ * `assistant_notify` (`backend.notify`, every channel at once), from the
+ * assistant folder, opening `sessionId` (the session the calling device has
+ * open) or, without a usable one, the main screen (an empty target). The id
+ * only ends up in a URL fragment (`/#<id>`), so anything but a plain id is
+ * dropped.
+ */
+export async function testNotification(
+  backend: AssistantNotifyBackend,
+  input: { sessionId?: unknown; assistantFolder: string },
+): Promise<NotifyOutcome> {
+  const raw = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+  const navigate = /^[A-Za-z0-9_.:-]{1,200}$/.test(raw) && !raw.includes('..') ? raw : '';
+  return backend.notify({
+    title: TEST_NOTIFICATION_TITLE,
+    body: TEST_NOTIFICATION_BODY,
+    source: notifySource(input.assistantFolder, null),
+    navigate,
+  });
+}
+
 /** What a CLI twin answers while `assistantFolder` is unset on this server. */
 export const ASSISTANT_NOT_CONFIGURED_ERROR =
   'the wherever assistant is not configured on this server (set assistantFolder in the wherever config and restart it)';

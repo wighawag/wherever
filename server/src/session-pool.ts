@@ -261,12 +261,15 @@ export interface WhereverConfig {
    * `token` here (telegram-token.ts, ADRs 0007 and 0018). `userId`, a numeric
    * Telegram user id, pairs that user and wins over a pairing made by code.
    * `apiBaseUrl` points at another Bot API server (a local one; tests).
+   * `toolCalls`: `"off"` (default, a tool call shows nothing on Telegram) or
+   * `"compact"` (one silent `🔧 <tool>: <summary>` line per call).
    */
   assistantTelegram?: {
     enabled?: boolean;
     token?: string;
     userId?: number | string;
     apiBaseUrl?: string;
+    toolCalls?: 'off' | 'compact';
   };
   /**
    * The URL the user reaches this wherever server at (e.g. behind a reverse

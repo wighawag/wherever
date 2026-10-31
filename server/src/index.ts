@@ -12,6 +12,7 @@ import { AssistantScheduler } from './assistant-scheduler.js';
 import {
   assistantNotActiveError,
   setTimezone,
+  testNotification,
   WEB_TIMEZONE_SOURCE,
   type AssistantNotifyBackend,
   type AssistantScheduleBackend,
@@ -20,6 +21,7 @@ import {
 import { ChannelDispatcher, type AssistantChannel } from './assistant-channels.js';
 import { WebPushChannel, resolveVapidSubject, validateSubscription } from './web-push.js';
 import { TelegramChannel } from './telegram-channel.js';
+import { normalizeToolCalls } from './telegram-replies.js';
 import { normalizeUserId } from './telegram-pairing.js';
 import { resolveTelegramToken, takeTelegramTokenEnv, type TelegramTokenEnv } from './telegram-token.js';
 import { DEFAULT_GRACE_MS } from './assistant-schedule.js';
@@ -1265,7 +1267,11 @@ async function main(): Promise<void> {
         // session does (`uploads.type`), under the same size limit.
         uploadDir: () => resolveUploadDir(getWhereverConfig(), assistant.status.folder ?? undefined),
         maxUploadBytes: () => uploadMaxBytes(getWhereverConfig()),
+        toolCalls: normalizeToolCalls(telegramConfig?.toolCalls),
       });
+      if (telegramConfig?.toolCalls !== undefined && telegramConfig.toolCalls !== 'off' && telegramConfig.toolCalls !== 'compact') {
+        console.warn(`[wherever] telegram: ignoring assistantTelegram.toolCalls=${JSON.stringify(telegramConfig.toolCalls)} (expected "off" or "compact"); using "off"`);
+      }
     }
   }
   const assistantChannels: AssistantChannel[] = [
@@ -1912,6 +1918,31 @@ async function main(): Promise<void> {
           }
           const removed = await webPushChannel.unsubscribe(endpoint);
           sendJSON(res, 200, { subscribed: false, removed });
+          return;
+        }
+        // The settings' "Send test notification": the same delivery as
+        // `assistant_notify` (every channel), opening the session the calling
+        // device has open (`sessionId`), or the main screen without one.
+        if (pathname === '/push/test' && req.method === 'POST') {
+          let parsed: any = {};
+          try {
+            parsed = JSON.parse((await readBody(req)) || '{}');
+          } catch {
+            parsed = {};
+          }
+          if (!notifyBackend || !assistant.status.folder) {
+            sendJSON(res, 503, { error: 'the assistant channels are still starting; try again in a moment' });
+            return;
+          }
+          const outcome = await testNotification(notifyBackend, {
+            sessionId: parsed && typeof parsed === 'object' ? parsed.sessionId : undefined,
+            assistantFolder: assistant.status.folder,
+          });
+          if (!outcome.ok) {
+            sendJSON(res, 502, { error: outcome.error, deliveries: outcome.deliveries });
+            return;
+          }
+          sendJSON(res, 200, { ok: true, deliveries: outcome.deliveries });
           return;
         }
       } catch (err) {

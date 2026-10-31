@@ -202,6 +202,34 @@ describe('Telegram conversation: outbound', () => {
     expect(api.of('sendMessage').map((c) => c.params)).toEqual([{ chat_id: String(USER), text: 'Sunny all day' }]);
   });
 
+  it('tool calls: nothing by default; with toolCalls compact one silent summary line, never an empty draft', async () => {
+    const event = (type: string, extra: Record<string, unknown>) => ({ type, ...extra });
+    const turn = (channel: TelegramChannel) => {
+      const msg = (type: string, text: string) =>
+        event(type, { message: { role: 'assistant', content: [{ type: 'text', text }, { type: 'toolCall', id: 'c', name: 'bash', arguments: { command: 'uptime' } }], stopReason: 'toolUse' } });
+      channel.deliverReply({ sessionFile: '/s.jsonl', destination: 'telegram', event: msg('message_update', 'Checking') });
+      channel.deliverReply({ sessionFile: '/s.jsonl', destination: 'telegram', event: msg('message_end', 'Checking') });
+      channel.deliverReply({ sessionFile: '/s.jsonl', destination: 'telegram', event: event('tool_execution_start', { toolCallId: 'c', toolName: 'bash', args: { command: 'uptime' } }) });
+      channel.deliverReply({ sessionFile: '/s.jsonl', destination: 'telegram', event: event('agent_end', {}) });
+    };
+    const { api: off, channel: offChannel } = setup();
+    await until(() => off.of('getUpdates').length > 0);
+    turn(offChannel);
+    await offChannel.replyIdle();
+    expect(sentTexts(off)).toEqual(['Checking']);
+    for (const d of off.of('sendMessageDraft')) expect(d.params.text).not.toBe('');
+    expect(off.visibleDraft(USER)).toBeNull();
+
+    const { api: compact, channel: compactChannel } = setup({ toolCalls: 'compact' });
+    await until(() => compact.of('getUpdates').length > 0);
+    turn(compactChannel);
+    await compactChannel.replyIdle();
+    expect(compact.of('sendMessage').map((c) => c.params)).toEqual([
+      { chat_id: String(USER), text: 'Checking' },
+      { chat_id: String(USER), text: '🔧 bash: uptime', disable_notification: true },
+    ]);
+  });
+
   it('assistant_notify is its own 🔔 message with the body and, with a public URL, a link to the session', async () => {
     const { api, channel } = setup({ publicUrl: 'https://box.example/' });
     await until(() => api.of('getUpdates').length > 0);

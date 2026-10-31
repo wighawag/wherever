@@ -472,6 +472,14 @@ The configuration file is located at `~/.wherever/config.json` on the server mac
 
   On a sessions directory that has been accumulating for months (the author's is 2.0 GB / ~3,800 transcripts), these two are the difference between every cold listing pass touching the whole archive and it touching only what you still use. The server prints a one-line hint at startup when it lists more than 1,000 sessions with neither limit set.
 
+- **`assistantTelegram`** (object, optional):
+  The assistant's Telegram channel (only while `assistantFolder` is set and this server holds the assistant folder lock). See `CONTEXT.md` for the full behaviour.
+  - `enabled` (boolean, Default: `false`): turn the channel on.
+  - `token` (string, optional): the bot token, used only when neither `WHEREVER_TELEGRAM_TOKEN` nor `WHEREVER_TELEGRAM_TOKEN_FILE` is set.
+  - `userId` (number or string, optional): a numeric Telegram user id to pair with, instead of pairing by the one-time code shown in the settings.
+  - `apiBaseUrl` (string, optional, Default: `https://api.telegram.org`): another Bot API server (a self-hosted one).
+  - `toolCalls` (string, Default: `"off"`): what an assistant tool call shows on Telegram. `"off"` shows nothing. `"compact"` sends one short plain-text line per call without a notification of its own, such as `🔧 bash: git status` or `🔧 read: /home/me/notes.md`: only the first line of a command (cut to about 80 characters) or the path, never other arguments or the tool's output, with secret-looking values replaced by `***`.
+
 ### Rule Object Properties
 
 Each rule in `remoteRepoRules` can contain:

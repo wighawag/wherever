@@ -19,7 +19,7 @@ import {
   type PairedUser,
   type PairingState,
 } from './telegram-pairing.js';
-import { TelegramReplies, splitTelegramText } from './telegram-replies.js';
+import { TelegramReplies, splitTelegramText, type TelegramToolCalls } from './telegram-replies.js';
 import {
   FILES_UNAVAILABLE_REPLY,
   TELEGRAM_DOWNLOAD_MAX_BYTES,
@@ -149,6 +149,8 @@ export interface TelegramChannelOptions {
   publicUrl?: string;
   /** Reply preview throttle, ms (default 750; tests use 0). */
   replyThrottleMs?: number;
+  /** `assistantTelegram.toolCalls`: `off` (default, a tool call sends nothing) or `compact` (one silent line per call). */
+  toolCalls?: TelegramToolCalls;
   /**
    * Where a file from Telegram is saved: the upload dir a web upload of the
    * assistant session lands in (index.ts: `resolveUploadDir(config, folder)`).
@@ -275,6 +277,7 @@ export class TelegramChannel implements AssistantChannel {
       upload: (method, fields, fileField, filePath, fileName) => this.callMultipart(method, fields, fileField, filePath, fileName),
       chatId: () => (this.started ? this.pairedChatId() : null),
       throttleMs: opts.replyThrottleMs,
+      toolCalls: opts.toolCalls,
       log: this.log,
     });
     // Nothing is read before start(): the state lives in memory from there.

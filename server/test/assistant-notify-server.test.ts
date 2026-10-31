@@ -174,6 +174,7 @@ async function expectPushRoutesUnknown(port: number): Promise<void> {
   const unknownGet = await answer(port, '/no-such-route-xyz');
   expect(await answer(port, '/push/vapid-public-key')).toBe(unknownGet.replace('/no-such-route-xyz', '/push/vapid-public-key'));
   expect(await answer(port, '/push/subscription', 'POST')).toBe((await answer(port, '/no-such-route-xyz', 'POST')).replace('/no-such-route-xyz', '/push/subscription'));
+  expect(await answer(port, '/push/test', 'POST')).toBe((await answer(port, '/no-such-route-xyz', 'POST')).replace('/no-such-route-xyz', '/push/test'));
 }
 
 describe('assistant_notify and Web Push (real server)', () => {
@@ -249,6 +250,38 @@ describe('assistant_notify and Web Push (real server)', () => {
     }
   }, 180_000);
 
+  it('POST /push/test: the settings test notification goes through the notify path, opening the device session or the main screen', async () => {
+    const root = tmp();
+    const folder = path.join(root, 'assistant');
+    const push = await fakePushService();
+    const h = await boot(root, 'test', { assistantFolder: folder });
+    // No device yet: the notification reaches nothing, and says so.
+    const none = await post(h.port, '/push/test', {});
+    expect(none.status).toBe(502);
+    expect(none.json.error).toMatch(/reached no device/);
+
+    await fetch(`http://127.0.0.1:${h.port}/push/vapid-public-key`);
+    const phone = device(`${push.base}/ok/phone`);
+    expect((await post(h.port, '/push/subscription', phone.subscription)).status).toBe(200);
+
+    const withSession = await post(h.port, '/push/test', { sessionId: 'abc-123' });
+    expect(withSession.status).toBe(200);
+    expect(withSession.json.ok).toBe(true);
+    expect(withSession.json.deliveries).toEqual([{ channel: 'webpush', result: { ok: true, detail: '1 device' } }]);
+    expect(push.received).toHaveLength(1);
+    const payload = phone.decrypt(push.received[0]!.body);
+    expect(payload.notification.title).toBe(`${path.basename(folder)}: Test notification`);
+    expect(payload.notification.navigate).toBe('/#abc-123');
+
+    // No session (or a malformed id): the main screen.
+    for (const body of [{}, { sessionId: '../../etc<script>' }]) {
+      const r = await post(h.port, '/push/test', body);
+      expect(r.status).toBe(200);
+      expect(phone.decrypt(push.received.at(-1)!.body).notification.navigate).toBe('/#');
+    }
+    expect((await post(h.port, '/push/test', 'not json', 'POST')).status).toBe(200);
+  }, 60_000);
+
   it('the push routes are token-gated', async () => {
     const root = tmp();
     const h = await boot(root, 'tok', { assistantFolder: path.join(root, 'assistant') }, { WHEREVER_TOKEN: 'sekret' });
@@ -257,6 +290,7 @@ describe('assistant_notify and Web Push (real server)', () => {
     expect((await fetch(`${base}/push/subscription?endpoint=x`)).status).toBe(401);
     expect((await post(h.port, '/push/subscription', device('https://push.example/a').subscription)).status).toBe(401);
     expect((await post(h.port, '/push/subscription', { endpoint: 'https://push.example/a' }, 'DELETE')).status).toBe(401);
+    expect((await post(h.port, '/push/test', {})).status).toBe(401);
     expect(fs.existsSync(path.join(root, 'tok-state', VAPID_FILE))).toBe(false);
     expect((await fetch(`${base}/push/vapid-public-key?token=sekret`)).status).toBe(200);
     const sub = device('https://push.example/a').subscription;

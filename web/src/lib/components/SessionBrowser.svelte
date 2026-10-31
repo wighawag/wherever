@@ -1014,7 +1014,8 @@
 				Folder Already Exists
 			</h3>
 			<p class="mb-3 text-xs text-brand-text-muted">
-				The folder <span class="font-mono text-[11px] break-all text-brand-text"
+				The folder <span
+					class="selectable font-mono text-[11px] break-all text-brand-text"
 					>{sidebarCwd}</span
 				> already exists. Do you want to initialize a Git repository in it?
 			</p>

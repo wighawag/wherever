@@ -1,7 +1,10 @@
 import {describe, it, expect} from 'vitest';
 import {
+	applyPushToggle,
+	describePushError,
 	isThisDeviceSubscribed,
 	pushSupported,
+	sendTestNotification,
 	subscribeThisDevice,
 	unsubscribeThisDevice,
 	urlB64ToUint8Array,
@@ -173,5 +176,137 @@ describe('unsubscribeThisDevice and the device state', () => {
 		expect(
 			pushSupported({navigator: {}, PushManager: 1, Notification: 1}),
 		).toBe(false);
+	});
+});
+
+describe('describePushError', () => {
+	const domErr = (name: string, message: string) =>
+		Object.assign(new Error(message), {name});
+
+	it('shows the error name with its message', () => {
+		expect(describePushError(domErr('InvalidStateError', 'bad state'))).toBe(
+			'InvalidStateError: bad state',
+		);
+		// A plain Error has nothing more to say than its message.
+		expect(describePushError(new Error('HTTP 500'))).toBe('HTTP 500');
+		expect(describePushError('weird')).toBe('weird');
+	});
+
+	it('an AbortError (Firefox: "Error retrieving push subscription.") points at the browser push service', () => {
+		const text = describePushError(
+			domErr('AbortError', 'Error retrieving push subscription.'),
+		);
+		expect(text).toMatch(/^AbortError: Error retrieving push subscription\./);
+		expect(text).toContain('dom.push.enabled');
+		expect(text).toContain('dom.push.connection.enabled');
+		expect(text).toMatch(/about:config/);
+		expect(text).toMatch(/LibreWolf/);
+	});
+
+	it('a NotAllowedError, or a denied permission, says to re-allow notifications in the site settings', () => {
+		expect(
+			describePushError(domErr('NotAllowedError', 'Permission denied.')),
+		).toMatch(/^NotAllowedError: Permission denied\..*site settings/s);
+		expect(describePushError(domErr('AbortError', 'x'), 'denied')).toMatch(
+			/site settings/,
+		);
+	});
+});
+
+describe('applyPushToggle (the checkbox always ends on the real state)', () => {
+	it('a failed subscribe rolls back to "not subscribed" and reports the error', async () => {
+		const {pm} = fakeManager(null);
+		pm.subscribe = async () => {
+			throw Object.assign(new Error('Error retrieving push subscription.'), {
+				name: 'AbortError',
+			});
+		};
+		const {deps} = fakeServer({
+			'GET /push/vapid-public-key': {publicKey: KEY},
+		});
+		const r = await applyPushToggle(pm, deps, true);
+		expect(r.subscribed).toBe(false);
+		expect(r.error).toMatch(/^AbortError: Error retrieving push subscription/);
+	});
+
+	it('a failed unsubscribe stays subscribed when the device still is', async () => {
+		const sub = fakeSub('https://push.example/x', null);
+		const {pm} = fakeManager(sub);
+		const deps: PushServerDeps = {
+			baseUrl: 'https://me.example',
+			token: '',
+			fetch: async (url, init) =>
+				init?.method === 'DELETE'
+					? new Response(JSON.stringify({error: 'disk full'}), {status: 500})
+					: new Response(JSON.stringify({subscribed: true}), {status: 200}),
+		};
+		const r = await applyPushToggle(pm, deps, false);
+		expect(r).toEqual({subscribed: true, error: 'disk full'});
+	});
+
+	it('success re-reads the state; when even that fails, it falls back to the previous state', async () => {
+		const {pm} = fakeManager(null);
+		const {deps} = fakeServer({
+			'GET /push/vapid-public-key': {publicKey: KEY},
+			'GET /push/subscription': {subscribed: true},
+		});
+		expect(await applyPushToggle(pm, deps, true)).toEqual({
+			subscribed: true,
+			error: '',
+		});
+		const broken: PushServerDeps = {
+			baseUrl: '',
+			token: '',
+			fetch: async () => {
+				throw new TypeError('NetworkError when attempting to fetch resource.');
+			},
+		};
+		const r = await applyPushToggle(fakeManager(null).pm, broken, true);
+		expect(r.subscribed).toBe(false);
+		expect(r.error).toMatch(/^TypeError: NetworkError/);
+	});
+});
+
+describe('sendTestNotification', () => {
+	it("posts the device's session to the token-gated /push/test and returns the per-channel result", async () => {
+		const {deps, calls} = fakeServer({
+			'POST /push/test': {
+				ok: true,
+				deliveries: [
+					{channel: 'web-push', result: {ok: true, detail: 'sent to 1 device'}},
+					{channel: 'telegram', result: {ok: false, error: 'not paired'}},
+				],
+			},
+		});
+		const r = await sendTestNotification(deps, 'sess-1');
+		expect(calls).toEqual([
+			{
+				url: 'https://me.example/push/test?token=sekret',
+				method: 'POST',
+				body: {sessionId: 'sess-1'},
+			},
+		]);
+		expect(r).toBe(
+			'Sent: web-push (sent to 1 device). Not delivered: telegram: not paired.',
+		);
+		await sendTestNotification(deps, null);
+		expect(calls[1]!.body).toEqual({});
+	});
+
+	it('surfaces the server error', async () => {
+		const deps: PushServerDeps = {
+			baseUrl: '',
+			token: '',
+			fetch: async () =>
+				new Response(
+					JSON.stringify({
+						error: 'the notification reached no device (web-push: 410 Gone)',
+					}),
+					{status: 502},
+				),
+		};
+		await expect(sendTestNotification(deps, null)).rejects.toThrow(
+			/reached no device/,
+		);
 	});
 });

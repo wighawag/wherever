@@ -115,6 +115,31 @@ body {
 }
 
 /*
+ * The opt-in for a VALUE in the chrome a user needs to copy (a pairing code,
+ * an id, a version, an error message). Tailwind's `select-text` / `select-all`
+ * cannot do it: they live in a cascade layer, and the unlayered `.app-chrome *`
+ * rule above beats any layered rule whatever the order. `.selectable` makes the
+ * text selectable; `.selectable-all` selects it whole on the first click (a
+ * code). Form fields in the chrome are always selectable (a token, a URL).
+ */
+.selectable,
+.selectable *,
+.app-chrome input,
+.app-chrome textarea,
+.app-chrome [contenteditable='true'] {
+	-webkit-user-select: text;
+	user-select: text;
+	-webkit-touch-callout: default;
+}
+
+.selectable-all,
+.selectable-all * {
+	-webkit-user-select: all;
+	user-select: all;
+	-webkit-touch-callout: default;
+}
+
+/*
  * Dark, compact markdown styling for finalized assistant messages. Scoped to
  * `.markdown-body` so it does not leak into the rest of the UI. Kept minimal
  * (no syntax-highlight engine) to avoid bundle bloat.

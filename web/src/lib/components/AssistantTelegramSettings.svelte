@@ -12,6 +12,7 @@
 		type TelegramStatus,
 	} from '$lib/core/telegram-settings';
 	import {fetchConfig, getBaseUrl, getToken} from '$lib/session-store';
+	import CopyButton from './CopyButton.svelte';
 
 	let {status}: {status: TelegramStatus} = $props();
 
@@ -65,7 +66,7 @@
 		Assistant on Telegram
 	</h3>
 	{#if status.state === 'disabled' || status.state === 'error'}
-		<p class="text-xs text-rose-400">
+		<p class="selectable text-xs text-rose-400">
 			Telegram is disabled{'error' in status && status.error
 				? `: ${status.error}`
 				: ''}.
@@ -75,20 +76,25 @@
 	{:else if status.state === 'unpaired'}
 		<p class="text-xs text-brand-text">Not paired yet.</p>
 		{#if status.code}
-			<p class="mt-2 text-xs text-brand-text-muted">
+			<p class="selectable mt-2 text-xs text-brand-text-muted">
 				{pairingInstruction(status)}
 			</p>
-			<p
-				class="mt-1 font-mono text-base tracking-widest text-brand-text select-all"
-			>
-				{status.code}
-			</p>
+			<div class="mt-1 flex items-center gap-2">
+				<!-- `.selectable-all`, not Tailwind's `select-all`: the chrome's
+				     unlayered user-select: none beats any layered utility. -->
+				<span
+					class="selectable-all font-mono text-base tracking-widest text-brand-text"
+					>{status.code}</span
+				>
+				<CopyButton value={status.code} />
+				<CopyButton value={`/pair ${status.code}`} label="Copy /pair" />
+			</div>
 			<p class="mt-1 text-[10px] leading-relaxed text-brand-text-muted">
 				The code works once; anyone else writing to the bot is ignored.
 			</p>
 		{/if}
 	{:else if status.state === 'paired'}
-		<p class="text-xs text-brand-text">
+		<p class="selectable text-xs text-brand-text">
 			Paired with {status.user.name ?? `user ${status.user.id}`}{status.bot
 				? ` via ${status.bot}`
 				: ''}.
@@ -109,9 +115,9 @@
 		{/if}
 	{/if}
 	{#if status.state !== 'disabled' && status.state !== 'error' && status.error}
-		<p class="mt-1 text-[10px] text-amber-400">{status.error}</p>
+		<p class="selectable mt-1 text-[10px] text-amber-400">{status.error}</p>
 	{/if}
 	{#if error}
-		<p class="mt-1 text-[10px] text-rose-400">{error}</p>
+		<p class="selectable mt-1 text-[10px] text-rose-400">{error}</p>
 	{/if}
 </div>
