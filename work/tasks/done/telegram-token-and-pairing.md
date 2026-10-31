@@ -52,3 +52,23 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions taken while building this task are recorded in [work/notes/observations/telegram-token-and-pairing-decisions.md](../../notes/observations/telegram-token-and-pairing-decisions.md), with JSDoc at the choice sites in `server/src/telegram-token.ts`, `server/src/telegram-pairing.ts`, `server/src/telegram-channel.ts`, `server/src/session-pool.ts` (the `assistantTelegram` config key) and `server/src/index.ts`. They cover:
+- a per-channel `assistantTelegram.enabled` (off by default) instead of the channel list the task assumed, which does not exist;
+- the `assistantTelegram.apiBaseUrl` key;
+- an unreadable or empty token file not falling through to the config value;
+- the env scrub always running, early in `parseArgs`;
+- the one-time code kept in memory only (8 symbols, about 40 bits, no rotation, case-insensitive constant-time compare);
+- unpaired, group-chat and bot messages ignored without an answer;
+- a paired user's text forwarded to the controller without waiting for the turn;
+- the offset tied to the bot id and written after each update;
+- the state file names and mode 0600;
+- a rejected token stopping the poller, other failures retried, the token redacted from errors;
+- the `/telegram/repair` route and its refusal for a configured user id;
+- the `assistant.telegram` status shape;
+- the settings section refreshing `/config` while unpaired, instead of a new WS frame;
+- where the settings section sits;
+- the harness `output()` accessor and the Bot API fake;
+- the `minor` changeset bump.

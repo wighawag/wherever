@@ -19,6 +19,9 @@ import {
 } from './assistant-tools.js';
 import { ChannelDispatcher, type AssistantChannel } from './assistant-channels.js';
 import { WebPushChannel, resolveVapidSubject, validateSubscription } from './web-push.js';
+import { TelegramChannel } from './telegram-channel.js';
+import { normalizeUserId } from './telegram-pairing.js';
+import { resolveTelegramToken, takeTelegramTokenEnv, type TelegramTokenEnv } from './telegram-token.js';
 import { DEFAULT_GRACE_MS } from './assistant-schedule.js';
 import { createCliRequestRouter, assistantInfoChangedFrame, type AssistantInfo, type CliRequestRouter } from './cli-requests.js';
 import { readStarredSet, setSessionStarred, validateStarInput, forgetStar } from './session-stars.js';
@@ -818,7 +821,7 @@ async function listenOnUnixSocket(
   }
 }
 
-function parseArgs(): { port: number; host: string; socket?: SocketSpec; token?: string; tokenSource: string; idleTimeout: number; sslKey?: string; sslCert?: string; noSsl: boolean; httpLocalhostFallbackPort?: number; debug: boolean } {
+function parseArgs(): { port: number; host: string; socket?: SocketSpec; token?: string; tokenSource: string; idleTimeout: number; sslKey?: string; sslCert?: string; noSsl: boolean; httpLocalhostFallbackPort?: number; debug: boolean; telegramTokenEnv: TelegramTokenEnv } {
   const args = process.argv.slice(2);
   let port = parseInt(process.env.PI_REMOTE_PORT || '31415', 10);
   let host = process.env.PI_REMOTE_HOST || '127.0.0.1';
@@ -956,8 +959,13 @@ function parseArgs(): { port: number; host: string; socket?: SocketSpec; token?:
   // `token` above; nothing reads these variables again.
   delete process.env.WHEREVER_TOKEN;
   delete process.env.PI_REMOTE_TOKEN;
+  // The assistant's Telegram bot token variables, for the same reason (ADR 0007,
+  // ADR 0018): captured and scrubbed here ALWAYS, before anything is spawned.
+  // The token FILE is only read later, and only while the assistant is active
+  // and Telegram is enabled (telegram-token.ts).
+  const telegramTokenEnv = takeTelegramTokenEnv();
 
-  return { port, host, socket, token, tokenSource, idleTimeout, sslKey, sslCert, noSsl, httpLocalhostFallbackPort, debug };
+  return { port, host, socket, token, tokenSource, idleTimeout, sslKey, sslCert, noSsl, httpLocalhostFallbackPort, debug, telegramTokenEnv };
 }
 
 /** Loopback-only binds are the safe default; everything else is reachable by others. */
@@ -1083,7 +1091,7 @@ function scheduleGraceMs(minutes: unknown): number {
 }
 
 async function main(): Promise<void> {
-  const { port, host, socket, token, tokenSource, idleTimeout, sslKey, sslCert, noSsl, httpLocalhostFallbackPort, debug } = parseArgs();
+  const { port, host, socket, token, tokenSource, idleTimeout, sslKey, sslCert, noSsl, httpLocalhostFallbackPort, debug, telegramTokenEnv } = parseArgs();
   debugEnabled = debug;
   console.log(
     `[wherever] pi SDK ${piSdkInfo.version}: ` +
@@ -1221,7 +1229,43 @@ async function main(): Promise<void> {
           }),
         })
       : null;
-  const assistantChannels: AssistantChannel[] = webPushChannel ? [webPushChannel] : [];
+  // Telegram (telegram-channel.ts): only while the assistant is active (two
+  // servers must never poll one bot; the folder lock decides) AND
+  // `assistantTelegram.enabled` is true. Otherwise the token file is not even
+  // read and nothing is logged. A token that cannot be resolved DISABLES
+  // Telegram with a loud error and the server carries on (ADR 0018).
+  const telegramConfig = getWhereverConfig().assistantTelegram;
+  const telegramEnabled = !!assistantController && telegramConfig?.enabled === true;
+  let telegramChannel: TelegramChannel | null = null;
+  let telegramDisabledError: string | null = null;
+  if (telegramEnabled) {
+    const resolved = resolveTelegramToken({
+      env: telegramTokenEnv,
+      configToken: telegramConfig?.token,
+      readFile: (p) => fs.readFileSync(p, 'utf8'),
+    });
+    for (const w of resolved.warnings) console.warn(`[wherever] telegram: ${w}`);
+    const configuredUserId = normalizeUserId(telegramConfig?.userId);
+    if (telegramConfig?.userId !== undefined && !configuredUserId) {
+      console.warn(`[wherever] telegram: ignoring assistantTelegram.userId=${JSON.stringify(telegramConfig.userId)} (not a numeric Telegram user id); pairing by code instead`);
+    }
+    if (!resolved.ok) {
+      telegramDisabledError = resolved.error;
+      console.error(`[wherever] ERROR: Telegram is DISABLED: ${resolved.error}. The server keeps running without it.`);
+    } else {
+      console.log(`[wherever] telegram: bot token from ${resolved.source}`);
+      telegramChannel = new TelegramChannel({
+        token: resolved.token,
+        stateDir: getWhereverStateDir(),
+        configuredUserId,
+        apiBaseUrl: typeof telegramConfig?.apiBaseUrl === 'string' && telegramConfig.apiBaseUrl.trim() ? telegramConfig.apiBaseUrl.trim() : undefined,
+      });
+    }
+  }
+  const assistantChannels: AssistantChannel[] = [
+    ...(webPushChannel ? [webPushChannel] : []),
+    ...(telegramChannel ? [telegramChannel] : []),
+  ];
   channelDispatcher = assistantController
     ? new ChannelDispatcher({ controller: assistantController, pool: sessionPool, channels: assistantChannels })
     : null;
@@ -1244,6 +1288,18 @@ async function main(): Promise<void> {
     publicKey: webPushChannel?.existingPublicKey() ?? null,
     subscriptions: webPushChannel?.subscriptions().length ?? 0,
   });
+  /**
+   * The Telegram part of the assistant status (only while active): `enabled`
+   * (`assistantTelegram.enabled`), and the channel's state: `disabled` (not
+   * enabled, or no usable token: `error`), `starting`, `unpaired` (+ the
+   * one-time `code`), `paired` (+ `user`) or `error` (the token was rejected).
+   */
+  const telegramStatus = () =>
+    telegramChannel
+      ? { enabled: true, ...telegramChannel.status() }
+      : telegramEnabled
+        ? { enabled: true, state: 'disabled' as const, error: telegramDisabledError ?? 'Telegram could not start' }
+        : { enabled: false, state: 'disabled' as const };
   /** Re-send the live assistant status (pointer + timezone) to every dashboard. */
   const broadcastAssistantStatus = (): void => {
     if (!assistantController) return;
@@ -1664,7 +1720,9 @@ async function main(): Promise<void> {
                           pathname.startsWith('/session/') ||
                           // Only while Web Push runs (assistant active): otherwise
                           // /push/* is an unknown route, exactly as before.
-                          (!!webPushChannel && pathname.startsWith('/push/'));
+                          (!!webPushChannel && pathname.startsWith('/push/')) ||
+                          // Likewise only while the Telegram channel runs.
+                          (!!telegramChannel && pathname.startsWith('/telegram/'));
 
     if (isApiRequest && !authenticate(req, token)) {
       sendJSON(res, 401, { error: 'Unauthorized' });
@@ -1856,6 +1914,20 @@ async function main(): Promise<void> {
       }
     }
 
+    // --- Telegram re-pair (telegram-channel.ts) -------------------------------
+    // Token-gated via isApiRequest, and only while the Telegram channel runs:
+    // otherwise an unknown route. Forgets the stored pairing and issues a new
+    // one-time code; refused (409) while the user id comes from the config.
+    if (telegramChannel && pathname === '/telegram/repair' && req.method === 'POST') {
+      const r = telegramChannel.repair();
+      if (!r.ok) {
+        sendJSON(res, 409, { error: r.error, telegram: telegramStatus() });
+        return;
+      }
+      sendJSON(res, 200, { ok: true, telegram: telegramStatus() });
+      return;
+    }
+
     if (pathname === '/config' && req.method === 'GET') {
       const config = getWhereverConfig();
       let searchFolder: string | undefined = config.searchFolder;
@@ -1895,8 +1967,10 @@ async function main(): Promise<void> {
         // While active, also the Web Push state (enabled, the VAPID public key
         // once generated, how many devices are subscribed; whether THIS device
         // is, the web asks `GET /push/subscription`).
+        // While active, also the Telegram state (telegramStatus above; the
+        // one-time pairing code is in it while unpaired, behind the token gate).
         assistant: assistantController
-          ? { ...assistant.status, ...assistantController.status(), timezone: currentTimezone(), webPush: webPushStatus() }
+          ? { ...assistant.status, ...assistantController.status(), timezone: currentTimezone(), webPush: webPushStatus(), telegram: telegramStatus() }
           : assistant.status,
         appearance: {
           label,
