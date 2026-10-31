@@ -46,3 +46,18 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions taken while building this task are recorded in [work/notes/observations/telegram-files-decisions.md](../../notes/observations/telegram-files-decisions.md), with JSDoc at the choice sites in `server/src/telegram-files.ts`, `server/src/telegram-channel.ts`, `server/src/telegram-replies.ts` and `server/src/assistant-channels.ts`. They cover:
+- "upload staging" taken to mean the upload DIR (`resolveUploadDir(config, assistantFolder)`), not `<state>/upload-staging`;
+- the paths written into the text by the dispatcher (`channelMessageText`, a server twin of the web's `buildAttachmentMessage`), a single text message still sent untouched;
+- the cloud Bot API limits (20 MB download, also capped by `uploads.maxBytes`; 10 MB photo; 50 MB send), the photo extensions and the document fallback;
+- the oversize and failure notes, inbound and outbound;
+- albums gathered for 1.2 s and sent as one message, flushed by any later message, and the crash window this leaves;
+- `stop` / `/new` / `/reset` as commands only in a text message, and `!` captions refused before any download;
+- a new reply for unsupported media (voice, video, audio, animation, sticker), which used to be dropped silently;
+- the `FILES_UNAVAILABLE_REPLY` refusal when the channel has no upload dir;
+- outbound read from `details.path` of a successful `attach_file` `tool_execution_end`, sent in the reply serial chain;
+- the wider `TelegramFetch` type and the fake Bot API additions;
+- the `minor` changeset bump.

@@ -1261,6 +1261,10 @@ async function main(): Promise<void> {
         apiBaseUrl: typeof telegramConfig?.apiBaseUrl === 'string' && telegramConfig.apiBaseUrl.trim() ? telegramConfig.apiBaseUrl.trim() : undefined,
         // A notification links to the target session when the public URL is set.
         publicUrl: getWhereverConfig().publicUrl,
+        // A file from Telegram lands where a web upload into the assistant
+        // session does (`uploads.type`), under the same size limit.
+        uploadDir: () => resolveUploadDir(getWhereverConfig(), assistant.status.folder ?? undefined),
+        maxUploadBytes: () => uploadMaxBytes(getWhereverConfig()),
       });
     }
   }
