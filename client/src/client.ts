@@ -392,6 +392,29 @@ export class WhereverClient {
   // null means "accept any" (e.g. session_new, whose target file is not known
   // until the reply). The latest tap always wins.
   private pendingLoadFile: string | null = null;
+  // A session request (load or create) the user made while the socket was not
+  // open, so its frame could not be sent. It is the user's newest intent and so
+  // supersedes the automatic rejoin: onOpen replays it INSTEAD of rejoining the
+  // previously-active session. Without this, switching away from a session that
+  // was still reconnecting (PWA brought back to the foreground) lost the switch
+  // and the rejoin pulled the user back to the old session. Cleared by a leave,
+  // a full disconnect, a server-key wipe, the request's watchdog expiring
+  // while still armed, or the replay itself. A socket that closes before
+  // opening disarms that watchdog without dropping the request, so it is then
+  // replayed on a later socket: it is still the user's latest intent.
+  private queuedSessionRequest:
+    | {type: 'load'; sessionFile: string; cwd?: string; model?: string}
+    | {type: 'create'; frame: Record<string, unknown>}
+    | null = null;
+  // Session files and ids of loads the user moved away from while their reply
+  // was still on the wire on THIS socket (a rejoin, a slow load). Their late
+  // session_created / message_history are dropped even when nothing else would
+  // reject them: a session_new in flight accepts any session_created (its file
+  // is unknown until the reply), so a late rejoin reply used to be taken for the
+  // new session's and switch the view back. Reset on every new socket (the old
+  // socket's replies can no longer arrive), and an entry is removed when the
+  // user loads that session again.
+  private abandonedSessions = new Set<string>();
   // serverKey(config) of the socket currently open (captured by connect() next
   // to the socket it opens). session_created stamps it on the store, so the
   // stamp names the server that actually DELIVERED the session even if the
@@ -496,6 +519,7 @@ export class WhereverClient {
       this.resumeModel = undefined;
       this.pendingLoadFile = null;
       this.hydratedFile = null;
+      this.queuedSessionRequest = null;
     }
     this.socketServerKey = key;
 
@@ -572,6 +596,8 @@ export class WhereverClient {
       this.reconnectAttempts = 0;
       this.reconnectDelay = WhereverClient.MIN_RECONNECT_DELAY;
       this.isInitialConnect = false;
+      // Replies to loads issued on an earlier socket can no longer arrive.
+      this.abandonedSessions.clear();
       this.startLivenessWatchdog();
       this.stateStore.update(s => ({
         ...s,
@@ -596,6 +622,50 @@ export class WhereverClient {
       //   2. the store's activeSessionFile -> an UNSOLICITED drop (network
       //      blip, tab switch, laptop sleep, half-open reap) where suspend()
       //      never ran. This is the case that used to silently freeze.
+      //
+      // A session request the user made while the socket was down (a switch or
+      // a create, see queuedSessionRequest) is newer than any rejoin, so it is
+      // sent instead and nothing is rejoined.
+      let queued = this.queuedSessionRequest;
+      this.queuedSessionRequest = null;
+      // A queued load of the session we would rejoin anyway (reloadSession()
+      // while disconnected) IS the rejoin: take that path, which keeps held
+      // uploads and the resyncing affordance.
+      if (
+        queued?.type === 'load' &&
+        queued.sessionFile === (this.resumeSessionFile ?? get(this.stateStore).activeSessionFile)
+      ) {
+        queued = null;
+      }
+      if (queued) {
+        this.resumeSessionFile = null;
+        this.resumeCwd = undefined;
+        this.resumeModel = undefined;
+        this.uploadsHeldForRejoin = false;
+        this.rejectPendingUploads('The session changed before the upload could be sent');
+        if (queued.type === 'load') {
+          this.stateStore.update(s => ({...s, loadingSession: true, resyncing: false}));
+          this.pendingLoadFile = queued.sessionFile;
+          this.send({
+            type: 'session_load',
+            sessionFile: queued.sessionFile,
+            cwd: queued.cwd,
+            model: queued.model,
+          });
+          this.armLoadWatchdog();
+        } else {
+          this.stateStore.update(s => ({
+            ...s,
+            creatingSession: true,
+            loadingSession: false,
+            resyncing: false,
+          }));
+          this.pendingLoadFile = null;
+          this.send(queued.frame);
+          this.armCreateWatchdog();
+        }
+        return;
+      }
       const cached = get(this.stateStore);
       const rejoinFile = this.resumeSessionFile ?? cached.activeSessionFile;
       const rejoinCwd =
@@ -771,6 +841,8 @@ export class WhereverClient {
       this.rejectPendingUploads('Disconnected before the upload completed');
       this.uploadsHeldForRejoin = false;
       this.hydratedFile = null;
+      this.queuedSessionRequest = null;
+      this.abandonedSessions.clear();
       this.stateStore.set({
         ...defaultState,
         hideThinking: !!this.config.hideThinking,
@@ -1055,6 +1127,7 @@ export class WhereverClient {
     this.loadWatchdog = setTimeout(() => {
       this.loadWatchdog = null;
       const s = get(this.stateStore);
+      if (this.queuedSessionRequest?.type === 'load') this.queuedSessionRequest = null;
       if (!s.loadingSession && !s.resyncing) return;
       console.warn('[wherever] session load timed out; clearing loading state');
       this.failHeldUploads('Could not rejoin the session, so the upload was not sent');
@@ -1087,6 +1160,8 @@ export class WhereverClient {
     this.createWatchdog = setTimeout(() => {
       this.createWatchdog = null;
       const s = get(this.stateStore);
+      // The user was told it failed: a later reconnect must not create it anyway.
+      if (this.queuedSessionRequest?.type === 'create') this.queuedSessionRequest = null;
       if (!s.creatingSession) return;
       console.warn('[wherever] session create timed out; clearing creating state');
       this.stateStore.update(st => ({
@@ -1190,6 +1265,7 @@ export class WhereverClient {
         // initial load has no sessionId yet, so its history still resolves.
         const active = get(this.stateStore).sessionId;
         if (active && msg.sessionId && msg.sessionId !== active) break;
+        if (msg.sessionId && this.abandonedSessions.has(msg.sessionId)) break;
         this.clearLoadWatchdog();
         break;
       }
@@ -1747,10 +1823,22 @@ export class WhereverClient {
               msg.sessionId === this.pendingLoadFile);
           const isRequestedCreate =
             this.pendingLoadFile === null && st.creatingSession;
-          if (!matchesPendingLoad && !isRequestedCreate) {
+          // A load the user moved away from (e.g. the rejoin still in flight
+          // when they created a new session) is never the create's reply.
+          const abandoned =
+            this.abandonedSessions.has(msg.sessionFile) ||
+            this.abandonedSessions.has(msg.sessionId);
+          if (!matchesPendingLoad && (!isRequestedCreate || abandoned)) {
+            // Its message_history follows: drop that too, unless it is the
+            // session already on screen.
+            if (msg.sessionId && msg.sessionId !== st.sessionId) {
+              this.abandonedSessions.add(msg.sessionId);
+            }
             break;
           }
         }
+        this.abandonedSessions.delete(msg.sessionFile);
+        this.abandonedSessions.delete(msg.sessionId);
         // This reply matches the load we were waiting on (or the create we
         // requested): the load is resolved, so stop guarding against it.
         this.pendingLoadFile = null;
@@ -2163,6 +2251,11 @@ export class WhereverClient {
         {
           const active = get(this.stateStore).sessionId;
           if (active && msg.sessionId && msg.sessionId !== active) {
+            break;
+          }
+          // Or for a load the user abandoned, arriving before the new target's
+          // own session_created (so no active sessionId guards it yet).
+          if (msg.sessionId && this.abandonedSessions.has(msg.sessionId)) {
             break;
           }
         }
@@ -3021,9 +3114,46 @@ export class WhereverClient {
       loadingSession: true,
       agentPending: false,
     }));
+    this.abandonPendingLoad(sessionFile);
     this.pendingLoadFile = sessionFile;
-    this.send({type: 'session_load', sessionFile, cwd, model});
+    this.sendSessionLoad(sessionFile, cwd, model);
     this.armLoadWatchdog();
+  }
+
+  // The in-flight load (if any) is being superseded by a new request: remember
+  // it so its late reply is dropped (see abandonedSessions). `next` is the load
+  // replacing it, which must not be dropped even if it was abandoned before.
+  private abandonPendingLoad(next?: string, {keepShownSession = false} = {}) {
+    if (this.pendingLoadFile && this.pendingLoadFile !== next) {
+      this.abandonedSessions.add(this.pendingLoadFile);
+    }
+    // A load whose session_created was accepted but whose message_history is
+    // still arriving (a rejoin's multi-MB history can take seconds, exactly
+    // while the user is most likely to tap away): pendingLoadFile is already
+    // null, so remember its sessionId instead, or its history would paint over
+    // the next target and disarm that target's watchdog.
+    // keepShownSession: a bare create (composer `/new`) keeps showing the
+    // current session until the new one's session_created, after which the
+    // active-id guard drops its history anyway; abandoning it here would only
+    // blank it if the create then failed.
+    const s = get(this.stateStore);
+    if (
+      !keepShownSession &&
+      s.sessionId &&
+      !s.historyAuthoritative &&
+      s.activeSessionFile !== next &&
+      s.sessionId !== next
+    ) {
+      this.abandonedSessions.add(s.sessionId);
+    }
+    if (next) this.abandonedSessions.delete(next);
+  }
+
+  // Send a user-requested session_load, or queue it for the next open socket
+  // when there is none (see queuedSessionRequest).
+  private sendSessionLoad(sessionFile: string, cwd?: string, model?: string) {
+    const sent = this.send({type: 'session_load', sessionFile, cwd, model});
+    this.queuedSessionRequest = sent ? null : {type: 'load', sessionFile, cwd, model};
   }
 
   // Switch from the currently-active session (if any) straight to another one in
@@ -3045,6 +3175,8 @@ export class WhereverClient {
     if (s.sessionId) {
       this.send({type: 'session_leave', sessionId: s.sessionId});
     }
+    // Before the reset below, which forgets the session being left.
+    this.abandonPendingLoad(sessionFile);
     // Reset to a clean loading state for the target session in one update so the
     // old conversation clears immediately and the spinner reflects the new load.
     this.stateStore.update((st: WhereverState) => ({
@@ -3077,7 +3209,7 @@ export class WhereverClient {
     // later fire against the newly loaded session.
     this.clearCreateWatchdog();
     this.pendingLoadFile = sessionFile;
-    this.send({type: 'session_load', sessionFile, cwd, model});
+    this.sendSessionLoad(sessionFile, cwd, model);
     this.armLoadWatchdog();
   }
 
@@ -3115,9 +3247,14 @@ export class WhereverClient {
     // A new session supersedes any in-flight load: its session_created must not
     // be rejected by a stale pendingLoadFile, and a late load reply for the old
     // target must not clobber the new session.
+    this.abandonPendingLoad(undefined, {keepShownSession: true});
     this.pendingLoadFile = null;
     this.hydratedFile = null;
-    this.send({
+    // A create supersedes any rejoin the next socket would otherwise make.
+    this.resumeSessionFile = null;
+    this.resumeCwd = undefined;
+    this.resumeModel = undefined;
+    const frame = {
       type: 'session_new',
       cwd,
       model,
@@ -3125,7 +3262,8 @@ export class WhereverClient {
       createRemote,
       repoVisibility,
       cloneRemote,
-    });
+    };
+    this.queuedSessionRequest = this.send(frame) ? null : {type: 'create', frame};
     // Never let the blocking "Creating session..." overlay hang if the reply is
     // lost. Symmetrical with armLoadWatchdog for session_load.
     this.armCreateWatchdog();
@@ -3137,7 +3275,14 @@ export class WhereverClient {
     // Leaving abandons any in-flight create too, so disarm its watchdog even when
     // there is no sessionId yet (a create that has not resolved).
     this.clearCreateWatchdog();
-    if (!s.sessionId) {
+    // Leaving cancels whatever would otherwise (re)attach a session later: a
+    // request queued while the socket was down, the rejoin of the session being
+    // left, and the reply of a load still in flight. Done even with no
+    // sessionId yet (a load or rejoin that has not resolved), since that is
+    // exactly when a late reply would pull the user back.
+    this.queuedSessionRequest = null;
+    this.abandonPendingLoad();
+    if (!s.sessionId && !s.activeSessionFile && this.pendingLoadFile === null && !this.resumeSessionFile) {
       if (s.creatingSession) {
         this.stateStore.update((st: WhereverState) => ({
           ...st,
@@ -3146,7 +3291,7 @@ export class WhereverClient {
       }
       return;
     }
-    this.send({type: 'session_leave', sessionId: s.sessionId});
+    if (s.sessionId) this.send({type: 'session_leave', sessionId: s.sessionId});
     this.stateStore.update((s: WhereverState) => ({
       ...s,
       messages: [],

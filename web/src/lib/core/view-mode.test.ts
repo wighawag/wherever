@@ -120,6 +120,8 @@ describe('decideHashJoin', () => {
 			decideHashJoin({...h, attemptedHashId: 'sid-1', loading: true}),
 		).toBe('skip');
 		expect(decideHashJoin({...h, resyncing: true})).toBe('skip');
+		// A create in flight: the hash still names the session the user left.
+		expect(decideHashJoin({...h, creating: true})).toBe('skip');
 		expect(decideHashJoin({...h, currentSessionId: 'sid-1'})).toBe('skip');
 	});
 

@@ -1085,6 +1085,22 @@ export function resetAssistant() {
 export function leaveSession() {
 	client.leaveSession();
 	setCurrentSession(null);
+	// While connected, the page rewrites the hash as the session changes. While
+	// disconnected it cannot (an empty session then is a boot, not a leave), so a
+	// hash still naming the left session would be auto-joined on reconnect and
+	// pull the user back to it. Drop it here, without a history entry or a
+	// hashchange.
+	if (
+		typeof window !== 'undefined' &&
+		window.location.hash &&
+		!get(state).connected
+	) {
+		history.replaceState(
+			history.state,
+			'',
+			window.location.pathname + window.location.search,
+		);
+	}
 }
 
 export function loadMoreHistory() {

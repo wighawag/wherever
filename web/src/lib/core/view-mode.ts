@@ -60,6 +60,12 @@ export interface HashJoinInputs {
 	loading: boolean;
 	resyncing: boolean;
 	/**
+	 * A new session is being created. The hash may still name the session the
+	 * user left (it is only rewritten while connected), and joining it would pull
+	 * the user back from the session they asked for.
+	 */
+	creating?: boolean;
+	/**
 	 * The hash id the auto-join last issued a load for, still unresolved by a
 	 * success. Reset on disconnect, on success, and on a hash change.
 	 */
@@ -79,7 +85,7 @@ export interface HashJoinInputs {
  */
 export function decideHashJoin(i: HashJoinInputs): 'skip' | 'join' | 'failed' {
 	if (!i.connected || !i.hashId) return 'skip';
-	if (i.currentSessionId === i.hashId || i.loading || i.resyncing)
+	if (i.currentSessionId === i.hashId || i.loading || i.resyncing || i.creating)
 		return 'skip';
 	// Only a failure when nothing is active: a session that IS active (e.g. the
 	// hash names it by file path rather than id, so the ids never match) must

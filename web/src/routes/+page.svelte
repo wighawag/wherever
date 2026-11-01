@@ -354,6 +354,7 @@
 			currentSessionId,
 			loading: loadingSession,
 			resyncing,
+			creating: $isCreatingSession,
 			attemptedHashId: hashJoinAttempt,
 		});
 		if (decision === 'failed') {
@@ -386,6 +387,7 @@
 					currentSessionId,
 					loading: loadingSession,
 					resyncing,
+					creating: $isCreatingSession,
 					attemptedHashId: hashJoinAttempt,
 				}) !== 'join'
 			) {
