@@ -1,5 +1,12 @@
 # @wherever-dev/pi
 
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [016c887]
+  - @wherever-dev/client@0.9.0
+
 ## 0.6.0
 
 ### Minor Changes
