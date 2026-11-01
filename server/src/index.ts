@@ -36,6 +36,11 @@ import { INITIAL_HISTORY_LIMIT, HISTORY_PAGE_SIZE } from './protocol.js';
 import { gateUploadFolder, gateUploadWrite, uploadMaxBytes, uploadTooLarge } from './upload-gate.js';
 import { readAttachGrants } from './download-grants.js';
 import { DEFAULT_DOWNLOAD_MAX_BYTES } from './attach-file-tool.js';
+import { splitFrame, wantsFrameChunks, FRAME_CHUNK_CHARS } from './frame-chunks.js';
+import { compressCached, isCompressible, negotiateEncoding } from './static-compression.js';
+import { stripHistoryImages, wantsImageRefs, SERVABLE_IMAGE_TYPES } from './history-images.js';
+import { readToolResultImage } from './session-transcript.js';
+import { DeltaCoalescer } from './delta-coalescer.js';
 import { UploadStaging, UPLOAD_CAPABILITY, isValidUploadId, parseChunkFrame, CHUNK_FRAME_KIND, type Authorize } from './upload-staging.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -291,7 +296,7 @@ async function resolveSafeDownloadPath(
   return null;
 }
 
-function serveStaticFile(reqPath: string, res: ServerResponse) {
+function serveStaticFile(reqPath: string, res: ServerResponse, acceptEncoding?: string | string[]) {
   let filePath = path.join(staticDir, reqPath === '/' ? 'index.html' : reqPath);
 
   if (!filePath.startsWith(staticDir)) {
@@ -338,8 +343,29 @@ function serveStaticFile(reqPath: string, res: ServerResponse) {
       if (debugEnabled && filePath.endsWith('index.html')) {
         data = Buffer.from(data.toString().replace(ERUDA_PLUGINS_META_FALSE, ERUDA_PLUGINS_META_TRUE));
       }
-      res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': cacheControl });
-      res.end(data);
+      const encoding = isCompressible(contentType, data.length) ? negotiateEncoding(acceptEncoding) : null;
+      if (!encoding) {
+        res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': cacheControl, Vary: 'Accept-Encoding' });
+        res.end(data);
+        return;
+      }
+      const body = data;
+      compressCached(body, encoding).then(
+        (compressed) => {
+          res.writeHead(200, {
+            'Content-Type': contentType,
+            'Cache-Control': cacheControl,
+            'Content-Encoding': encoding,
+            'Content-Length': compressed.length,
+            Vary: 'Accept-Encoding',
+          });
+          res.end(compressed);
+        },
+        () => {
+          res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': cacheControl, Vary: 'Accept-Encoding' });
+          res.end(body);
+        },
+      );
     }
   });
 }
@@ -1035,10 +1061,48 @@ function readBody(req: IncomingMessage, maxLimitBytes = 1e6): Promise<string> {
   });
 }
 
+// Sockets whose client asked for chunked frames (`frames=chunk.v1` on the socket
+// URL, see frame-chunks.ts). Keyed by socket so every sender gets it for free.
+const chunkingSockets = new WeakSet<WebSocket>();
+let nextFrameChunkId = 1;
+// Sockets whose client loads large history images by reference (`imageRefs=1`,
+// see history-images.ts) instead of receiving their base64 inline.
+const imageRefSockets = new WeakSet<WebSocket>();
+// Per-socket coalescing of streamed deltas (delta-coalescer.ts): fewer, larger
+// frames, frame order unchanged. "Backed up" = more than 64 KB still unsent.
+const deltaCoalescers = new WeakMap<WebSocket, DeltaCoalescer<ServerMessage>>();
+const BACKED_UP_BYTES = 64 * 1024;
+
+function coalescerFor(ws: WebSocket): DeltaCoalescer<ServerMessage> {
+  let c = deltaCoalescers.get(ws);
+  if (!c) {
+    c = new DeltaCoalescer<ServerMessage>((m) => writeWS(ws, m), {
+      isBackedUp: () => ws.bufferedAmount > BACKED_UP_BYTES,
+    });
+    deltaCoalescers.set(ws, c);
+    ws.once('close', () => c!.dispose());
+  }
+  return c;
+}
+
 function sendWS(ws: WebSocket, msg: ServerMessage): void {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  coalescerFor(ws).send(msg);
+}
+
+function writeWS(ws: WebSocket, msg: ServerMessage): void {
   if (ws.readyState === WebSocket.OPEN) {
     try {
-      ws.send(JSON.stringify(msg));
+      if ((msg.type === 'message_history' || msg.type === 'message_history_prepend') && imageRefSockets.has(ws)) {
+        msg = { ...msg, messages: stripHistoryImages(msg.messages) };
+      }
+      const json = JSON.stringify(msg);
+      if (chunkingSockets.has(ws) && json.length > FRAME_CHUNK_CHARS) {
+        // Back to back, so frame order on the socket is unchanged.
+        for (const piece of splitFrame(json, nextFrameChunkId++)) ws.send(piece);
+      } else {
+        ws.send(json);
+      }
     } catch (err) {
       console.error('Failed to send WS message:', err);
     }
@@ -1065,6 +1129,8 @@ function sendThenTerminate(ws: WebSocket, msg: ServerMessage, flushTimeoutMs = 1
   };
   const timer = setTimeout(kill, flushTimeoutMs);
   timer.unref?.();
+  // Anything still held by the delta coalescer goes out first, in order.
+  deltaCoalescers.get(ws)?.flush();
   if (ws.readyState !== WebSocket.OPEN) {
     clearTimeout(timer);
     kill();
@@ -2553,6 +2619,42 @@ async function main(): Promise<void> {
       return;
     }
 
+    // A tool image sent by reference in message_history (history-images.ts).
+    // Same token gate as every /session/ route. A tool result never changes once
+    // written, so the browser may keep the image for good.
+    if (pathname === '/session/tool-image' && req.method === 'GET') {
+      const qSessionId = url.searchParams.get('sessionId') || '';
+      const qToolCallId = url.searchParams.get('toolCallId') || '';
+      const qEntryId = url.searchParams.get('entryId') || undefined;
+      const qIndexRaw = url.searchParams.get('index');
+      const qIndex = qIndexRaw ? Number(qIndexRaw) : NaN;
+      if (!qSessionId || !qToolCallId || !Number.isInteger(qIndex) || qIndex < 0) {
+        sendJSON(res, 400, { error: 'Missing sessionId, toolCallId or index' });
+        return;
+      }
+      const located = await sessionPool.locateSession(qSessionId);
+      const image = located
+        ? await readToolResultImage(located.sessionFile, { toolCallId: qToolCallId, entryId: qEntryId }, qIndex)
+        : null;
+      if (!image) {
+        sendJSON(res, 404, { error: 'Image not found' });
+        return;
+      }
+      if (!SERVABLE_IMAGE_TYPES.has(image.mimeType)) {
+        sendJSON(res, 415, { error: `Unsupported image type ${image.mimeType}` });
+        return;
+      }
+      const bytes = Buffer.from(image.data, 'base64');
+      res.writeHead(200, {
+        'Content-Type': image.mimeType,
+        'Content-Length': bytes.length,
+        'Cache-Control': 'private, max-age=31536000, immutable',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      res.end(bytes);
+      return;
+    }
+
     if (pathname === '/session/download' && req.method === 'GET') {
       const config = getWhereverConfig();
       if (config.downloads?.enabled === false) {
@@ -2744,7 +2846,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    serveStaticFile(pathname, res);
+    serveStaticFile(pathname, res, req.headers['accept-encoding']);
   };
 
   let server;
@@ -2786,7 +2888,15 @@ async function main(): Promise<void> {
     server = createHttpServer(requestHandler);
   }
 
-  const wss = new WebSocketServer({ noServer: true });
+  // permessage-deflate: frames are JSON text (history, tool output, streamed
+  // replies) that compresses several times over, which matters most on the slow
+  // links phones are on. Browsers negotiate it natively; a client that does not
+  // offer the extension simply gets uncompressed frames. Small frames (most
+  // streaming deltas) are left alone: deflating them costs CPU for no gain.
+  const wss = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: { threshold: 1024 },
+  });
 
   // Connection-liveness heartbeat. A half-open TCP socket (peer vanished without
   // a clean FIN/RST: process restart, network blip, dropped upstream) stays in
@@ -2860,6 +2970,8 @@ async function main(): Promise<void> {
       } else if (raw) {
         clientKey = raw;
       }
+      if (wantsFrameChunks(url.searchParams)) chunkingSockets.add(ws);
+      if (wantsImageRefs(url.searchParams)) imageRefSockets.add(ws);
     } catch {}
     if (clientKey) {
       evictPreviousConnection(clientKey, clients, sessionPool, broadcastSessionsUpdated);

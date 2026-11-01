@@ -103,6 +103,24 @@ export interface ToolImage {
   data: string;
 }
 
+/**
+ * A tool image in `message_history`. Normally a `ToolImage`; for a socket that
+ * asked for image refs (`imageRefs=1`, see history-images.ts) a large image is
+ * sent WITHOUT `data`, carrying instead its decoded size (`bytes`) and its
+ * address (`toolCallId`, `entryId`, `index` = its position among the result's
+ * images); the client fetches it from
+ * `GET /session/tool-image?sessionId&toolCallId&entryId&index`.
+ */
+export interface HistoryToolImage {
+  mimeType: string;
+  data?: string;
+  bytes?: number;
+  toolCallId?: string;
+  /** The transcript entry holding the image (unique, unlike a toolCallId). */
+  entryId?: string;
+  index?: number;
+}
+
 export interface HistoryMessage {
   role: 'user' | 'assistant' | 'thinking' | 'tool_call' | 'tool_result';
   content: string;
@@ -114,6 +132,8 @@ export interface HistoryMessage {
    * `user` messages so the client can offer a "Fork from here" affordance that
    * forks the session BEFORE this entry (pi's `position: 'before'` semantics),
    * pre-filling the composer with this message's text to edit and resend.
+   * Also set on a `tool_result` that carries images, to address an image sent
+   * by reference (history-images.ts).
    */
   entryId?: string;
   /**
@@ -123,8 +143,8 @@ export interface HistoryMessage {
    * interleaved same-named calls (some dangling) map correctly.
    */
   toolCallId?: string;
-  /** Image attachments extracted from a tool_result (base64), if any. */
-  images?: ToolImage[];
+  /** Image attachments extracted from a tool_result (base64, or by reference), if any. */
+  images?: HistoryToolImage[];
   /**
    * True on a `tool_call` that came from a user `!command` / `!!command` (a
    * "force command", persisted as a `bashExecution` entry), as opposed to a tool

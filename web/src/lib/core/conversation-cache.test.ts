@@ -71,6 +71,24 @@ describe('normalizeMessages', () => {
 		expect('images' in out[0]).toBe(false);
 	});
 
+	it('keeps by-reference tool images (no payload) and drops inline ones beside them', () => {
+		const ref = {
+			mimeType: 'image/png',
+			bytes: 3_000_000,
+			toolCallId: 'tc1',
+			index: 1,
+		};
+		const out = normalizeMessages([
+			msg({
+				id: 't',
+				role: 'tool',
+				toolName: 'read',
+				images: [{mimeType: 'image/png', data: 'AAAA'}, ref],
+			}),
+		]);
+		expect(out[0].images).toEqual([ref]);
+	});
+
 	it('does not mutate the caller messages', () => {
 		const original = msg({
 			isStreaming: true,

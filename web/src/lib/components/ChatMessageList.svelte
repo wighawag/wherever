@@ -28,6 +28,7 @@
 		getConversationKnobs,
 		isReadOnly,
 		downloadFileUrl,
+		toolImageSrc,
 		forkSession,
 	} from '$lib/wherever';
 	import {mediaKind} from '$lib/core/media-kind';
@@ -1538,18 +1539,24 @@
 											<div class="mt-2 flex flex-col gap-1">
 												<div class="flex flex-wrap gap-2">
 													{#each msg.images as img}
-														<a
-															href={`data:${img.mimeType};base64,${img.data}`}
-															target="_blank"
-															rel="noopener noreferrer"
-															class="block"
-														>
-															<img
-																src={`data:${img.mimeType};base64,${img.data}`}
-																alt="Tool output"
-																class="max-h-96 max-w-full rounded border border-brand-border/40 bg-brand-dark/60 object-contain"
-															/>
-														</a>
+														<!-- Inline bytes, or a by-reference image loaded lazily
+														     (and cached by the browser) from /session/tool-image. -->
+														{@const imgSrc = toolImageSrc(img)}
+														{#if imgSrc}
+															<a
+																href={imgSrc}
+																target="_blank"
+																rel="noopener noreferrer"
+																class="block"
+															>
+																<img
+																	src={imgSrc}
+																	alt="Tool output"
+																	loading="lazy"
+																	class="max-h-96 max-w-full rounded border border-brand-border/40 bg-brand-dark/60 object-contain"
+																/>
+															</a>
+														{/if}
 													{/each}
 												</div>
 											</div>

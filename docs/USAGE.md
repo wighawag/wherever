@@ -327,6 +327,12 @@ Download a file the agent produced (the reverse of `/session/upload`). The serve
 - **`attach_file` (agent-driven, the intended path):** a self-contained tool the agent calls to offer a specific file for download, e.g. right after producing a deliverable, or when you ask for a file by name/type, including one created earlier ("give me the gpx", "send me the pdf"). It is registered in every session type: for server-side sessions the server passes it as a `customTool` into `createAgentSession()`; for CLI-bridge sessions the same `@wherever-dev/pi` extension you already load registers it (nothing extra to install). Its prompt tells the agent that, for a remote user who cannot reach the filesystem, a bare file path in a reply is never enough, it must call `attach_file`.
 - **`read`/`write`/`edit` cards (opportunistic, no agent cooperation):** these cards already carry the exact path the agent touched, so a download button is offered there too. If the agent read/wrote a file, you can grab it.
 
+### `GET /session/tool-image`
+Fetch one tool-result image that `message_history` sent BY REFERENCE (see `imageRefs=1` in the WebSocket section).
+* **Auth required:** Yes (if token is configured)
+* **Query Parameters:** `sessionId`; `toolCallId` (the tool result's id); `entryId` (optional, the transcript entry holding the result, as given in the reference: pass it, since a provider may reuse tool-call ids); `index` (required, the image's position among that result's images, as given in the reference).
+* **Responses:** `200` with the raw image bytes, `Content-Type` the image's type and `Cache-Control: private, max-age=31536000, immutable` (a tool result never changes); `400` missing/invalid params; `404` no such session, tool result or image; `415` a type it does not serve inline (only raster `png`/`jpeg`/`gif`/`webp`/`bmp`/`avif`; never SVG).
+
 ### `POST /session/transcribe`
 Send a raw WAV voice recording to be transcribed using the configured server-side transcription API (e.g., Zhipu GLM-ASR-2512 or OpenAI Whisper).
 * **Auth required:** Yes (if token is configured)
@@ -345,6 +351,15 @@ Send a raw WAV voice recording to be transcribed using the configured server-sid
 Establish a connection via `ws://127.0.0.1:31415/ws?token=YOUR_TOKEN`.
 
 Optionally add `&clientKey=YOUR_STABLE_KEY` (max 128 chars): a stable identity for one viewer, reused across reconnects. When a new connection arrives with a key that is already registered, the server sends the older connection a `connection_superseded` message and retires it (detaching it from its session) instead of treating it as an additional viewer. A client that actually receives `connection_superseded` is alive, so it must regenerate its key before reconnecting, otherwise two viewers sharing a key would evict each other indefinitely. Keys longer than 128 characters are ignored (with a server-side warning), leaving that connection without supersede protection. This is what keeps a reconnect after a silent drop (phone sleep, network switch) from being mistaken for a second viewer, which would otherwise open "new session in this folder" read-only behind a folder-conflict banner, for a conflict with nobody. Use one key per independent viewer (the web app uses one per browser tab).
+
+Two more opt-in parameters exist for slow links (a client that omits them gets exactly the old behaviour). `@wherever-dev/client` always sends `frames=chunk.v1` and handles it itself; it sends `imageRefs=1` only when constructed with `imageRefs: true`, as the web app is:
+
+* `&frames=chunk.v1`: the server splits any frame longer than 32 KiB (UTF-16 code units) into several TEXT frames, each `\u0001<id> <seq> <count>\n<data>`. U+0001 never starts a JSON document, which is how a chunk is told apart from an ordinary frame. `seq` is 0-based; concatenating the `data` of chunks `0..count-1` gives back the original JSON frame. The chunks of one message are sent back to back, so frame order is unchanged. Why: a browser delivers a WebSocket message only once all of it arrived, so a multi-MB frame over a slow link looked like a silent (dead) socket to the client's liveness watchdog.
+* `&imageRefs=1`: in `message_history` and `message_history_prepend`, a tool image whose base64 is larger than 16 KiB (raster types only, and only on a result with a `toolCallId`) is sent WITHOUT `data`, as `{ "mimeType": "image/png", "bytes": 2250000, "toolCallId": "...", "entryId": "...", "index": 1 }`. Fetch it from `GET /session/tool-image`. Live `tool_end` images stay inline.
+
+The server also negotiates `permessage-deflate` (frames of 1 KiB and more are compressed), and serves the web app's text assets with `br` or `gzip` when the request accepts them.
+
+Streamed deltas (`message_update`, `thinking_update`, `tool_update`) are COALESCED for every client: consecutive deltas of the same kind (and session, and tool name for `tool_update`) may arrive merged into one frame, typically one per ~50 ms. A client must append each `delta` as it always did; frame order relative to every other message is unchanged (`message_end` always follows its deltas).
 
 ### Client $\rightarrow$ Server Messages
 

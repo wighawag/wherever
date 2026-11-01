@@ -214,6 +214,12 @@ async function getResponse(event: FetchEvent): Promise<Response> {
 }
 
 sw.addEventListener('fetch', (event: FetchEvent) => {
+	// Tool images sent by reference (server/src/history-images.ts) are left to
+	// the browser's HTTP cache, which honours their `immutable` lifetime. The
+	// online-first `/session/` rule would otherwise copy every image (multi-MB,
+	// token in the URL) into Cache Storage with no eviction.
+	if (new URL(event.request.url).pathname.endsWith('/session/tool-image'))
+		return;
 	event.respondWith(getResponse(event));
 });
 

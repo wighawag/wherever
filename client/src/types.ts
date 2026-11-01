@@ -1,6 +1,18 @@
+/**
+ * A tool image. Live (`tool_end`) images always carry base64 `data`. In
+ * `message_history` a large image may come BY REFERENCE (this client asks for
+ * that with `imageRefs=1`): no `data`; instead its decoded size (`bytes`) and
+ * its address (`toolCallId`, `entryId`, `index`), fetched from
+ * `GET /session/tool-image?sessionId&toolCallId&entryId&index`.
+ */
 export interface ToolImage {
 	mimeType: string;
-	data: string;
+	data?: string;
+	bytes?: number;
+	toolCallId?: string;
+	/** The transcript entry holding the image (sent alongside `toolCallId`). */
+	entryId?: string;
+	index?: number;
 }
 
 export interface ChatMessage {

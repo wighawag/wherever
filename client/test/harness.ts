@@ -105,6 +105,11 @@ export class FakeWebSocket {
 		this.emit('message', {data: JSON.stringify(msg)});
 	}
 
+	/** Push a raw server -> client text frame (e.g. a frame chunk). */
+	receiveRaw(text: string) {
+		this.emit('message', {data: text});
+	}
+
 	/** Last outbound frame of a given type, or undefined. */
 	lastSentOfType(type: string) {
 		return [...this.sent].reverse().find((m) => m.type === type);

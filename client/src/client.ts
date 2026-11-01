@@ -11,6 +11,7 @@ import {
   type WhereverState,
   skillInvocationIdentity,
 } from "./types.js";
+import { FrameReassembler, FRAME_CHUNK_PARAM, FRAME_CHUNK_VERSION } from "./frame-chunks.js";
 
 /**
  * Per-send options for a user message.
@@ -50,6 +51,11 @@ export interface WhereverClientConfig {
   // wherever `clientKey` came from, so the collision is resolved for good rather
   // than re-created on the next reconnect.
   onClientKeyChange?: (key: string) => void;
+  // Ask for large `message_history` tool images BY REFERENCE (`imageRefs=1`):
+  // they then arrive without `data`, and the app must load them from
+  // `GET /session/tool-image` (see ToolImage). Off by default, so a consumer
+  // that renders `img.data` keeps getting it; the web app turns it on.
+  imageRefs?: boolean;
 }
 
 // Per-instance fallback identity: stable for the lifetime of this client object,
@@ -514,6 +520,14 @@ export class WhereverClient {
     const params: string[] = [];
     if (this.config.token) params.push(`token=${encodeURIComponent(this.config.token)}`);
     params.push(`clientKey=${encodeURIComponent(this.clientKey)}`);
+    // Ask the server to split large frames (frame-chunks.ts): a multi-MB history
+    // arriving as ONE frame over a slow link looked like a dead socket to the
+    // liveness watchdog, which tore it down and looped forever.
+    params.push(`${FRAME_CHUNK_PARAM}=${FRAME_CHUNK_VERSION}`);
+    // History tool images by reference (fetched lazily, cached by the browser)
+    // rather than as base64 re-sent on every load and reconnect. Opt-in: the
+    // caller must then render images that have no `data`.
+    if (this.config.imageRefs) params.push('imageRefs=1');
     const wsUrl = `${protocol}://${host}:${this.config.port}/ws?${params.join('&')}`;
 
     const WebSocketImpl = this.config.WebSocketCtor || (typeof globalThis !== 'undefined' ? (globalThis as any).WebSocket : null);
@@ -544,6 +558,10 @@ export class WhereverClient {
     }
 
     const currentWs = this.ws;
+    const reassembler = new FrameReassembler();
+    // One warning per run of bad chunks: after one, every remaining chunk of
+    // that message is invalid too.
+    let inBadChunkRun = false;
 
     const onOpen = () => {
       if (this.ws !== currentWs) return;
@@ -629,7 +647,20 @@ export class WhereverClient {
       this.cancelLivenessProbe();
       try {
         const rawData = typeof event.data === 'string' ? event.data : event.data.toString();
-        const msg = JSON.parse(rawData);
+        const piece = reassembler.push(rawData);
+        if (piece.kind !== 'invalid') inBadChunkRun = false;
+        if (piece.kind === 'partial') {
+          // A large frame is still arriving: the load it answers is making
+          // progress, so it must not time out meanwhile.
+          if (this.loadWatchdog) this.armLoadWatchdog();
+          return;
+        }
+        if (piece.kind === 'invalid') {
+          if (!inBadChunkRun) console.warn('[wherever] dropped a malformed or incomplete chunked frame');
+          inBadChunkRun = true;
+          return;
+        }
+        const msg = JSON.parse(piece.text);
         this.handleMessage(msg);
       } catch (err) {
         console.error("Failed to parse WebSocket message:", err);

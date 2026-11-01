@@ -74,8 +74,10 @@ export interface ConversationCache {
  *   re-tagged there; caching them too would double-surface them.
  * - `isStreaming` is forced to false: nothing is streaming in a page that just
  *   booted, and a stale `true` would render a live spinner forever.
- * - tool `images` (base64 payloads) are dropped: they dwarf the text, and the
- *   authoritative history brings them back moments later.
+ * - tool images carrying base64 `data` are dropped: they dwarf the text, and the
+ *   authoritative history brings them back moments later. Images sent BY
+ *   REFERENCE (no `data`, just an address the browser fetches and caches) are
+ *   kept: they cost a few bytes and let the cached view show them offline-ish.
  * Returns new objects; the caller's (store-owned) messages are not mutated.
  */
 export function normalizeMessages(
@@ -84,8 +86,13 @@ export function normalizeMessages(
 	const out: ChatMessage[] = [];
 	for (const m of messages) {
 		if (m.delivery !== undefined) continue;
-		const {images: _images, ...rest} = m;
-		out.push({...rest, isStreaming: false});
+		const {images, ...rest} = m;
+		const refs = images?.filter((i) => !i.data && i.toolCallId);
+		out.push({
+			...rest,
+			...(refs && refs.length > 0 ? {images: refs} : {}),
+			isStreaming: false,
+		});
 	}
 	return out;
 }

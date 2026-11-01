@@ -668,6 +668,9 @@ export function mapEntryToHistory(entry: SessionEntry): HistoryMessage[] {
       resultText = resultMsg.content;
     }
     const toolCallId = typeof resultMsg.toolCallId === 'string' ? resultMsg.toolCallId : undefined;
+    // The entry id addresses an image sent by reference (history-images.ts):
+    // unlike a toolCallId, which a provider may reuse, it is unique in the file.
+    const entryId = resultImages.length > 0 && typeof msgEntry.id === 'string' ? msgEntry.id : undefined;
     out.push({
       role: 'tool_result',
       content: resultText,
@@ -675,6 +678,7 @@ export function mapEntryToHistory(entry: SessionEntry): HistoryMessage[] {
       toolName,
       isError: !!resultMsg.isError,
       ...(toolCallId ? { toolCallId } : {}),
+      ...(entryId ? { entryId } : {}),
       ...(resultImages.length > 0 ? { images: resultImages } : {}),
     });
   } else if (msg.role === 'bashExecution') {
@@ -700,6 +704,69 @@ export function mapEntryToHistory(entry: SessionEntry): HistoryMessage[] {
     }
   }
   return out;
+}
+
+const TOOL_CALL_ID_PROBE = /"toolCallId":"((?:[^"\\]|\\.){1,256})"/;
+const ENTRY_ID_PROBE = /^\{"type":"message","id":"((?:[^"\\]|\\.){1,256})"/;
+
+/** True when the probe matched a JSON string that is NOT `expected`. A probe
+ *  miss, or an unparseable capture, is "unknown": the line must be read. */
+function probedOther(re: RegExp, head: string, expected: string): boolean {
+  const m = re.exec(head);
+  if (m === null) return false;
+  try {
+    return JSON.parse(`"${m[1]}"`) !== expected;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The `index`-th image block of the tool result answering `toolCallId` (and, when
+ * given, stored in entry `entryId`), or null. Serves `GET /session/tool-image`:
+ * history sent to a slow-link-aware client references large tool images instead
+ * of inlining their base64 (see `stripHistoryImages` in history-images.ts), and
+ * the web fetches each one on demand. The entry id is what makes the address
+ * unique: a provider may reuse tool-call ids across turns.
+ *
+ * One streaming pass; only tool-result lines whose head names THESE ids (or does
+ * not show them at all, an unexpected shape we must not guess about) are
+ * assembled and parsed, so every other multi-MB result costs a head probe.
+ */
+export async function readToolResultImage(
+  filePath: string,
+  address: { toolCallId: string; entryId?: string },
+  index: number,
+): Promise<{ mimeType: string; data: string } | null> {
+  const { toolCallId, entryId } = address;
+  let found: { mimeType: string; data: string } | null = null;
+  await forEachJsonlLine(filePath, {
+    skip: (head) => {
+      if (lineType(head) !== 'message') return true;
+      const role = messageRole(head);
+      if (role !== null && role !== 'toolResult') return true;
+      if (entryId !== undefined && probedOther(ENTRY_ID_PROBE, head, entryId)) return true;
+      return probedOther(TOOL_CALL_ID_PROBE, head, toolCallId);
+    },
+    line: (line) => {
+      const entry = parseLine(line);
+      const msg = entry?.type === 'message' ? entry.message : null;
+      if (!msg || msg.role !== 'toolResult' || msg.toolCallId !== toolCallId) return;
+      if (entryId !== undefined && entry.id !== entryId) return;
+      const images = Array.isArray(msg.content)
+        ? msg.content.filter((c: any) => c && c.type === 'image' && typeof c.data === 'string' && c.data)
+        : [];
+      const img = images[index];
+      if (img) {
+        found = {
+          mimeType: typeof img.mimeType === 'string' ? img.mimeType : 'image/png',
+          data: flattenString(img.data),
+        };
+      }
+      return false;
+    },
+  });
+  return found;
 }
 
 export interface HistoryWindow {

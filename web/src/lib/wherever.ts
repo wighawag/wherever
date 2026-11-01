@@ -5,6 +5,7 @@ import {
 	parseSkillInvocation,
 	serverKey,
 	type ChatMessage,
+	type ToolImage,
 	type UploadByteSource,
 	type UploadProgress,
 	type WhereverState,
@@ -563,6 +564,8 @@ export const client = new WhereverClient({
 		window.location.protocol === 'https:',
 	hideThinking: !!initialConfig.hideThinking,
 	hideTools: !!initialConfig.hideTools,
+	// Large history images come by reference; `toolImageSrc` loads them.
+	imageRefs: true,
 });
 
 export const state = client.stateStore;
@@ -1312,6 +1315,28 @@ export function downloadFileUrl(path: string): string | null {
 		`${baseUrl}/session/download` +
 		`?sessionId=${encodeURIComponent(sessionId)}` +
 		`&path=${encodeURIComponent(path)}` +
+		(token ? `&token=${encodeURIComponent(token)}` : '')
+	);
+}
+
+/**
+ * The `src` for a tool image: a data URI when the bytes came inline, else the
+ * authenticated `GET /session/tool-image` URL for an image the server sent BY
+ * REFERENCE (history over a slow-link-aware socket, see ToolImage). Null when
+ * neither is possible (no data, no address, or no active session).
+ */
+export function toolImageSrc(img: ToolImage): string | null {
+	if (img.data) return `data:${img.mimeType};base64,${img.data}`;
+	if (!img.toolCallId || typeof img.index !== 'number') return null;
+	const sessionId = get(piState).sessionId;
+	if (!sessionId) return null;
+	const token = getToken();
+	return (
+		`${getBaseUrl()}/session/tool-image` +
+		`?sessionId=${encodeURIComponent(sessionId)}` +
+		`&toolCallId=${encodeURIComponent(img.toolCallId)}` +
+		(img.entryId ? `&entryId=${encodeURIComponent(img.entryId)}` : '') +
+		`&index=${img.index}` +
 		(token ? `&token=${encodeURIComponent(token)}` : '')
 	);
 }
