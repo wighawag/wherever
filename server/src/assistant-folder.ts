@@ -82,6 +82,37 @@ export function resolveAssistantFolder(config: AssistantFolderConfig): string | 
 }
 
 /**
+ * A path in the form every "is this the assistant folder?" check compares:
+ * absolute, with symlinks resolved. A terminal pi reports its REAL cwd while the
+ * config (and the web) may name the folder through a symlink
+ * (`~/assistant -> /data/assistant`), so plain `path.resolve` equality misses.
+ * The deepest EXISTING ancestor is realpath'd and the rest appended, so a
+ * not-yet-created `jobs/` under a symlinked folder still canonicalises under
+ * the target; a path with no existing ancestor is just resolved.
+ * KEEP IN LOCKSTEP with `canonicalPath` in extension/src/assistant-tool-twins.ts.
+ */
+export function canonicalPath(p: string): string {
+  const abs = path.resolve(p);
+  const tail: string[] = [];
+  let cur = abs;
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(cur), ...tail);
+    } catch {
+      const parent = path.dirname(cur);
+      if (parent === cur) return abs;
+      tail.unshift(path.basename(cur));
+      cur = parent;
+    }
+  }
+}
+
+/** True when `a` and `b` name the same folder once canonicalised (see `canonicalPath`). */
+export function isSameFolder(a: string, b: string): boolean {
+  return canonicalPath(a) === canonicalPath(b);
+}
+
+/**
  * Create the folder if missing and drop each seed file that does not exist yet.
  * NEVER overwrites: the folder is the user's (and the agent's) to edit. Throws on
  * a real I/O failure (e.g. an unwritable parent); callers decide how loud to be.
@@ -115,7 +146,7 @@ export function seedAssistantFolder(folder: string): string[] {
  */
 export function maybeSeedAssistantSession(resolvedCwd: string, assistantFolder: string | undefined): void {
   if (!assistantFolder) return;
-  if (path.resolve(resolvedCwd) !== path.resolve(assistantFolder)) return;
+  if (!isSameFolder(resolvedCwd, assistantFolder)) return;
   try {
     const written = seedAssistantFolder(assistantFolder);
     if (written.length > 0) console.log(`[wherever] assistant: seeded ${written.join(', ')} in ${assistantFolder}`);

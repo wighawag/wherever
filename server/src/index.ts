@@ -6,7 +6,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import { SessionPool, RELOADING_REFUSAL, getWhereverConfig, getWhereverCertsDir, getWhereverStateDir, detectRemoteRepo, normalizePath, invalidateFolderExistence, type WhereverConfig } from './session-pool.js';
 import { readDrafts, addDraft, deleteDraft, validateDraftInput } from './drafts.js';
-import { startAssistantFolder } from './assistant-folder.js';
+import { canonicalPath, startAssistantFolder } from './assistant-folder.js';
 import { AssistantController } from './assistant-controller.js';
 import { AssistantScheduler } from './assistant-scheduler.js';
 import {
@@ -470,8 +470,8 @@ function resolveHeartbeatMs(raw: string | undefined): number {
 // CLI bridges are deliberately left ALONE: their re-registration is already
 // handled by registerCliSession/unregisterCliSession, and tearing one down here
 // would race a cli_register arriving on the new socket against the old socket's
-// async close teardown, which could unregister the session that was just
-// re-registered.
+// async close teardown. (That teardown itself only removes the entry its own
+// socket owns, so a reconnect that lands first survives it.)
 function evictPreviousConnection(
   clientKey: string,
   clients: Map<string, WSClient>,
@@ -1400,8 +1400,11 @@ async function main(): Promise<void> {
   // The CLI bridge's request/response path (ADR 0016, cli-requests.ts). Built
   // whether or not the assistant is active: `assistant_info` is how a terminal pi
   // learns it is NOT, and that answer is what keeps its tool twins inactive.
+  // The folder goes out CANONICAL (symlinks resolved): the bridge compares it
+  // with the terminal pi's real cwd, and a bridge cannot realpath a path on the
+  // server's side of a symlink it may not share.
   const currentAssistantInfo = (): AssistantInfo => ({
-    assistantFolder: assistantController ? assistant.status.folder : null,
+    assistantFolder: assistantController && assistant.status.folder ? canonicalPath(assistant.status.folder) : null,
     timezone: assistantController ? currentTimezone() : null,
   });
   const cliRequests = createCliRequestRouter({ assistantInfo: currentAssistantInfo, assistantHooks: () => assistantHooks });
@@ -1489,7 +1492,17 @@ async function main(): Promise<void> {
           try { fs.chmodSync(defaultKeyPath, 0o600); } catch {}
           console.log(`Self-signed certificates generated successfully in ${certsDir}`);
         } catch (err) {
-          console.warn(`Failed to generate self-signed certificates in ${certsDir} using OpenSSL. Falling back to HTTP.`, (err as Error).message);
+          const e = err as NodeJS.ErrnoException & { path?: string };
+          if (e.code === 'ENOENT' && e.syscall?.startsWith('spawn') && e.path === 'openssl') {
+            // The binary itself is missing: say so, rather than the bare
+            // `spawnSync openssl ENOENT` (the certs dir was created fine).
+            console.warn(
+              `Cannot generate self-signed certificates: \`openssl\` was not found on PATH. Falling back to HTTP. ` +
+                `Install openssl (it is in the flake devshell, \`nix develop\`), pass --ssl-key/--ssl-cert, or pass --no-ssl to silence this.`,
+            );
+          } else {
+            console.warn(`Failed to generate self-signed certificates in ${certsDir} using OpenSSL. Falling back to HTTP.`, (err as Error).message);
+          }
           isSecure = false;
         }
       }
@@ -1767,9 +1780,13 @@ async function main(): Promise<void> {
 
   sessionPool.onEvent = broadcastAgentEvent;
 
+  // DELETE is used only by Web Push's `/push/subscription`, so it is advertised
+  // only while those routes exist: with the assistant off (or Web Push disabled)
+  // the header is what it was before the assistant.
+  const corsAllowMethods = webPushChannel ? 'GET, POST, DELETE, OPTIONS' : 'GET, POST, OPTIONS';
   const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', corsAllowMethods);
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') {
@@ -3058,7 +3075,9 @@ async function main(): Promise<void> {
     ws.on('close', async () => {
       if (client.sessionId) {
         if (client.isCliBridge) {
-          await sessionPool.unregisterCliSession(client.sessionId);
+          // Only this socket's own registration: a reconnect may already
+          // have replaced it (see unregisterCliSession).
+          await sessionPool.unregisterCliSession(client.sessionId, ws);
         } else {
           sessionPool.removeClient(client.sessionId, clientId);
         }

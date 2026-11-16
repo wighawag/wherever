@@ -24,6 +24,7 @@
  * a fake request function and importable by that server drift test.
  */
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -294,10 +295,36 @@ export function syncTwinActivation(pi: Partial<ActiveToolsApi>, info: AssistantI
   }
 }
 
-/** True when `cwd` is the assistant folder itself or its `jobs/` (path.resolve equality, like the server). */
+/**
+ * `cwd` absolute with symlinks resolved: the deepest existing ancestor is
+ * realpath'd and the rest appended; no existing ancestor means just resolved.
+ * KEEP IN LOCKSTEP with `canonicalPath` in server/src/assistant-folder.ts.
+ */
+export function canonicalPath(p: string): string {
+  const abs = path.resolve(p);
+  const tail: string[] = [];
+  let cur = abs;
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(cur), ...tail);
+    } catch {
+      const parent = path.dirname(cur);
+      if (parent === cur) return abs;
+      tail.unshift(path.basename(cur));
+      cur = parent;
+    }
+  }
+}
+
+/**
+ * True when `cwd` is the assistant folder itself or its `jobs/`, compared with
+ * symlinks resolved on both sides, like the server. The server already sends
+ * the folder canonical; canonicalising it here too covers an older server that
+ * sends the configured (possibly symlinked) spelling.
+ */
 export function isAssistantFolderCwd(cwd: string, folder: string): boolean {
-  const c = path.resolve(cwd);
-  const f = path.resolve(folder);
+  const c = canonicalPath(cwd);
+  const f = canonicalPath(folder);
   return c === f || c === path.join(f, "jobs");
 }
 

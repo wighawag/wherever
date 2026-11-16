@@ -11,3 +11,7 @@ Recorded per the work contract so a reviewer can ratify or reverse them. Code si
 7. **The twins' text, parameter schemas and `timezoneLine` live in a new pi-runtime-free module** (`extension/src/assistant-tool-twins.ts`) that the server drift test IMPORTS (like `conversation-mode-hint.test.ts`), instead of parsing `index.ts` source like `say-tool.test.ts`. The drift test also compares the parameter schemas (the task only names texts), since a schema drift breaks a twin just as surely.
 8. **The CLI timezone line uses `ctx.cwd` of the turn and `path.resolve` equality**, like the server (the symlink caveat in `assistant-folder-symlink-cwd-mismatch.md` applies equally). It is appended after the conversation-mode hint, matching the server's extension order.
 9. **Changeset bumps are `minor`** for both packages (new tools in terminal sessions, new protocol ops).
+
+## Update (2026-10-31)
+
+The symlink caveat is resolved: every assistant-folder comparison (server and the extension twin) now resolves symlinks (`canonicalPath`), and `assistant_info` sends the folder canonical. See `assistant-hardening-reconnect-symlink-cors-decisions.md`.

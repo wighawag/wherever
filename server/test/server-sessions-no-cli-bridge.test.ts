@@ -203,7 +203,7 @@ function instrument(pool: SessionPool) {
       setTimeout(() => void pool.registerCliSession(sessionFile, cwd, '', fakeCliWs, true), 0);
     },
     shutdown(sessionFile) {
-      setTimeout(() => void pool.unregisterCliSession(sessionFile), 0);
+      setTimeout(() => void pool.unregisterCliSession(sessionFile, fakeCliWs), 0);
     },
   };
   (globalThis as any)[HOOK] = hook;
@@ -298,7 +298,7 @@ describe('server sessions do not host the CLI bridge extension', () => {
 
     // The terminal pi exits: the server agent comes back and STAYS back (an
     // in-server bridge would re-register it as a CLI straight away).
-    await pool.unregisterCliSession(tracked.sessionFile);
+    await pool.unregisterCliSession(tracked.sessionFile, cliWs);
     await settle();
     const back = pool.getSession(tracked.sessionFile);
     expect(back?.type).toBe('server');

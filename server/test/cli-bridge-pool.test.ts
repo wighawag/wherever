@@ -125,3 +125,173 @@ describe('CLI bridge registration (pool)', () => {
     await pool.disposeAll();
   });
 });
+
+/**
+ * A bridge reconnect whose `cli_register` lands BEFORE the old socket's close
+ * handler runs (seen once as a flaky cli-bridge-foundation-server test). The
+ * old socket's teardown must
+ * not remove, or hand back to the server, the registration that replaced it.
+ */
+describe('CLI bridge reconnect vs the old socket closing (pool)', () => {
+  const cliOf = (pool: SessionPool, f: string) => {
+    const t = pool.getSession(f);
+    return t?.type === 'cli' ? t.cliWs : null;
+  };
+
+  it("the old socket's close leaves the fresh registration registered and resident", async () => {
+    const pool = new SessionPool(300_000);
+    const f = file('race-plain');
+    const cwd = freshCwd();
+    const a = fakeCliWs();
+    const b = fakeCliWs();
+    await pool.registerCliSession(f, cwd, '', a);
+    await pool.registerCliSession(f, cwd, '', b);
+    await pool.unregisterCliSession(f, a);
+    expect(cliOf(pool, f)).toBe(b);
+    await pool.disposeAll();
+  });
+
+  it('with a viewer attached, the old close does not hand the session back to a server agent', async () => {
+    const pool = new SessionPool(300_000);
+    const f = file('race-viewer');
+    const cwd = freshCwd();
+    const a = fakeCliWs();
+    const b = fakeCliWs();
+    (await pool.registerCliSession(f, cwd, '', a)).tracked.clients.add('viewer');
+    await pool.registerCliSession(f, cwd, '', b);
+    await pool.unregisterCliSession(f, a);
+    expect(cliOf(pool, f)).toBe(b);
+    expect(pool.getSession(f)?.clients.has('viewer')).toBe(true);
+    await pool.disposeAll();
+  });
+
+  it('the OTHER order: a reconnect landing while the handoff reload is still building is not overwritten by it', async () => {
+    const pool = new SessionPool(300_000);
+    const cwd = freshCwd();
+    const { tracked, error } = await pool.createNewSession(cwd, undefined, false, false);
+    expect(error).toBeUndefined();
+    const f = tracked.sessionFile;
+    // On disk, so the handoff really rebuilds a server agent (pi writes the
+    // file only once a conversation starts).
+    if (!fs.existsSync(f)) {
+      fs.writeFileSync(f, JSON.stringify({ type: 'session', version: 3, id: tracked.sessionId, timestamp: new Date().toISOString(), cwd }) + '\n');
+    }
+    const a = fakeCliWs();
+    const b = fakeCliWs();
+    (await pool.registerCliSession(f, cwd, '', a)).tracked.clients.add('viewer');
+    // A closes FIRST: with a viewer attached the server agent is rebuilt (slow).
+    const handoff = pool.unregisterCliSession(f, a);
+    // B reconnects while that build is pending.
+    await pool.registerCliSession(f, cwd, '', b);
+    await handoff;
+    expect(cliOf(pool, f)).toBe(b);
+    expect(pool.getSession(f)?.clients.has('viewer')).toBe(true);
+    await pool.disposeAll();
+  }, 30_000);
+
+  it('a reconnecting socket that closes while its register waits never leaves a dead entry (the rebuilt agent survives with the viewer)', async () => {
+    const pool = new SessionPool(300_000);
+    const cwd = freshCwd();
+    const { tracked } = await pool.createNewSession(cwd, undefined, false, false);
+    const f = tracked.sessionFile;
+    if (!fs.existsSync(f)) {
+      fs.writeFileSync(f, JSON.stringify({ type: 'session', version: 3, id: tracked.sessionId, timestamp: new Date().toISOString(), cwd }) + '\n');
+    }
+    const a = fakeCliWs();
+    const b = fakeCliWs();
+    (await pool.registerCliSession(f, cwd, '', a)).tracked.clients.add('viewer');
+    const handoff = pool.unregisterCliSession(f, a);
+    const reg = pool.registerCliSession(f, cwd, '', b); // waits for the rebuild
+    b.readyState = 3; // B dies during that wait; its close found no entry to remove
+    const res = await reg;
+    await handoff;
+    expect(res.error).toBeTruthy();
+    expect(pool.getSession(f)?.type).toBe('server');
+    expect(pool.getSession(f)?.clients.has('viewer')).toBe(true);
+    await pool.disposeAll();
+  }, 30_000);
+
+  // Which path runs depends on whether the build or the header read ends first:
+  // the register restarting on a landed server entry (and taking it over), or
+  // loadSession's raced branch disposing its agent. Either way the bridge wins.
+  it('a load racing a register that began first never ends as the entry', async () => {
+    const pool = new SessionPool(300_000);
+    const cwd = freshCwd();
+    const { tracked } = await pool.createNewSession(cwd, undefined, false, false);
+    const f = tracked.sessionFile;
+    if (!fs.existsSync(f)) {
+      fs.writeFileSync(f, JSON.stringify({ type: 'session', version: 3, id: tracked.sessionId, timestamp: new Date().toISOString(), cwd }) + '\n');
+    }
+    await pool.destroySession(f, 'test'); // nothing resident: register must read the header
+    const b = fakeCliWs();
+    const reg = pool.registerCliSession(f, cwd, '', b); // past the pending check, reading the header
+    const load = pool.loadSession(f, cwd); // starts building a server agent meanwhile
+    expect((await reg).error).toBeUndefined();
+    expect((await load).error).toBeUndefined();
+    expect(cliOf(pool, f)).toBe(b);
+    await pool.disposeAll();
+  }, 30_000);
+
+  it("the CURRENT socket's close still unregisters", async () => {
+    const pool = new SessionPool(300_000);
+    const f = file('race-current');
+    const cwd = freshCwd();
+    const a = fakeCliWs();
+    const b = fakeCliWs();
+    await pool.registerCliSession(f, cwd, '', a);
+    await pool.registerCliSession(f, cwd, '', b);
+    await pool.unregisterCliSession(f, b);
+    expect(pool.getSession(f)).toBeNull();
+    await pool.disposeAll();
+  });
+
+  it("an idle timer armed for the old registration never evicts the new one", async () => {
+    const pool = new SessionPool(40);
+    const f = file('race-idle');
+    const cwd = freshCwd();
+    const a = fakeCliWs();
+    const b = fakeCliWs();
+    await pool.registerCliSession(f, cwd, '', a);
+    pool.handleCliEvent(f, { type: 'agent_start' } as any);
+    pool.handleCliEvent(f, { type: 'agent_end' } as any); // arms A's idle timer
+    await pool.registerCliSession(f, cwd, '', b, true); // B reconnects mid-turn
+    await pool.unregisterCliSession(f, a);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(cliOf(pool, f)).toBe(b);
+    await pool.disposeAll();
+  });
+
+  it("an idle timer only ever evicts the entry it was armed for, even when nobody cancelled it", async () => {
+    const pool = new SessionPool(40);
+    const f = file('race-idle-uncancelled');
+    const cwd = freshCwd();
+    await pool.registerCliSession(f, cwd, '', fakeCliWs());
+    pool.handleCliEvent(f, { type: 'agent_start' } as any);
+    pool.handleCliEvent(f, { type: 'agent_end' } as any); // arms the timer on this entry
+    // A replacement that does NOT go through registerCliSession's cancel (a
+    // future path that forgets to): the armed timer must leave it alone.
+    const old = pool.getSession(f)!;
+    const replacement = { ...old, idleTimer: null, cliWs: fakeCliWs() };
+    (pool as any).sessions.set(f, replacement);
+    await new Promise((r) => setTimeout(r, 120));
+    expect(pool.getSession(f)).toBe(replacement);
+    await pool.disposeAll();
+  });
+
+  it('a pinned (assistant) session stays pinned and resident across the race', async () => {
+    const pool = new SessionPool(40);
+    const f = file('race-pinned');
+    const cwd = freshCwd();
+    const a = fakeCliWs();
+    const b = fakeCliWs();
+    await pool.registerCliSession(f, cwd, '', a);
+    pool.pinSession(f);
+    await pool.registerCliSession(f, cwd, '', b);
+    await pool.unregisterCliSession(f, a);
+    pool.handleCliEvent(f, { type: 'agent_start' } as any);
+    pool.handleCliEvent(f, { type: 'agent_end' } as any); // would arm idle if unpinned
+    await new Promise((r) => setTimeout(r, 120));
+    expect(cliOf(pool, f)).toBe(b);
+    await pool.disposeAll();
+  });
+});

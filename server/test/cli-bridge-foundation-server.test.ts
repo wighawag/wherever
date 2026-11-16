@@ -102,16 +102,6 @@ async function until(cond: () => boolean, timeoutMs: number): Promise<boolean> {
   return cond();
 }
 
-async function waitInactive(h: Harness, sessionFile: string, timeoutMs = 10_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const data = (await (await fetch(`http://127.0.0.1:${h.port}/sessions`)).json()) as { activeSessions?: { sessionFile: string }[] };
-    if (!data.activeSessions?.some((s) => s.sessionFile.endsWith(path.basename(sessionFile)))) return true;
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  return false;
-}
-
 describe('CLI bridge foundation (real server)', () => {
   it('a fresh pi in assistantFolder (isNew) moves the pointer; pi -c, an old extension and other folders do not', async () => {
     const root = tmp();
@@ -142,10 +132,10 @@ describe('CLI bridge foundation (real server)', () => {
 
     // The terminal reconnects (isNew is not repeated); another session in the
     // folder resumed later does not take the pointer either.
-    // Wait for the old socket's teardown first: a register racing it is a
-    // separate, pre-existing hazard (see work/notes/observations).
+    // The reconnect may land before or after the old socket's close teardown;
+    // either order must leave it registered (the pool-level race test pins the
+    // reconnect-first order deterministically).
     cli.close();
-    expect(await waitInactive(h, fresh)).toBe(true);
     await register(h, fresh, folder, { isNew: false });
     await register(h, path.join(sessions, 'resumed.jsonl'), folder, { isNew: false });
     await new Promise((r) => setTimeout(r, 300));

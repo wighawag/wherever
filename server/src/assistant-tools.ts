@@ -6,6 +6,7 @@ import { ScheduleFileError, ScheduleValidationError, type JobMode, type Schedule
 import type { ListedJob, ScheduleListing } from './assistant-scheduler.js';
 import type { ChannelFile, ChannelNotification, NotifyOutcome } from './assistant-channels.js';
 import { resolveAttachPath } from './attach-file-tool.js';
+import { canonicalPath } from './assistant-folder.js';
 import {
   ASSISTANT_NOTIFY_TEXT,
   ASSISTANT_SCHEDULE_ADD_TEXT,
@@ -39,8 +40,9 @@ import {
  * - The timezone line (`User's current timezone: <tz>`) is an INLINE pi extension
  *   (ADR 0004's conversation-mode pattern): `before_agent_start` APPENDS it to
  *   the prompt the event carries, never replacing it. It is added only to a
- *   session whose cwd is `assistantFolder` itself or its `jobs/` (path.resolve
- *   equality, like the controller's pointer check), and appends nothing while no
+ *   session whose cwd is `assistantFolder` itself or its `jobs/` (compared
+ *   with symlinks resolved, `canonicalPath`, like the controller's pointer
+ *   check), and appends nothing while no
  *   timezone is known (assistant not active).
  *
  * The ops (`scheduleAdd`, ...) are separate from the tool wrappers so
@@ -573,8 +575,8 @@ export function createNotifyTool(access: () => AssistantNotifyAccess, caller: ()
 
 /** True when `cwd` is the assistant folder itself or its `jobs/` (where the timezone line applies). */
 export function isAssistantFolderCwd(cwd: string, folder: string): boolean {
-  const c = path.resolve(cwd);
-  const f = path.resolve(folder);
+  const c = canonicalPath(cwd);
+  const f = canonicalPath(folder);
   return c === f || c === path.join(f, 'jobs');
 }
 

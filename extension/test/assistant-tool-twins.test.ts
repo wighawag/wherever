@@ -7,12 +7,16 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
   ASSISTANT_TOOL_TWIN_NAMES,
   ASSISTANT_TWIN_ATTACHMENT_TIMEOUT_MS,
   ASSISTANT_TWIN_REQUEST_TIMEOUT_MS,
   cliTimezoneLine,
   createAssistantToolTwins,
+  isAssistantFolderCwd,
   syncTwinActivation,
   type TwinRequest,
 } from "../src/assistant-tool-twins.ts";
@@ -180,4 +184,27 @@ test("the CLI timezone line: only in the assistant folder or jobs/, only when co
   for (const state of ["disconnected", "not_configured", "unsupported", "disabled"] as const) {
     assert.equal(cliTimezoneLine({ state }, "/home/u/assistant"), null, state);
   }
+});
+
+test("the CLI timezone line through a symlinked assistant folder (link <-> real, jobs/ included; another folder never)", (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "wherever-twins-symlink-")));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const real = path.join(root, "real");
+  fs.mkdirSync(path.join(real, "jobs"), { recursive: true });
+  const link = path.join(root, "link");
+  fs.symlinkSync(real, link);
+  const other = path.join(root, "other");
+  fs.mkdirSync(other);
+  const line = "User's current timezone: Europe/Paris";
+  for (const [folder, cwd] of [
+    [link, real],
+    [real, link],
+    [link, path.join(real, "jobs")],
+    [real, path.join(link, "jobs")],
+  ]) {
+    assert.equal(cliTimezoneLine({ ...configured, assistantFolder: folder }, cwd), line, `${cwd} vs ${folder}`);
+    assert.equal(isAssistantFolderCwd(cwd, folder), true);
+  }
+  assert.equal(cliTimezoneLine({ ...configured, assistantFolder: link }, other), null);
+  assert.equal(isAssistantFolderCwd(path.join(real, "notes"), link), false);
 });

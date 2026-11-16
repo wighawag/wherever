@@ -14,3 +14,7 @@ Recorded per the work contract so a reviewer can ratify or reverse them. Code si
 10. **The web shows the timezone in the sidebar's Assistant entry** (a small muted label, and in its tooltip), which only exists while active, so all assistant UI stays hidden with the feature off.
 11. **Test seam added to the fake LLM: `queue(...behaviors)`**, one-shot behaviors used before the sticky `setNext` one, so a test makes exactly one tool call without racing the follow-up request (a duplicated `assistant_schedule_add` would add two jobs).
 12. **Changeset bump is `minor`** (new user-visible tools and behaviour).
+
+## Update (2026-10-31)
+
+The symlink caveat is resolved: every assistant-folder comparison (server and the extension twin) now resolves symlinks (`canonicalPath`), and `assistant_info` sends the folder canonical. See `assistant-hardening-reconnect-symlink-cors-decisions.md`.

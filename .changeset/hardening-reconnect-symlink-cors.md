@@ -1,0 +1,5 @@
+---
+"wherever-dev": patch
+---
+
+Assistant hardening. A CLI bridge reconnect whose `cli_register` lands before the old socket's close handler no longer gets unregistered by that stale close (the pool only tears down the entry the closing socket owns, and an idle timer only evicts the entry it was armed for), and a reconnect that lands while the old socket's handoff is rebuilding a server agent takes that agent over instead of being overwritten by it. An `assistantFolder` configured through a symlink now works: the pointer move, the pointer record, the re-seed and the timezone line compare folders with symlinks resolved, so a terminal `pi` (which reports its real cwd) becomes the assistant session, and `assistant_info` sends the canonical folder. The self-signed certificate fallback now says plainly when `openssl` is not on PATH, and the TLS tests fail fast with one clear message instead of `spawnSync openssl ENOENT`. `Access-Control-Allow-Methods` advertises `DELETE` only while the Web Push routes exist, so the header is unchanged with the assistant off.

@@ -164,3 +164,32 @@ describe('assistantFolder (real server)', () => {
     expect(fs.existsSync(path.join(other, '.gitignore'))).toBe(false);
   }, 60_000);
 });
+
+describe('CORS Access-Control-Allow-Methods (real server)', () => {
+  // DELETE exists only for Web Push's `/push/subscription`, so it is advertised
+  // only while those routes exist; with the assistant off the header is exactly
+  // what it was before the assistant (a guard on "assistantFolder unset =
+  // unchanged").
+  const allowMethods = async (port: number, method: 'GET' | 'OPTIONS') =>
+    (await fetch(`http://127.0.0.1:${port}/health`, { method })).headers.get('access-control-allow-methods');
+
+  it('unset: unchanged, no DELETE', async () => {
+    const root = tmp();
+    const h = await boot(root, 'a', {});
+    expect(await allowMethods(h.port, 'GET')).toBe('GET, POST, OPTIONS');
+    expect(await allowMethods(h.port, 'OPTIONS')).toBe('GET, POST, OPTIONS');
+  }, 60_000);
+
+  it('assistant active with Web Push disabled: no DELETE', async () => {
+    const root = tmp();
+    const h = await boot(root, 'a', { assistantFolder: path.join(root, 'assistant'), assistantWebPush: { enabled: false } });
+    expect(await allowMethods(h.port, 'OPTIONS')).toBe('GET, POST, OPTIONS');
+  }, 60_000);
+
+  it('Web Push running: DELETE is advertised', async () => {
+    const root = tmp();
+    const h = await boot(root, 'a', { assistantFolder: path.join(root, 'assistant') });
+    expect(await allowMethods(h.port, 'GET')).toBe('GET, POST, DELETE, OPTIONS');
+    expect(await allowMethods(h.port, 'OPTIONS')).toBe('GET, POST, DELETE, OPTIONS');
+  }, 60_000);
+});

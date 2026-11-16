@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, afterEach, afterAll, beforeAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -8,6 +8,7 @@ import path from 'node:path';
 import tls from 'node:tls';
 import { fileURLToPath } from 'node:url';
 import { freePort } from './free-port.js';
+import { findOnPath, requireBinary } from './require-binary.js';
 
 /**
  * Deployment shape: the server runs as a declaratively-managed system service
@@ -534,6 +535,11 @@ describe('token from the environment (nothing secret in argv)', () => {
 });
 
 describe('TLS material at absolute paths', () => {
+  // These tests mint and inspect certificates with `openssl`. Without it on PATH
+  // fail ONCE, clearly (not a cryptic `spawnSync openssl ENOENT` per test, and
+  // not a silent skip that would let a gate stop testing TLS).
+  beforeAll(() => requireBinary('openssl'));
+
   /** A throwaway self-signed pair somewhere that is NOT under any home dir. */
   function makePair(): { keyPath: string; certPath: string } {
     const dir = tmpDir('tls');
@@ -723,5 +729,47 @@ describe('TLS material at absolute paths', () => {
       if (prev === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
       else process.env.NODE_TLS_REJECT_UNAUTHORIZED = prev;
     }
+  }, 60_000);
+});
+
+describe('self-signed fallback without openssl on PATH', () => {
+  /**
+   * A PATH that has every executable the current one has EXCEPT `openssl`: a
+   * bin dir of symlinks. The server still needs `sh`, `node` and friends (tsx's
+   * shim is a shell script), so an empty PATH would not boot at all.
+   */
+  function pathWithout(name: string): string {
+    const bin = tmpDir('bin-no-' + name);
+    const seen = new Set<string>();
+    for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+      let entries: string[];
+      try {
+        entries = fs.readdirSync(dir);
+      } catch {
+        continue;
+      }
+      for (const e of entries) {
+        if (e === name || seen.has(e)) continue;
+        seen.add(e);
+        try {
+          fs.symlinkSync(path.join(dir, e), path.join(bin, e));
+        } catch {}
+      }
+    }
+    return bin;
+  }
+
+  it('says that openssl is not on PATH, and serves plain HTTP', async () => {
+    const PATH = pathWithout('openssl');
+    expect(findOnPath('openssl', PATH)).toBeNull();
+    const stateDir = tmpDir('state');
+    const server = await startServer({
+      env: { PATH, WHEREVER_CONFIG_DIR: readOnlyConfigDir(), WHEREVER_STATE_DIR: stateDir },
+      scheme: 'http',
+    });
+    expect((await api(server.port, '/health')).status).toBe(200);
+    expect(server.stdout()).toMatch(/`openssl` was not found on PATH/);
+    expect(server.stdout()).toMatch(/pass --ssl-key\/--ssl-cert, or pass --no-ssl/);
+    expect(fs.existsSync(path.join(stateDir, 'certs', 'localhost.key'))).toBe(false);
   }, 60_000);
 });

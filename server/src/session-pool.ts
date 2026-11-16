@@ -32,6 +32,15 @@ export function normalizePath(p: string): string {
 }
 
 /**
+ * True once a CLI bridge socket is CLOSING or CLOSED (ws readyState 2 / 3).
+ * Checked, not `!== OPEN`, so a socket without a readyState (test fakes) counts
+ * as open.
+ */
+function cliSocketClosed(ws: { readyState?: number }): boolean {
+  return ws.readyState === 2 || ws.readyState === 3;
+}
+
+/**
  * Canonicalize a session .jsonl path so it can be used as a stable map key.
  *
  * The pool keys its in-memory `sessions` map by the session FILE PATH. That key
@@ -1755,6 +1764,15 @@ export class SessionPool {
           label: resolvedFile,
         });
 
+        // An entry that appeared while the agent was building (a CLI bridge
+        // reconnecting during a CLI->server handoff) wins: overwriting it would
+        // leave a server agent and a live terminal pi on the same file.
+        const raced = this.sessions.get(resolvedFile);
+        if (raced) {
+          await shutdownAndDisposeAgentSession(agentSession, `${resolvedFile} (superseded while loading)`, this.extensionShutdownTimeoutMs);
+          return { tracked: raced };
+        }
+
         const modelLabel = agentSession.model ? `${agentSession.model.provider}:${agentSession.model.id}` : '';
 
         const tracked: TrackedSession = {
@@ -3008,6 +3026,9 @@ export class SessionPool {
     if (tracked.type === 'cli' && this.pinnedSessions.has(tracked.sessionFile)) return;
     if (tracked.clients.size === 0 && tracked.isIdle) {
       tracked.idleTimer = setTimeout(() => {
+        // Only the entry this timer was armed for: a replacement (a CLI
+        // reconnect, a reload) owns its own idle state.
+        if (this.sessions.get(tracked.sessionFile) !== tracked) return;
         this.destroySession(tracked.sessionFile, 'idle timeout');
       }, this.idleTimeoutMs);
     }
@@ -3073,6 +3094,15 @@ export class SessionPool {
     // different pi version can register a second, parallel session for the same
     // work under a cosmetically different path string.
     const sessionFile = normalizeSessionFile(rawSessionFile);
+    // A server agent still being built for this file (the CLI->server handoff
+    // of a bridge that just disconnected) is taken over once it is in the pool,
+    // like any server entry, rather than raced.
+    const pending = this.pendingSessions.get(sessionFile);
+    if (pending) await pending.catch(() => {});
+    // A socket that closed during that wait already ran its close teardown,
+    // which found no entry to remove: registering it now would leave a dead
+    // entry (and take over a live agent for nobody).
+    if (cliSocketClosed(cliWs)) return { tracked: null as any, error: 'CLI bridge closed while registering' };
     const existing = this.sessions.get(sessionFile);
     let clients = new Set<string>();
     // A CLI registering for a session that already had a LIVE server-side agent
@@ -3136,6 +3166,13 @@ export class SessionPool {
       }
     }
 
+    // The header read above awaited: if the entry changed meanwhile (a load
+    // landed), start over so it is taken over instead of silently replaced.
+    if (!existing && this.sessions.has(sessionFile)) {
+      return this.registerCliSession(rawSessionFile, cwd, modelStr, cliWs, isStreaming, opts);
+    }
+    if (cliSocketClosed(cliWs)) return { tracked: null as any, error: 'CLI bridge closed while registering' };
+
     const normalizedCwd = normalizePath(cwd);
 
     const tracked: CliTrackedSession = {
@@ -3182,10 +3219,19 @@ export class SessionPool {
     return tracked?.type === 'cli' ? tracked.capabilities : null;
   }
 
-  async unregisterCliSession(rawSessionFile: string): Promise<void> {
+  /**
+   * Tear down the CLI-bridge registration that `closingWs` owns, handing the
+   * session back to a server agent when someone is viewing it. A no-op when the
+   * file's CLI entry belongs to ANOTHER socket: a bridge reconnect whose
+   * `cli_register` landed before the old socket's close handler ran has already
+   * replaced the entry, and the old socket's teardown must not delete it (or
+   * restart a server agent over it).
+   */
+  async unregisterCliSession(rawSessionFile: string, closingWs: WebSocket): Promise<void> {
     const sessionFile = normalizeSessionFile(rawSessionFile);
     const tracked = this.sessions.get(sessionFile);
     if (!tracked || tracked.type !== 'cli') return;
+    if (tracked.cliWs !== closingWs) return;
 
     this.cancelIdleCheck(sessionFile);
     this.sessions.delete(sessionFile);
@@ -3193,8 +3239,13 @@ export class SessionPool {
     if (tracked.clients.size > 0) {
       console.log(`CLI Bridge disconnected for ${sessionFile}. Restarting server-side agent session...`);
       const result = await this.loadSession(sessionFile, tracked.cwd, tracked.model);
+      // The viewers go to whatever entry holds the file NOW: a bridge that
+      // reconnected during the reload has taken it over (from the rebuilt
+      // agent, or before it was set), and then nothing was disconnected.
+      const current = this.sessions.get(sessionFile);
+      if (current) for (const id of tracked.clients) current.clients.add(id);
+      if (current?.type === 'cli') return;
       if (!result.error && result.tracked) {
-        result.tracked.clients = tracked.clients;
         if (tracked.isStreaming) {
           this.emitEvent(sessionFile, {
             type: 'session_error' as any,

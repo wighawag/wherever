@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ImageContent } from '@earendil-works/pi-ai';
+import { isSameFolder } from './assistant-folder.js';
 
 /**
  * The assistant CONTROLLER (spec `assistant-session-and-channels`, ADRs 0014 to
@@ -222,7 +223,9 @@ export class AssistantController {
    * pointer (the controller's own creation) is a no-op.
    */
   handleSessionCreated(sessionFile: string, cwd: string): Promise<void> {
-    if (path.resolve(cwd) !== this.folder) return Promise.resolve();
+    // Symlinks resolved: a terminal pi reports its REAL cwd, the config may
+    // name the folder through a link (see canonicalPath).
+    if (!isSameFolder(cwd, this.folder)) return Promise.resolve();
     return this.serial(async () => {
       if (this.ownCreations.delete(sessionFile)) return;
       if (this.pointer?.sessionFile === sessionFile) return;
@@ -391,7 +394,7 @@ export class AssistantController {
     try {
       const rec = JSON.parse(raw) as Partial<PointerRecord>;
       if (typeof rec.sessionFile !== 'string' || typeof rec.folder !== 'string') return null;
-      if (path.resolve(rec.folder) !== this.folder) return null;
+      if (!isSameFolder(rec.folder, this.folder)) return null;
       return { sessionFile: rec.sessionFile, sessionId: typeof rec.sessionId === 'string' ? rec.sessionId : '' };
     } catch {
       console.warn(`[wherever] assistant: ignoring an unreadable pointer at ${this.pointerPath}`);
