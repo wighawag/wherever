@@ -19,7 +19,14 @@ import {
   type PairedUser,
   type PairingState,
 } from './telegram-pairing.js';
-import { TelegramReplies, splitTelegramText, type TelegramToolCalls } from './telegram-replies.js';
+import {
+  TelegramReplies,
+  sendTelegramAttachment,
+  splitTelegramText,
+  type BotCall,
+  type BotUpload,
+  type TelegramToolCalls,
+} from './telegram-replies.js';
 import {
   FILES_UNAVAILABLE_REPLY,
   TELEGRAM_DOWNLOAD_MAX_BYTES,
@@ -31,7 +38,7 @@ import {
   saveUploaded,
   type TelegramInboundFile,
 } from './telegram-files.js';
-import type { ChannelFile } from './assistant-channels.js';
+import type { ChannelFile, ChannelFileOutcome } from './assistant-channels.js';
 
 /**
  * The assistant's TELEGRAM channel: the secure base (task
@@ -52,7 +59,8 @@ import type { ChannelFile } from './assistant-channels.js';
  *   the dispatcher, streamed and split by telegram-replies.ts.
  * - NOTIFY (`assistant_notify`): its OWN message `🔔 <source>: <title>`, the
  *   body below, then a link to the target session when `publicUrl` is
- *   configured; sent at once, even mid-reply, never folded into a reply.
+ *   configured; sent at once, even mid-reply, never folded into a reply. Its
+ *   attachments follow, each as a reply to that message.
  * - DROPPED messages (a reset, an aborted settle): reported back as a list.
  * - FILES (task `telegram-files`, telegram-files.ts): a photo or a document
  *   (an ALBUM is its messages gathered for `mediaGroupDelayMs`, then handled as
@@ -247,6 +255,8 @@ export class TelegramChannel implements AssistantChannel {
   private loopDone: Promise<void> | null = null;
   private readonly publicUrl: string | undefined;
   private readonly replies: TelegramReplies;
+  /** The Bot API calls (JSON and multipart) the replies and the notify attachments send through. */
+  private readonly botApi: { call: BotCall; upload: BotUpload; log: Pick<Console, 'log' | 'warn' | 'error'> };
   private readonly uploadDir: (() => string) | undefined;
   private readonly maxUploadBytes: () => number;
   private readonly mediaGroupDelayMs: number;
@@ -272,13 +282,16 @@ export class TelegramChannel implements AssistantChannel {
     this.uploadDir = opts.uploadDir;
     this.maxUploadBytes = opts.maxUploadBytes ?? (() => TELEGRAM_DOWNLOAD_MAX_BYTES);
     this.mediaGroupDelayMs = opts.mediaGroupDelayMs ?? MEDIA_GROUP_DELAY_MS;
-    this.replies = new TelegramReplies({
+    this.botApi = {
       call: (method, params) => this.call(method, params),
       upload: (method, fields, fileField, filePath, fileName) => this.callMultipart(method, fields, fileField, filePath, fileName),
+      log: this.log,
+    };
+    this.replies = new TelegramReplies({
+      ...this.botApi,
       chatId: () => (this.started ? this.pairedChatId() : null),
       throttleMs: opts.replyThrottleMs,
       toolCalls: opts.toolCalls,
-      log: this.log,
     });
     // Nothing is read before start(): the state lives in memory from there.
     this.pairing = { configuredUserId: opts.configuredUserId, stored: null, code: null };
@@ -369,18 +382,43 @@ export class TelegramChannel implements AssistantChannel {
     }
   }
 
-  /** `assistant_notify`: its own `🔔` message, sent now (never waits for, or joins, a reply). */
+  /**
+   * `assistant_notify`: its own `🔔` message, sent now (never waits for, or
+   * joins, a reply), then each attached file as a reply to it (to its FIRST
+   * part, the one with the title, when the text is split)
+   * (`sendTelegramAttachment`, the same send as an `attach_file` in a reply). A
+   * file that is gone, too large or fails gets its note; it never fails the
+   * notify, and `files` reports each one.
+   */
   async notify(n: ChannelNotification): Promise<ChannelNotifyResult> {
     const chatId = this.started ? this.pairedChatId() : null;
     if (!chatId) return { ok: false, error: this.started ? 'Telegram is not paired yet' : 'the Telegram channel is not running' };
+    let first: number | undefined;
     try {
       for (const part of splitTelegramText(formatTelegramNotification(n, this.publicUrl))) {
-        await this.call('sendMessage', { chat_id: chatId, text: part });
+        const sent = await this.call<{ message_id?: number }>('sendMessage', { chat_id: chatId, text: part });
+        if (first === undefined && typeof sent?.message_id === 'number') first = sent.message_id;
       }
-      return { ok: true, detail: 'sent' };
     } catch (err) {
-      return { ok: false, error: errMessage(err).split(this.token).join('<token>') };
+      return { ok: false, error: this.redact(errMessage(err)) };
     }
+    if (!n.files?.length) return { ok: true, detail: 'sent' };
+    const files: ChannelFileOutcome[] = [];
+    for (const f of n.files) {
+      const name = f.name || path.basename(f.path);
+      try {
+        const r = await sendTelegramAttachment(this.botApi, chatId, f.path, name, first);
+        files.push({ path: f.path, name, status: r.status, ...(r.error ? { error: this.redact(r.error) } : {}) });
+      } catch (err) {
+        files.push({ path: f.path, name, status: 'failed', error: this.redact(errMessage(err)) });
+      }
+    }
+    return { ok: true, detail: 'sent', files };
+  }
+
+  /** An error message without the bot token (a URL in a network error carries it). */
+  private redact(message: string): string {
+    return message.split(this.token).join('<token>');
   }
 
   /** Messages from Telegram that a reset or an aborted settle dropped: listed back to the user. */

@@ -107,11 +107,15 @@ export const ASSISTANT_NOTIFY_TEXT: AssistantToolText = {
     "their message: a scheduled job, or work in another session, is silent unless it calls this. Give a short " +
     "`title` and a `body`. Tapping the notification opens `navigateSessionId` when given; otherwise, for a " +
     "scheduled job (pass `jobId`, or call it from an isolated job session), the session that scheduled the " +
-    "job; otherwise this session. It fails with a clear error when no channel can deliver.",
+    "job; otherwise this session. To send files with it, pass `attachments`: paths relative to the working " +
+    "directory, or absolute, as attach_file takes them (a path that does not exist is an error). Telegram " +
+    "gets each file itself, after the message; a push notification cannot carry files. It fails with a " +
+    "clear error when no channel can deliver.",
   promptSnippet: "Notify the user immediately (push / Telegram); the only way to reach them with anything that is not a reply",
   promptGuidelines: [
     "Use assistant_notify only for things the user should know about now (a finished job, a result they asked to be told about, something urgent); never for routine chatter, and not to repeat what you are already replying.",
     "In a scheduled job, call assistant_notify with the result when the user should hear about it: a scheduled turn reaches the user ONLY through assistant_notify.",
+    "When the result is a file (a report, an export), pass it in assistant_notify's attachments so it reaches the user on Telegram itself; attach_file alone only offers it for download in the web app.",
   ],
 };
 
@@ -172,6 +176,11 @@ export const ASSISTANT_TWIN_PARAMETERS = {
     body: Type.String({ description: "The message itself: one or two sentences the user can act on." }),
     navigateSessionId: Type.Optional(Type.String({ description: "The session id a tap should open (default: see the description)." })),
     jobId: Type.Optional(Type.String({ description: "The scheduled job this is about; a tap then opens the session that scheduled it." })),
+    attachments: Type.Optional(
+      Type.Array(Type.String(), {
+        description: "Files to send with the notification: paths relative to the working directory, or absolute (as attach_file takes them).",
+      }),
+    ),
   }),
 } as const;
 
@@ -183,6 +192,21 @@ export const ASSISTANT_TWIN_PARAMETERS = {
  * recorded in work/notes/observations/cli-assistant-tool-twins-decisions.md.
  */
 export const ASSISTANT_TWIN_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * Added to the timeout per `assistant_notify` attachment: the server answers
+ * only once every file has gone to Telegram (one at a time, up to 50 MB each),
+ * and a twin that gives up early tells the agent it failed when it did not,
+ * inviting a duplicate notification.
+ */
+export const ASSISTANT_TWIN_ATTACHMENT_TIMEOUT_MS = 120_000;
+
+/** The request timeout of one twin call (longer for a notify carrying files). */
+export function twinRequestTimeoutMs(name: string, params: unknown): number {
+  const attachments = name === "assistant_notify" ? (params as { attachments?: unknown } | null)?.attachments : undefined;
+  const n = Array.isArray(attachments) ? attachments.length : 0;
+  return ASSISTANT_TWIN_REQUEST_TIMEOUT_MS + n * ASSISTANT_TWIN_ATTACHMENT_TIMEOUT_MS;
+}
 
 /** How a twin reaches the server (the request client's `request`, faked in tests). */
 export type TwinRequest = (op: string, args: unknown, opts?: { timeoutMs?: number }) => Promise<BridgeRequestResult>;
@@ -224,7 +248,7 @@ export function createAssistantToolTwins(request: TwinRequest): ToolDefinition[]
       async execute(_toolCallId: string, params: unknown) {
         let res: BridgeRequestResult;
         try {
-          res = await request(op, params ?? {}, { timeoutMs: ASSISTANT_TWIN_REQUEST_TIMEOUT_MS });
+          res = await request(op, params ?? {}, { timeoutMs: twinRequestTimeoutMs(text.name, params) });
         } catch (err) {
           res = { ok: false, reason: "disconnected", error: err instanceof Error ? err.message : String(err) };
         }

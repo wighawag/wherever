@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import type { InlineExtension } from '@earendil-works/pi-coding-agent';
 import {
   assistantSessionParts,
@@ -99,6 +102,53 @@ describe('notifyOp', () => {
     expect(sent).toEqual([]);
     const none = fakeBackend({ ok: false, error: NO_CHANNEL_ERROR, deliveries: [] });
     expect(await notifyOp(none.backend, { sessionId: 's', cwd: '/x' }, { title: 't', body: 'b' })).toEqual({ ok: false, error: NO_CHANNEL_ERROR });
+  });
+
+  describe('attachments', () => {
+    let dir: string;
+    beforeEach(() => {
+      dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-notify-')));
+      fs.writeFileSync(path.join(dir, 'report.md'), '# r');
+      fs.mkdirSync(path.join(dir, 'sub'));
+    });
+    afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const caller = () => ({ sessionId: 's', cwd: dir, sessionFile: null });
+
+    it('resolves paths like attach_file (relative to the cwd, or absolute) and passes them to the channels', async () => {
+      const { backend, sent } = fakeBackend();
+      const r = await notifyOp(backend, caller(), { title: 't', body: 'b', attachments: ['report.md', path.join(dir, 'report.md')] });
+      expect(r.ok).toBe(true);
+      const f = { path: path.join(dir, 'report.md'), name: 'report.md' };
+      expect(sent[0]!.files).toEqual([f, f]);
+    });
+
+    it('a typo, a directory or a non-list is an error for the agent, and nothing is sent', async () => {
+      const { backend, sent } = fakeBackend();
+      const typo = await notifyOp(backend, caller(), { title: 't', body: 'b', attachments: ['reprot.md'] });
+      expect(typo).toEqual({ ok: false, error: `attachments: file not found: ${path.join(dir, 'reprot.md')}` });
+      expect(await notifyOp(backend, caller(), { title: 't', body: 'b', attachments: ['sub'] })).toEqual({
+        ok: false,
+        error: `attachments: not a regular file: ${path.join(dir, 'sub')}`,
+      });
+      expect(await notifyOp(backend, caller(), { title: 't', body: 'b', attachments: 'report.md' })).toMatchObject({ ok: false });
+      expect(sent).toEqual([]);
+    });
+
+    it('reports the outcome per file, and says so when no channel that carries files delivered', async () => {
+      const md = path.join(dir, 'report.md');
+      const tg = fakeBackend({
+        ok: true,
+        deliveries: [
+          { channel: 'webpush', result: { ok: true, detail: '1 device' } },
+          { channel: 'telegram', result: { ok: true, detail: 'sent', files: [{ path: md, name: 'report.md', status: 'document' }] } },
+        ],
+      });
+      const r = await notifyOp(tg.backend, caller(), { title: 't', body: 'b', attachments: ['report.md'] });
+      expect((r as { text: string }).text).toContain('Files on telegram: report.md sent as a document.');
+      const push = fakeBackend();
+      const p = await notifyOp(push.backend, caller(), { title: 't', body: 'b', attachments: ['report.md'] });
+      expect((p as { text: string }).text).toContain('No channel that carries files (Telegram) delivered');
+    });
   });
 });
 

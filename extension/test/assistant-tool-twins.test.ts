@@ -9,6 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ASSISTANT_TOOL_TWIN_NAMES,
+  ASSISTANT_TWIN_ATTACHMENT_TIMEOUT_MS,
   ASSISTANT_TWIN_REQUEST_TIMEOUT_MS,
   cliTimezoneLine,
   createAssistantToolTwins,
@@ -71,6 +72,14 @@ test("each twin calls its op with the tool params and returns the server's resul
     assert.deepEqual(res.details, { op: ops[name] });
     assert.deepEqual(calls.at(-1), { op: ops[name], args: params, timeoutMs: ASSISTANT_TWIN_REQUEST_TIMEOUT_MS });
   }
+});
+
+test("assistant_notify with attachments waits longer: each file is uploaded before the server answers", async () => {
+  const { byName, calls } = twinsWith(() => ({ ok: true, result: { text: "ok" } }));
+  await byName("assistant_notify").execute("call-1", { title: "t", body: "b", attachments: ["a.md", "b.png"] });
+  assert.equal(calls.at(-1)!.timeoutMs, ASSISTANT_TWIN_REQUEST_TIMEOUT_MS + 2 * ASSISTANT_TWIN_ATTACHMENT_TIMEOUT_MS);
+  await byName("assistant_notify").execute("call-2", { title: "t", body: "b", attachments: [] });
+  assert.equal(calls.at(-1)!.timeoutMs, ASSISTANT_TWIN_REQUEST_TIMEOUT_MS);
 });
 
 test("a server error (not configured, lock, bad input) is a clear isError result", async () => {

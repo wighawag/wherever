@@ -83,10 +83,24 @@ export interface ChannelNotification {
   source: string;
   /** The session id the notification opens. */
   navigate: string;
+  /**
+   * `assistant_notify`'s `attachments`, validated and resolved (real paths). A
+   * channel that can carry files sends them (Telegram, after the message); one
+   * that cannot (Web Push) ignores them.
+   */
   files?: ChannelFile[];
 }
 
-export type ChannelNotifyResult = { ok: true; detail?: string } | { ok: false; error: string };
+/** How one attached file went out on a channel (`status` is the channel's own word: `document`, `missing`, ...). */
+export interface ChannelFileOutcome {
+  path: string;
+  name: string;
+  status: string;
+  error?: string;
+}
+
+/** `files`: set by a channel that carries files, one entry per `ChannelNotification.files` entry. */
+export type ChannelNotifyResult = { ok: true; detail?: string; files?: ChannelFileOutcome[] } | { ok: false; error: string };
 
 /** A pool event whose current destination is this channel (a reply to its message). */
 export interface ChannelReply {

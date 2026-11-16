@@ -9,7 +9,9 @@ import {
   TELEGRAM_UPLOAD_MAX_BYTES,
   UNSUPPORTED_MEDIA_REPLY,
   attachedFileOf,
+  attachmentFailedNote,
   attachmentPlan,
+  attachmentTooLargeNote,
   inboundFilesOf,
   safeFileName,
   saveUploaded,
@@ -268,6 +270,93 @@ describe('Telegram files: outbound (attach_file)', () => {
     await channel.replyIdle();
     const order = api.calls.filter((c) => ['sendMessage', 'sendDocument'].includes(c.method)).map((c) => c.method);
     expect(order).toEqual(['sendMessage', 'sendDocument']);
+  });
+});
+
+describe('Telegram files: outbound (assistant_notify attachments)', () => {
+  const note = { title: 'Report ready', body: 'see the file', source: 'assistant', navigate: 's1' };
+  /** The `reply_parameters` of a call: an object on JSON calls, a JSON string on multipart ones. */
+  const replyTo = (params: Record<string, any>) => {
+    const r = params.reply_parameters;
+    return (typeof r === 'string' ? JSON.parse(r) : r)?.message_id;
+  };
+
+  it('with no attachments: exactly the one message as before', async () => {
+    const { api, channel } = await setup();
+    const r = await channel.notify(note);
+    expect(r).toEqual({ ok: true, detail: 'sent' });
+    expect(api.calls.filter((c) => c.method.startsWith('send')).map((c) => [c.method, c.params])).toEqual([
+      ['sendMessage', { chat_id: String(USER), text: '🔔 assistant: Report ready\n\nsee the file' }],
+    ]);
+  });
+
+  it('a document goes out as a reply to the notification message', async () => {
+    const { api, channel, root } = await setup();
+    const md = path.join(root, 'report.md');
+    fs.writeFileSync(md, '# Report');
+    const r = await channel.notify({ ...note, files: [{ path: md, name: 'report.md' }] });
+    expect(r).toMatchObject({ ok: true, files: [{ path: md, name: 'report.md', status: 'document' }] });
+    const order = api.calls.filter((c) => c.method.startsWith('send')).map((c) => c.method);
+    expect(order).toEqual(['sendMessage', 'sendDocument']);
+    const doc = api.of('sendDocument')[0]!;
+    expect(doc.params.chat_id).toBe(String(USER));
+    expect(doc.params.document).toMatchObject({ name: 'report.md', size: 8 });
+    expect(replyTo(doc.params)).toBe(1);
+  });
+
+  it('an image goes out as a photo', async () => {
+    const { api, channel, root } = await setup();
+    const png = path.join(root, 'chart.png');
+    fs.writeFileSync(png, 'PNGDATA');
+    const r = await channel.notify({ ...note, files: [{ path: png, name: 'chart.png' }] });
+    expect(r).toMatchObject({ ok: true, files: [{ name: 'chart.png', status: 'photo' }] });
+    expect(api.of('sendPhoto')).toHaveLength(1);
+    expect(api.of('sendPhoto')[0]!.params.photo).toMatchObject({ name: 'chart.png', size: 7 });
+    expect(replyTo(api.of('sendPhoto')[0]!.params)).toBe(1);
+    expect(api.of('sendDocument')).toEqual([]);
+  });
+
+  it('a missing or too-large file gets its note, the rest still goes out, and the notify succeeds', async () => {
+    const { api, channel, root } = await setup();
+    const gone = path.join(root, 'gone.md');
+    const huge = path.join(root, 'dump.tar');
+    fs.writeFileSync(huge, '');
+    fs.truncateSync(huge, TELEGRAM_UPLOAD_MAX_BYTES + 1);
+    const ok = path.join(root, 'ok.txt');
+    fs.writeFileSync(ok, 'ok');
+    const r = await channel.notify({
+      ...note,
+      files: [
+        { path: gone, name: 'gone.md' },
+        { path: huge, name: 'dump.tar' },
+        { path: ok, name: 'ok.txt' },
+      ],
+    });
+    expect(r).toMatchObject({
+      ok: true,
+      files: [
+        { name: 'gone.md', status: 'missing' },
+        { name: 'dump.tar', status: 'too-large' },
+        { name: 'ok.txt', status: 'document' },
+      ],
+    });
+    const notes = api.of('sendMessage').slice(1);
+    expect(notes.map((c) => c.params.text)).toEqual([
+      attachmentFailedNote('gone.md', 'the file is no longer there'),
+      attachmentTooLargeNote('dump.tar', TELEGRAM_UPLOAD_MAX_BYTES + 1, TELEGRAM_UPLOAD_MAX_BYTES, huge),
+    ]);
+    expect(notes.map((c) => replyTo(c.params))).toEqual([1, 1]);
+    expect(api.of('sendDocument').map((c) => c.params.document.name)).toEqual(['ok.txt']);
+  });
+
+  it('a failed upload gets the failure note and is reported, without failing the notify', async () => {
+    const { api, channel, root } = await setup();
+    api.failMethods.add('sendDocument');
+    const md = path.join(root, 'report.md');
+    fs.writeFileSync(md, 'x');
+    const r = await channel.notify({ ...note, files: [{ path: md, name: 'report.md' }] });
+    expect(r).toMatchObject({ ok: true, files: [{ name: 'report.md', status: 'failed' }] });
+    expect(String(api.of('sendMessage')[1]!.params.text)).toMatch(/^⚠️ Could not send report\.md on Telegram: /);
   });
 });
 

@@ -94,11 +94,15 @@ export const ASSISTANT_NOTIFY_TEXT: AssistantToolText = {
     'their message: a scheduled job, or work in another session, is silent unless it calls this. Give a short ' +
     '`title` and a `body`. Tapping the notification opens `navigateSessionId` when given; otherwise, for a ' +
     'scheduled job (pass `jobId`, or call it from an isolated job session), the session that scheduled the ' +
-    'job; otherwise this session. It fails with a clear error when no channel can deliver.',
+    'job; otherwise this session. To send files with it, pass `attachments`: paths relative to the working ' +
+    'directory, or absolute, as attach_file takes them (a path that does not exist is an error). Telegram ' +
+    'gets each file itself, after the message; a push notification cannot carry files. It fails with a ' +
+    'clear error when no channel can deliver.',
   promptSnippet: "Notify the user immediately (push / Telegram); the only way to reach them with anything that is not a reply",
   promptGuidelines: [
     'Use assistant_notify only for things the user should know about now (a finished job, a result they asked to be told about, something urgent); never for routine chatter, and not to repeat what you are already replying.',
     'In a scheduled job, call assistant_notify with the result when the user should hear about it: a scheduled turn reaches the user ONLY through assistant_notify.',
+    "When the result is a file (a report, an export), pass it in assistant_notify's attachments so it reaches the user on Telegram itself; attach_file alone only offers it for download in the web app.",
   ],
 };
 

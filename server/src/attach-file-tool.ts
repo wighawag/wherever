@@ -69,39 +69,17 @@ export function createAttachFileTool(
         };
       }
 
-      let resolved = rawPath;
-      if (resolved.startsWith('~')) {
-        resolved = path.join(os.homedir(), resolved.slice(1));
-      } else if (!path.isAbsolute(resolved)) {
-        resolved = path.resolve(cwd, resolved);
-      } else {
-        resolved = path.resolve(resolved);
-      }
-
-      let size: number | null = null;
-      try {
-        const st = fs.statSync(resolved);
-        if (!st.isFile()) {
-          return {
-            content: [
-              { type: 'text' as const, text: `attach_file: not a regular file: ${resolved}` },
-            ],
-            details: undefined,
-            isError: true,
-          };
-        }
-        size = st.size;
-      } catch {
+      const found = resolveAttachPath(cwd, rawPath);
+      if (!found.ok) {
         return {
-          content: [
-            { type: 'text' as const, text: `attach_file: file not found: ${resolved}` },
-          ],
+          content: [{ type: 'text' as const, text: `attach_file: ${found.error}` }],
           details: undefined,
           isError: true,
         };
       }
+      const { size } = found;
 
-      const refusal = downloadRefusal(downloadsConfig(), size ?? 0, resolved);
+      const refusal = downloadRefusal(downloadsConfig(), size, found.lexical);
       if (refusal) {
         return {
           content: [{ type: 'text' as const, text: refusal }],
@@ -110,13 +88,7 @@ export function createAttachFileTool(
         };
       }
 
-      // Report the REAL path: it is what the download grant names, so the grant
-      // pins the file attached now, not whatever a symlink points at later.
-      try {
-        resolved = fs.realpathSync(resolved);
-      } catch {
-        // Raced away after the stat: keep the lexical path; the download will 404.
-      }
+      const resolved = found.path;
       const filename = path.basename(resolved);
       return {
         content: [
@@ -131,6 +103,43 @@ export function createAttachFileTool(
       };
     },
   } as unknown as ToolDefinition;
+}
+
+/**
+ * Resolve a file path the way `attach_file` does (shared with
+ * `assistant_notify`'s `attachments`): `~` is the home dir, a relative path is
+ * against `cwd`. It must name an existing regular file. `path` is the REAL path
+ * (it is what a download grant names, so it pins the file attached now, not
+ * whatever a symlink points at later); `lexical` is the resolved path before
+ * that. The error has no tool-name prefix.
+ */
+export function resolveAttachPath(
+  cwd: string,
+  rawPath: string,
+): { ok: true; path: string; lexical: string; size: number } | { ok: false; error: string } {
+  let resolved = rawPath;
+  if (resolved.startsWith('~')) {
+    resolved = path.join(os.homedir(), resolved.slice(1));
+  } else if (!path.isAbsolute(resolved)) {
+    resolved = path.resolve(cwd, resolved);
+  } else {
+    resolved = path.resolve(resolved);
+  }
+  let size: number;
+  try {
+    const st = fs.statSync(resolved);
+    if (!st.isFile()) return { ok: false, error: `not a regular file: ${resolved}` };
+    size = st.size;
+  } catch {
+    return { ok: false, error: `file not found: ${resolved}` };
+  }
+  let real = resolved;
+  try {
+    real = fs.realpathSync(resolved);
+  } catch {
+    // Raced away after the stat: keep the lexical path; the download will 404.
+  }
+  return { ok: true, path: real, lexical: resolved, size };
 }
 
 /** The slice of `WhereverConfig.downloads` the tool needs to predict a refusal. */

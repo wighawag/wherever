@@ -56,7 +56,7 @@ If a \`recall_search\` tool is available, use it to find what was said in earlie
 
 export const ASSISTANT_JOBS_AGENTS_MD = `# Assistant job
 
-You are an isolated job run by the assistant. Do the task you were given. Save anything worth keeping under \`../memory/\`. If the user should know the result, call \`assistant_notify\`. Do not start conversations: nobody is reading this session.
+You are an isolated job run by the assistant. Do the task you were given. Save anything worth keeping under \`../memory/\`. If the user should know the result, call \`assistant_notify\`. If the result is a file, pass its path in \`attachments\` so it reaches them with the notification. Do not start conversations: nobody is reading this session.
 `;
 
 export const ASSISTANT_GITIGNORE = `# Runtime lock held by the wherever server using this folder.

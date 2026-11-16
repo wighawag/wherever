@@ -460,31 +460,59 @@ export class TelegramReplies {
   private async sendAttachment(filePath: string, filename: string): Promise<void> {
     const chatId = this.chatId();
     if (!chatId || !this.upload) return;
-    const size = fileSize(filePath);
-    if (size === null) {
-      await this.call('sendMessage', { chat_id: chatId, text: attachmentFailedNote(filename, 'the file is no longer there') });
-      return;
-    }
-    const plan = attachmentPlan(filePath, size);
-    if (plan.kind === 'too-large') {
-      await this.call('sendMessage', { chat_id: chatId, text: attachmentTooLargeNote(filename, size, plan.limit, filePath) });
-      return;
-    }
-    if (plan.kind === 'photo') {
-      try {
-        await this.upload('sendPhoto', { chat_id: chatId }, 'photo', filePath, filename);
-        return;
-      } catch (err) {
-        // Telegram refuses some images as photos (dimensions, ratio): send the file as is.
-        this.log.log(`[wherever] telegram: sendPhoto refused ${filename} (${errMessage(err)}); sending it as a document`);
-      }
-    }
+    await sendTelegramAttachment({ call: this.call, upload: this.upload, log: this.log }, chatId, filePath, filename);
+  }
+}
+
+/** How one file went out on Telegram: the method that sent it, or why it was not (a note was sent instead). */
+export type TelegramAttachmentStatus = 'photo' | 'document' | 'missing' | 'too-large' | 'failed';
+
+/**
+ * Send one local file to `chatId`: `sendPhoto` / `sendDocument` by
+ * `attachmentPlan` (a photo Telegram refuses goes again as a document), else
+ * the clear note saying why not (gone, too large, the upload failed). Shared
+ * by an `attach_file` in a Telegram-routed reply and `assistant_notify`'s
+ * attachments; `replyTo` makes the file (or its note) a reply to that message.
+ * Throws only when the note itself cannot be sent.
+ */
+export async function sendTelegramAttachment(
+  deps: { call: BotCall; upload: BotUpload; log: Pick<Console, 'log' | 'warn'> },
+  chatId: string,
+  filePath: string,
+  filename: string,
+  replyTo?: number,
+): Promise<{ status: TelegramAttachmentStatus; error?: string }> {
+  const { call, upload, log } = deps;
+  const reply = replyTo === undefined ? undefined : { message_id: replyTo, allow_sending_without_reply: true };
+  const sendNote = (text: string) => call('sendMessage', { chat_id: chatId, text, ...(reply ? { reply_parameters: reply } : {}) });
+  // Multipart fields are strings: the reply parameters go as JSON.
+  const fields: Record<string, string> = { chat_id: chatId, ...(reply ? { reply_parameters: JSON.stringify(reply) } : {}) };
+  const size = fileSize(filePath);
+  if (size === null) {
+    await sendNote(attachmentFailedNote(filename, 'the file is no longer there'));
+    return { status: 'missing' };
+  }
+  const plan = attachmentPlan(filePath, size);
+  if (plan.kind === 'too-large') {
+    await sendNote(attachmentTooLargeNote(filename, size, plan.limit, filePath));
+    return { status: 'too-large' };
+  }
+  if (plan.kind === 'photo') {
     try {
-      await this.upload('sendDocument', { chat_id: chatId }, 'document', filePath, filename);
+      await upload('sendPhoto', fields, 'photo', filePath, filename);
+      return { status: 'photo' };
     } catch (err) {
-      this.log.warn(`[wherever] telegram: sending ${filename} failed: ${errMessage(err)}`);
-      await this.call('sendMessage', { chat_id: chatId, text: attachmentFailedNote(filename, errMessage(err)) });
+      // Telegram refuses some images as photos (dimensions, ratio): send the file as is.
+      log.log(`[wherever] telegram: sendPhoto refused ${filename} (${errMessage(err)}); sending it as a document`);
     }
+  }
+  try {
+    await upload('sendDocument', fields, 'document', filePath, filename);
+    return { status: 'document' };
+  } catch (err) {
+    log.warn(`[wherever] telegram: sending ${filename} failed: ${errMessage(err)}`);
+    await sendNote(attachmentFailedNote(filename, errMessage(err)));
+    return { status: 'failed', error: errMessage(err) };
   }
 }
 

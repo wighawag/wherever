@@ -4,7 +4,8 @@ import type { BeforeAgentStartEvent, ExtensionAPI, InlineExtension, ToolDefiniti
 import { isValidTimeZone } from './assistant-cron.js';
 import { ScheduleFileError, ScheduleValidationError, type JobMode, type ScheduleJob } from './assistant-schedule.js';
 import type { ListedJob, ScheduleListing } from './assistant-scheduler.js';
-import type { ChannelNotification, NotifyOutcome } from './assistant-channels.js';
+import type { ChannelFile, ChannelNotification, NotifyOutcome } from './assistant-channels.js';
+import { resolveAttachPath } from './attach-file-tool.js';
 import {
   ASSISTANT_NOTIFY_TEXT,
   ASSISTANT_SCHEDULE_ADD_TEXT,
@@ -283,12 +284,58 @@ export function notifySource(callerCwd: string, job: JobOrigin | null): string {
   return path.basename(path.resolve(cwd)) || cwd;
 }
 
+/**
+ * `attachments`, resolved against the caller's cwd exactly as `attach_file`
+ * does (`resolveAttachPath`), so a typo comes back to the agent before anything
+ * is sent. No download grant comes of it (download-grants.ts counts only
+ * `attach_file` results): the files go to the channels that carry files
+ * (Telegram), and the web serves them only once the agent also attaches them.
+ */
+export function notifyAttachments(cwd: string, raw: unknown): { ok: true; files: ChannelFile[] } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, files: [] };
+  if (!Array.isArray(raw) || raw.some((p) => typeof p !== 'string' || !p.trim())) {
+    return { ok: false, error: '"attachments" must be a list of file paths' };
+  }
+  const files: ChannelFile[] = [];
+  for (const p of raw as string[]) {
+    const found = resolveAttachPath(cwd, p.trim());
+    if (!found.ok) return { ok: false, error: `attachments: ${found.error}` };
+    files.push({ path: found.path, name: path.basename(found.path) });
+  }
+  return { ok: true, files };
+}
+
+const FILE_STATUS_TEXT: Record<string, string> = {
+  photo: 'sent as a photo',
+  document: 'sent as a document',
+  missing: 'was gone by the time it was sent (a note was sent instead)',
+  'too-large': 'is too large to send (a note was sent instead)',
+  failed: 'could not be sent (a note was sent instead)',
+};
+
+/** The per-file outcome lines of a notify's deliveries, or a note when files were given and no channel carried them. */
+function describeFileOutcomes(outcome: NotifyOutcome, files: ChannelFile[]): string {
+  if (files.length === 0) return '';
+  const carried = outcome.deliveries.filter((d) => d.result.ok && d.result.files);
+  if (carried.length === 0) return ' No channel that carries files (Telegram) delivered, so the attachments were not sent; use attach_file to offer them for download in the web app.';
+  return carried
+    .map((d) => {
+      const list = (d.result.ok && d.result.files) || [];
+      const parts = list.map((f) => `${f.name} ${FILE_STATUS_TEXT[f.status] ?? f.status}${f.error ? ` (${f.error})` : ''}`);
+      return ` Files on ${d.channel}: ${parts.join('; ')}.`;
+    })
+    .join('');
+}
+
 /** `assistant_notify`: deliver to every channel at once, with the tap target per `resolveNotifyTarget`. */
 export async function notifyOp(backend: AssistantNotifyBackend, caller: AssistantToolCaller, args: unknown): Promise<OpResult> {
   const a = (args ?? {}) as Record<string, unknown>;
   const title = str(a.title)?.trim();
   const body = str(a.body)?.trim() ?? '';
   if (!title) return { ok: false, error: 'a non-empty "title" is required' };
+  const attachments = notifyAttachments(caller.cwd, a.attachments);
+  if (!attachments.ok) return { ok: false, error: attachments.error };
+  const files = attachments.files;
   const navigateSessionId = str(a.navigateSessionId)?.trim() || undefined;
   const jobId = str(a.jobId)?.trim() || undefined;
   let callerJobId: string | null = null;
@@ -312,7 +359,7 @@ export async function notifyOp(backend: AssistantNotifyBackend, caller: Assistan
   });
   if (!target.sessionId) return { ok: false, error: 'this session has no id yet, so there is nothing to open; pass navigateSessionId' };
   const source = notifySource(caller.cwd, target.job);
-  const outcome = await backend.notify({ title, body, source, navigate: target.sessionId });
+  const outcome = await backend.notify({ title, body, source, navigate: target.sessionId, ...(files.length ? { files } : {}) });
   if (!outcome.ok) return { ok: false, error: outcome.error };
   const reached = outcome.deliveries
     .filter((d) => d.result.ok)
@@ -323,7 +370,8 @@ export async function notifyOp(backend: AssistantNotifyBackend, caller: Assistan
     ok: true,
     text:
       `Notified the user via ${reached.join(', ')}; tapping it opens session ${target.sessionId}${unknownJob}.` +
-      (failed.length > 0 ? ` Not delivered on: ${failed.join('; ')}.` : ''),
+      (failed.length > 0 ? ` Not delivered on: ${failed.join('; ')}.` : '') +
+      describeFileOutcomes(outcome, files),
     details: { target, source, deliveries: outcome.deliveries },
   };
 }
@@ -506,6 +554,11 @@ export function createNotifyTool(access: () => AssistantNotifyAccess, caller: ()
       body: Type.String({ description: 'The message itself: one or two sentences the user can act on.' }),
       navigateSessionId: Type.Optional(Type.String({ description: 'The session id a tap should open (default: see the description).' })),
       jobId: Type.Optional(Type.String({ description: 'The scheduled job this is about; a tap then opens the session that scheduled it.' })),
+      attachments: Type.Optional(
+        Type.Array(Type.String(), {
+          description: 'Files to send with the notification: paths relative to the working directory, or absolute (as attach_file takes them).',
+        }),
+      ),
     }),
     async execute(_toolCallId: string, params: unknown) {
       const a = access();
