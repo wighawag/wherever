@@ -15,6 +15,7 @@ import {
 	shouldSignalConversationMode,
 } from './core/conversation-mode';
 import {buildAttachmentMessage} from './core/attachments';
+import {shouldDropStaleHash} from './core/view-mode';
 import {fileStillReadable, postUpload} from './core/post-upload';
 import {adoptTokenFromUrlOnce} from './core/token-adoption';
 import {timezoneReportFrame} from './core/timezone-report';
@@ -999,6 +1000,7 @@ export function switchSession(
 	model?: string,
 ) {
 	client.switchSession(sessionFile, cwd, model);
+	dropStaleHash(sessionFile);
 }
 
 // Fork the given session at a specific user-message entry (pi's `/fork`,
@@ -1085,22 +1087,23 @@ export function resetAssistant() {
 export function leaveSession() {
 	client.leaveSession();
 	setCurrentSession(null);
-	// While connected, the page rewrites the hash as the session changes. While
-	// disconnected it cannot (an empty session then is a boot, not a leave), so a
-	// hash still naming the left session would be auto-joined on reconnect and
-	// pull the user back to it. Drop it here, without a history entry or a
-	// hashchange.
-	if (
-		typeof window !== 'undefined' &&
-		window.location.hash &&
-		!get(state).connected
-	) {
-		history.replaceState(
-			history.state,
-			'',
-			window.location.pathname + window.location.search,
-		);
+	dropStaleHash();
+}
+
+// See shouldDropStaleHash. Without a history entry or a hashchange.
+function dropStaleHash(target?: string) {
+	if (typeof window === 'undefined') return;
+	const hashId = window.location.hash
+		? decodeURIComponent(window.location.hash.slice(1))
+		: '';
+	if (!shouldDropStaleHash({connected: get(state).connected, hashId, target})) {
+		return;
 	}
+	history.replaceState(
+		history.state,
+		'',
+		window.location.pathname + window.location.search,
+	);
 }
 
 export function loadMoreHistory() {

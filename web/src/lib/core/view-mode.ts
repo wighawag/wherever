@@ -94,3 +94,25 @@ export function decideHashJoin(i: HashJoinInputs): 'skip' | 'join' | 'failed' {
 		return i.currentSessionId ? 'skip' : 'failed';
 	return 'join';
 }
+
+export interface StaleHashInputs {
+	connected: boolean;
+	/** Session id or file from the URL hash ('' when there is none). */
+	hashId: string;
+	/** The session the user is switching to; undefined for a leave. */
+	target?: string;
+}
+
+/**
+ * Whether a leave or switch must drop the URL hash itself.
+ *
+ * While connected the page rewrites the hash as the session changes, so there
+ * is nothing to do. While disconnected it cannot (an empty session then is a
+ * boot, not a leave), so a hash still naming the session the user moved away
+ * from would be auto-joined once connected: after a leave, or after the switched
+ * to session failed to load, pulling the user back to the old session. A hash
+ * already naming the switch target is kept.
+ */
+export function shouldDropStaleHash(i: StaleHashInputs): boolean {
+	return !i.connected && !!i.hashId && i.hashId !== i.target;
+}

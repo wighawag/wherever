@@ -3,6 +3,7 @@ import {
 	decideHashJoin,
 	isSearchActive,
 	isSessionPendingOpen,
+	shouldDropStaleHash,
 } from './view-mode.js';
 
 // Regression: the composer showed the search input + "Search" button while the
@@ -128,5 +129,35 @@ describe('decideHashJoin', () => {
 	it('skips with no hash or no connection', () => {
 		expect(decideHashJoin({...h, hashId: ''})).toBe('skip');
 		expect(decideHashJoin({...h, connected: false})).toBe('skip');
+	});
+});
+
+// Regression: leaving or switching session while disconnected left the hash on
+// the old session, which the auto-join then reopened (pulling the user back).
+describe('shouldDropStaleHash', () => {
+	it('drops the hash of the left session while disconnected', () => {
+		expect(shouldDropStaleHash({connected: false, hashId: 'sid-A'})).toBe(true);
+		expect(
+			shouldDropStaleHash({
+				connected: false,
+				hashId: 'sid-A',
+				target: '/x/B.jsonl',
+			}),
+		).toBe(true);
+	});
+
+	it('keeps a hash that already names the switch target', () => {
+		expect(
+			shouldDropStaleHash({
+				connected: false,
+				hashId: '/x/B.jsonl',
+				target: '/x/B.jsonl',
+			}),
+		).toBe(false);
+	});
+
+	it('does nothing while connected (the page rewrites the hash) or with no hash', () => {
+		expect(shouldDropStaleHash({connected: true, hashId: 'sid-A'})).toBe(false);
+		expect(shouldDropStaleHash({connected: false, hashId: ''})).toBe(false);
 	});
 });
