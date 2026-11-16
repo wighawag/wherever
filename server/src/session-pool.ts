@@ -1163,6 +1163,12 @@ function alignFromEnd(count: number, origins: readonly ReplyOrigin[]): Array<Rep
 export class SessionPool {
   private sessions = new Map<string, TrackedSession>();
   private pendingSessions = new Map<string, Promise<{ tracked: TrackedSession; error?: string }>>();
+  /**
+   * Set by `disposeAll`. Background work started earlier (the startup
+   * session-index warm-up) checks it and stops instead of touching the config
+   * of a pool that is gone, possibly under a different environment by then.
+   */
+  private disposed = false;
   private pendingCreateSessions = new Map<string, Promise<{ tracked: TrackedSession; error?: string; sessionFile?: string }>>();
   /**
    * The model/auth runtime shared by every server session (auth.json +
@@ -1431,6 +1437,7 @@ export class SessionPool {
   private warmSessionIndex(): void {
     void this.listSessions('default')
       .then((folders) => {
+        if (this.disposed) return;
         const count = folders.reduce((n, f) => n + f.sessions.length, 0);
         const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024);
         console.log(`[wherever] session index warm: ${count} session(s) listed, RSS ${rssMb} MB`);
@@ -3291,6 +3298,7 @@ export class SessionPool {
   }
 
   async disposeAll(): Promise<void> {
+    this.disposed = true;
     const sessionIds = Array.from(this.sessions.keys());
     // In parallel: each teardown is bounded on its own, so shutdown takes at most
     // one extension-shutdown timeout, not one per session.
