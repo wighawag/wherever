@@ -59,7 +59,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const devStaticPath = path.resolve(__dirname, '../../web/build');
 const prodStaticPath = path.resolve(__dirname, '../public');
-const staticDir = fs.existsSync(devStaticPath) ? devStaticPath : prodStaticPath;
+// TEST-ONLY lever: `WHEREVER_TEST_STATIC_DIR` serves the web app from that
+// directory, so a test of static serving does not depend on a web build being
+// present (CI's server jobs build none). Unset (every real deployment) it is a
+// no-op.
+const staticDir =
+  process.env.WHEREVER_TEST_STATIC_DIR || (fs.existsSync(devStaticPath) ? devStaticPath : prodStaticPath);
 
 // When true (set via --debug), the served dashboard index.html is rewritten so
 // eruda's custom-plugin loader is enabled. Plugin loading is the only eruda

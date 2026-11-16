@@ -1,6 +1,8 @@
 import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
 import zlib from 'node:zlib';
 import { WebSocket } from 'ws';
 import { startHarness, type Harness } from './harness.js';
@@ -34,8 +36,18 @@ function toolResultLine(id: string, toolCallId: string, images: { mimeType: stri
   });
 }
 
+// The static-compression test serves this fixture instead of the web build,
+// which CI's server jobs never produce (there `GET /` was a 500).
+let staticDir: string;
+
 beforeAll(async () => {
-  h = await startHarness({ initial: { kind: 'reply', text: 'hi there' }, idleTimeoutMs: 0 });
+  staticDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-slow-link-static-'));
+  fs.writeFileSync(path.join(staticDir, 'index.html'), `<!doctype html><html><body>${'<p>wherever app shell</p>'.repeat(200)}</body></html>`);
+  h = await startHarness({
+    initial: { kind: 'reply', text: 'hi there' },
+    idleTimeoutMs: 0,
+    env: { WHEREVER_TEST_STATIC_DIR: staticDir },
+  });
   const c = await h.connect();
   await c.waitForType('connected');
   c.send({ type: 'session_new', cwd: c.workspace });
@@ -67,6 +79,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await h?.cleanup();
+  if (staticDir) fs.rmSync(staticDir, { recursive: true, force: true });
 });
 
 /** Load the session over a raw socket and return every raw text frame until message_history. */
