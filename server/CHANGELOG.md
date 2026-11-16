@@ -1,5 +1,17 @@
 # wherever-dev
 
+## 0.24.0
+
+### Minor Changes
+
+- 6f4cc84: `assistant_notify` takes optional `attachments` (file paths, resolved like `attach_file`'s, validated at call time). Telegram sends each file after the notification message, as a reply to it (photo or document, or the existing too-large / missing / failed note), without ever failing the notify; the tool result reports each file's outcome. Web Push is unchanged. The CLI twin's schema and text are updated to match.
+
+### Patch Changes
+
+- 32187fa: Assistant hardening. A CLI bridge reconnect whose `cli_register` lands before the old socket's close handler no longer gets unregistered by that stale close (the pool only tears down the entry the closing socket owns, and an idle timer only evicts the entry it was armed for), and a reconnect that lands while the old socket's handoff is rebuilding a server agent takes that agent over instead of being overwritten by it. An `assistantFolder` configured through a symlink now works: the pointer move, the pointer record, the re-seed and the timezone line compare folders with symlinks resolved, so a terminal `pi` (which reports its real cwd) becomes the assistant session, and `assistant_info` sends the canonical folder. The self-signed certificate fallback now says plainly when `openssl` is not on PATH, and the TLS tests fail fast with one clear message instead of `spawnSync openssl ENOENT`. `Access-Control-Allow-Methods` advertises `DELETE` only while the Web Push routes exist, so the header is unchanged with the assistant off.
+- 838fbb1: Switching session while disconnected no longer falls back to the old session when the new one fails to load. The URL hash still named the session being left (the page only rewrites it while connected), so once the switched to session errored, the hash auto-join reopened the old one. Switching now drops that stale hash like leaving already did, and the decision is a unit-tested helper (`shouldDropStaleHash`).
+- 58bb85d: Switching session while the previous one is still reconnecting no longer snaps back to it. Coming back to the PWA reconnects and rejoins the session that was open; if the user opened another session or created a new one before that finished, the rejoin landed afterwards and switched the view back. A switch is now the newer intent and cancels the rejoin: a session load or create requested while the socket is still opening is sent once it opens (instead of the rejoin, and it used to be lost), the late reply of an abandoned load is dropped (a create in flight used to accept it as its own), and the page no longer auto-joins a URL hash still naming the left session while a create is in flight or after leaving while disconnected.
+
 ## 0.23.0
 
 ### Minor Changes
