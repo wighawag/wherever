@@ -1,5 +1,17 @@
 # @wherever-dev/pi
 
+## 0.7.0
+
+### Minor Changes
+
+- 6f4cc84: `assistant_notify` takes optional `attachments` (file paths, resolved like `attach_file`'s, validated at call time). Telegram sends each file after the notification message, as a reply to it (photo or document, or the existing too-large / missing / failed note), without ever failing the notify; the tool result reports each file's outcome. Web Push is unchanged. The CLI twin's schema and text are updated to match.
+
+### Patch Changes
+
+- 32187fa: The CLI timezone line now appears in an assistant folder reached through a symlink: the extension compares its cwd with the server's `assistantFolder` with symlinks resolved on both sides.
+- Updated dependencies [58bb85d]
+  - @wherever-dev/client@0.9.1
+
 ## 0.6.1
 
 ### Patch Changes
