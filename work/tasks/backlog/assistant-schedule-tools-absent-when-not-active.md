@@ -3,6 +3,7 @@ title: Assistant schedule tools are absent on a server whose assistant is not ac
 slug: assistant-schedule-tools-absent-when-not-active
 blockedBy: []
 covers: []
+needsAnswers: true
 ---
 
 ## What to build
