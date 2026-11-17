@@ -1192,7 +1192,7 @@ async function main(): Promise<void> {
   // timezone line in the assistant folder: registered ONLY while the assistant
   // is ACTIVE (configured AND this server holds the folder lock). The backend is
   // the scheduler, set below once it has started; in that short boot window the
-  // tools answer "not active". A server refused by the lock (or a lock error)
+  // tools answer "the assistant scheduler is still starting". A server refused by the lock (or a lock error)
   // sets NO session hooks, so its sessions are exactly as with the assistant
   // unset (decision of assistant-schedule-tools-absent-when-not-active,
   // reversing assistant-schedule-tools-server decision 4). The CLI twin ops
