@@ -9,7 +9,7 @@ import { startHarness, type Harness } from './harness.js';
  * The scheduler against the REAL server: it runs only while the assistant is
  * ACTIVE. With `assistantFolder` unset, or the folder lock held by another
  * server, it never starts: the state dir is left exactly as it was (no run log,
- * no timezone state) and a due job in `schedule.json` never fires. With it
+ * no timezone state, no first-seen state) and a due job in `schedule.json` never fires. With it
  * active, the timezone state is initialised and an `at: "now"` isolated job
  * runs in `jobs/`, recorded in the run log.
  *
@@ -96,6 +96,7 @@ describe('assistant scheduler (real server)', () => {
     await new Promise((r) => setTimeout(r, 300));
     await h.stop();
     expect(snapshotDir(stateDir)).toBe(before);
+    expect(fs.existsSync(path.join(stateDir, 'assistant-first-seen.json'))).toBe(false);
   }, 60_000);
 
   it('lock held by another server: the refused server never starts its scheduler', async () => {
@@ -129,6 +130,9 @@ describe('assistant scheduler (real server)', () => {
     const entry = JSON.parse(fs.readFileSync(runsFile, 'utf8').trim().split('\n')[0]);
     expect(entry).toMatchObject({ jobId: 'iso', mode: 'isolated', outcome: 'fired' });
     expect(entry.sessionFile).toEqual(expect.any(String));
+    // When the job was first seen is persisted in the state dir.
+    const seen = JSON.parse(fs.readFileSync(path.join(stateDir, 'assistant-first-seen.json'), 'utf8'));
+    expect(seen.jobs.iso).toMatchObject({ enabled: true, spec: [null, 'now', null] });
     // The intent file is never written by the server.
     expect(JSON.parse(fs.readFileSync(path.join(folder, 'schedule.json'), 'utf8'))).toEqual({ jobs: [NOW_JOB] });
     // The job reached the model.

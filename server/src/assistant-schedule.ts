@@ -17,8 +17,9 @@ import {
  * The assistant's SCHEDULE (spec `assistant-session-and-channels`, ADR 0015):
  * the job format and its validation, the pure next-run planner, the store that
  * reads and writes `<assistantFolder>/schedule.json`, the append-only run log
- * `<stateDir>/assistant-runs.jsonl`, and the user's timezone state
- * `<stateDir>/assistant-timezone.json`. The firing loop is
+ * `<stateDir>/assistant-runs.jsonl`, the user's timezone state
+ * `<stateDir>/assistant-timezone.json`, and when each job was first seen
+ * `<stateDir>/assistant-first-seen.json`. The firing loop is
  * `assistant-scheduler.ts`.
  *
  * Intent vs run state (ADR 0015): `schedule.json` holds only what the user (or
@@ -37,6 +38,7 @@ import {
 export const SCHEDULE_FILE = 'schedule.json';
 export const RUN_LOG_FILE = 'assistant-runs.jsonl';
 export const TIMEZONE_FILE = 'assistant-timezone.json';
+export const FIRST_SEEN_FILE = 'assistant-first-seen.json';
 
 /** Default restart grace window: a missed run is caught up only if it is this recent. */
 export const DEFAULT_GRACE_MS = 60 * 60 * 1000;
@@ -276,7 +278,7 @@ export interface PlanOptions {
   /**
    * Occurrences at or before this instant are never "missed". The scheduler sets
    * it to when it first saw the job (a job with no run yet) or when it last saw
-   * the job re-enabled or edited, so a job that never existed (or was off) for a
+   * the job re-enabled or edited (both persisted, `FirstSeenStore`), so a job that never existed (or was off) for a
    * past occurrence does not catch up on it. Undefined with no run yet = now.
    */
   since?: number;
@@ -564,4 +566,131 @@ export class UserTimezone {
       } catch {}
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// When the scheduler first saw each job (server state)
+
+/** A job's time spec as compared for "edited": `[cron, at, tz]`, null when unset. */
+export type JobTimeSpec = [string | null, string | null, string | null];
+
+export function jobTimeSpec(job: ScheduleJob): JobTimeSpec {
+  return [job.cron ?? null, job.at ?? null, job.tz ?? null];
+}
+
+/** The base the scheduler measures a job's missed runs from, when it has no newer run entry. */
+export interface SeenJob {
+  /** When the scheduler first saw the job (ms). */
+  firstSeen: number;
+  /** Its `enabled` the last time it was seen. */
+  enabled: boolean;
+  /** Its time spec the last time it was seen. */
+  spec: JobTimeSpec;
+  /** When it was last seen re-enabled or with its time spec edited (ms). */
+  changedAt?: number;
+}
+
+interface FirstSeenFileEntry {
+  firstSeen: string;
+  enabled: boolean;
+  spec: JobTimeSpec;
+  changedAt?: string;
+}
+
+/**
+ * `<stateDir>/assistant-first-seen.json` = `{ "jobs": { "<id>": { firstSeen,
+ * enabled, spec, changedAt? } } }` (times ISO): when the scheduler first saw
+ * each job, and when it last saw one re-enabled or its `cron` / `at` / `tz`
+ * edited. Persisting it lets a brand-new job's first run, missed while the
+ * server was down, be caught up by the normal grace rule (task
+ * `scheduler-catches-up-a-missed-first-run`, reversing the accepted cost of
+ * `assistant-scheduler` decision 4). Server state, never in `schedule.json`.
+ *
+ * A missing file is empty (first start). A file or entry that does not parse is
+ * logged as a warning and ignored, so those jobs count from when they are seen
+ * now (the behaviour before this file existed) and every valid job still runs;
+ * the next save replaces it. Saved atomically (temp file + rename), like the
+ * timezone state.
+ */
+export class FirstSeenStore {
+  readonly filePath: string;
+
+  constructor(stateDir: string) {
+    this.filePath = path.join(stateDir, FIRST_SEEN_FILE);
+  }
+
+  load(): Map<string, SeenJob> {
+    const out = new Map<string, SeenJob>();
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.filePath, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') warnFirstSeen(`${this.filePath} is unreadable (${(err as Error).message}); jobs count from now`);
+      return out;
+    }
+    let doc: unknown;
+    try {
+      doc = JSON.parse(raw);
+    } catch (err) {
+      warnFirstSeen(`${this.filePath} is not valid JSON (${(err as Error).message}); jobs count from now`);
+      return out;
+    }
+    const jobs = (doc as { jobs?: unknown } | null)?.jobs;
+    if (!isPlainObject(jobs)) {
+      warnFirstSeen(`${this.filePath} has no "jobs" object; jobs count from now`);
+      return out;
+    }
+    for (const [id, value] of Object.entries(jobs)) {
+      const entry = parseSeenEntry(value);
+      if (entry) out.set(id, entry);
+      else warnFirstSeen(`${this.filePath}: the entry for job ${JSON.stringify(id)} is malformed and ignored; it counts from now`);
+    }
+    return out;
+  }
+
+  save(seen: ReadonlyMap<string, SeenJob>): void {
+    const jobs: Record<string, FirstSeenFileEntry> = {};
+    for (const [id, s] of seen) {
+      jobs[id] = {
+        firstSeen: new Date(s.firstSeen).toISOString(),
+        enabled: s.enabled,
+        spec: s.spec,
+        ...(s.changedAt !== undefined ? { changedAt: new Date(s.changedAt).toISOString() } : {}),
+      };
+    }
+    const dir = path.dirname(this.filePath);
+    const tmp = path.join(dir, `.${FIRST_SEEN_FILE}.${process.pid}.tmp`);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify({ jobs }, null, 2) + '\n', 'utf8');
+      fs.renameSync(tmp, this.filePath);
+    } catch (err) {
+      console.error(`[wherever] assistant scheduler: could not write ${this.filePath}: ${(err as Error).message}`);
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch {}
+    }
+  }
+}
+
+function warnFirstSeen(message: string): void {
+  console.warn(`[wherever] assistant scheduler: ${message}`);
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function parseSeenEntry(v: unknown): SeenJob | null {
+  if (!isPlainObject(v)) return null;
+  const firstSeen = typeof v.firstSeen === 'string' ? Date.parse(v.firstSeen) : NaN;
+  if (!Number.isFinite(firstSeen) || typeof v.enabled !== 'boolean') return null;
+  const spec = v.spec;
+  if (!Array.isArray(spec) || spec.length !== 3 || !spec.every((x) => x === null || typeof x === 'string')) return null;
+  let changedAt: number | undefined;
+  if (v.changedAt !== undefined) {
+    changedAt = typeof v.changedAt === 'string' ? Date.parse(v.changedAt) : NaN;
+    if (!Number.isFinite(changedAt)) return null;
+  }
+  return { firstSeen, enabled: v.enabled, spec: spec as JobTimeSpec, ...(changedAt !== undefined ? { changedAt } : {}) };
 }

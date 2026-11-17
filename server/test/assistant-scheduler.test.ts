@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,7 +17,8 @@ import {
  * clears the leftover queue, isolated jobs start at once in `jobs/`, a CLI
  * session without `agent_settled` falls back to `agent_end`, malformed entries
  * and `!` prompts never start a turn, hand edits are picked up, and restart
- * catch-up follows the grace window. Temp assistant/state dirs; the real
+ * catch-up follows the grace window, including a new job's first run (the
+ * persisted first-seen base). Temp assistant/state dirs; the real
  * ~/.wherever is asserted untouched.
  */
 
@@ -490,5 +491,201 @@ describe('AssistantScheduler: cron timing, restart grace, timezones', () => {
       brief: ['America/New_York', '2026-06-01T12:00:00.000Z'],
       pinned: ['Europe/Paris', '2026-06-01T06:00:00.000Z'],
     });
+  });
+});
+
+describe('AssistantScheduler: a persisted first-seen base (catch-up of a first run)', () => {
+  const FIRST_SEEN = 'assistant-first-seen.json';
+  const nine = (extra: Record<string, unknown> = {}) => ({ id: 'nine', name: 'Nine', cron: '0 9 * * *', mode: 'inline', prompt: 'remind me', enabled: true, ...extra });
+  const scheduleBytes = (folder: string) => fs.readFileSync(path.join(folder, 'schedule.json'), 'utf8');
+  const seenFile = (stateDir: string) => JSON.parse(fs.readFileSync(path.join(stateDir, FIRST_SEEN), 'utf8'));
+  const writeRuns = (stateDir: string, entries: unknown[]) =>
+    fs.writeFileSync(path.join(stateDir, 'assistant-runs.jsonl'), entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
+
+  /** Stop `s`, move the clock, and start a fresh scheduler on the same dirs (a server restart). */
+  async function restart(s: AssistantScheduler, ctx: { clock: FakeClock; make: () => AssistantScheduler }, at: string) {
+    s.stop();
+    ctx.clock.t = Date.parse(at);
+    const again = ctx.make();
+    cleanups.push(() => again.stop());
+    await again.start();
+    await again.idle();
+    return again;
+  }
+
+  it('seen at 8:58, down 8:59 to 9:10: the 9:00 first run fires ONCE on restart', async () => {
+    const ctx = setup({ now: Date.parse('2026-06-01T08:58:00Z') });
+    const { scheduler, controller, folder, stateDir, pool, current } = ctx;
+    writeJobs(folder, [nine(), { id: 'once', name: 'Once', at: '2026-06-01T09:00:00Z', mode: 'isolated', prompt: 'x', enabled: true }]);
+    const bytes = scheduleBytes(folder);
+    await scheduler.start();
+    await scheduler.idle();
+    expect(controller.sends).toEqual([]);
+    expect(seenFile(stateDir).jobs.nine.firstSeen).toBe('2026-06-01T08:58:00.000Z');
+    const again = await restart(scheduler, ctx, '2026-06-01T09:10:00Z');
+    expect(controller.sends.map((s) => s.origin)).toEqual(['schedule:nine']);
+    expect(pool.sent.map((s) => s.origin)).toEqual(['schedule:once']);
+    expect(runLog(stateDir).map((e) => [e.jobId, e.outcome, e.scheduledFor])).toEqual(
+      expect.arrayContaining([
+        ['nine', 'fired', '2026-06-01T09:00:00.000Z'],
+        ['once', 'fired', '2026-06-01T09:00:00.000Z'],
+      ]),
+    );
+    expect(runLog(stateDir)).toHaveLength(2);
+    // Once only.
+    settle(pool, current);
+    await again.tick();
+    await again.idle();
+    expect(controller.sends).toHaveLength(1);
+    expect(scheduleBytes(folder)).toBe(bytes);
+  });
+
+  it('down until 11:00 (outside the 1 h grace): the first run is skipped and recorded', async () => {
+    const ctx = setup({ now: Date.parse('2026-06-01T08:58:00Z') });
+    const { scheduler, controller, folder, stateDir, pool } = ctx;
+    writeJobs(folder, [nine(), { id: 'once', name: 'Once', at: '2026-06-01T09:00:00Z', mode: 'isolated', prompt: 'x', enabled: true }]);
+    const bytes = scheduleBytes(folder);
+    await scheduler.start();
+    await scheduler.idle();
+    const again = await restart(scheduler, ctx, '2026-06-01T11:00:00Z');
+    expect(controller.sends).toEqual([]);
+    expect(pool.sent).toEqual([]);
+    expect(runLog(stateDir).map((e) => [e.jobId, e.outcome, e.scheduledFor])).toEqual(
+      expect.arrayContaining([
+        ['nine', 'skipped', '2026-06-01T09:00:00.000Z'],
+        ['once', 'skipped', '2026-06-01T09:00:00.000Z'],
+      ]),
+    );
+    expect(runLog(stateDir)).toHaveLength(2);
+    const states = Object.fromEntries(again.list().jobs.map((j) => [j.job.id, [j.state, j.next]]));
+    expect(states.nine).toEqual(['waiting', '2026-06-02T09:00:00.000Z']);
+    expect(states.once[0]).toBe('done');
+    expect(scheduleBytes(folder)).toBe(bytes);
+  });
+
+  it('a re-enable resets the base, and the reset survives a restart', async () => {
+    const ctx = setup({ now: Date.parse('2026-06-01T08:00:00Z') });
+    const { scheduler, controller, folder, stateDir } = ctx;
+    writeRuns(stateDir, [{ jobId: 'nine', time: '', scheduledFor: '2026-05-31T09:00:00.000Z', mode: 'inline', outcome: 'fired' }]);
+    writeJobs(folder, [nine({ enabled: false })]);
+    await scheduler.start();
+    await scheduler.idle();
+    // Re-enabled at 9:20, after today's 9:00: today's run was not on, so it is not missed.
+    ctx.clock.t = Date.parse('2026-06-01T09:20:00Z');
+    writeJobs(folder, [nine()]);
+    await scheduler.tick();
+    await scheduler.idle();
+    expect(controller.sends).toEqual([]);
+    const again = await restart(scheduler, ctx, '2026-06-01T09:30:00Z');
+    expect(controller.sends).toEqual([]);
+    expect(runLog(stateDir)).toHaveLength(1);
+    expect(again.list().jobs[0].next).toBe('2026-06-02T09:00:00.000Z');
+  });
+
+  it('an edit of the time spec resets the base, and the reset survives a restart', async () => {
+    const ctx = setup({ now: Date.parse('2026-06-01T08:00:00Z') });
+    const { scheduler, controller, folder, stateDir } = ctx;
+    writeRuns(stateDir, [{ jobId: 'nine', time: '', scheduledFor: '2026-05-31T10:00:00.000Z', mode: 'inline', outcome: 'fired' }]);
+    writeJobs(folder, [nine({ cron: '0 10 * * *' })]);
+    await scheduler.start();
+    await scheduler.idle();
+    ctx.clock.t = Date.parse('2026-06-01T09:20:00Z');
+    writeJobs(folder, [nine()]);
+    await scheduler.tick();
+    await scheduler.idle();
+    const again = await restart(scheduler, ctx, '2026-06-01T09:30:00Z');
+    expect(controller.sends).toEqual([]);
+    expect(again.list().jobs[0].next).toBe('2026-06-02T09:00:00.000Z');
+  });
+
+  it('an edit made while the server was down resets the base to when it is first seen', async () => {
+    const ctx = setup({ now: Date.parse('2026-06-01T08:00:00Z') });
+    const { scheduler, controller, folder, stateDir } = ctx;
+    writeRuns(stateDir, [{ jobId: 'nine', time: '', scheduledFor: '2026-05-31T10:00:00.000Z', mode: 'inline', outcome: 'fired' }]);
+    writeJobs(folder, [nine({ cron: '0 10 * * *' })]);
+    await scheduler.start();
+    await scheduler.idle();
+    scheduler.stop();
+    writeJobs(folder, [nine()]);
+    const again = await restart(scheduler, ctx, '2026-06-01T09:30:00Z');
+    expect(controller.sends).toEqual([]);
+    expect(again.list().jobs[0].next).toBe('2026-06-02T09:00:00.000Z');
+    expect(seenFile(stateDir).jobs.nine.changedAt).toBe('2026-06-01T09:30:00.000Z');
+  });
+
+  it('a job hand-added while the server was down starts from when it is first seen', async () => {
+    const ctx = setup({ now: Date.parse('2026-06-01T08:00:00Z') });
+    const { scheduler, controller, folder } = ctx;
+    await scheduler.start();
+    await scheduler.idle();
+    scheduler.stop();
+    writeJobs(folder, [nine()]);
+    const again = await restart(scheduler, ctx, '2026-06-01T09:10:00Z');
+    expect(controller.sends).toEqual([]);
+    expect(again.list().jobs[0].next).toBe('2026-06-02T09:00:00.000Z');
+  });
+
+  it('entries for jobs removed from schedule.json are pruned; an unreadable schedule prunes nothing', async () => {
+    const ctx = setup({ now: Date.parse('2026-06-01T08:00:00Z') });
+    const { scheduler, folder, stateDir } = ctx;
+    writeJobs(folder, [nine(), nine({ id: 'other' })]);
+    await scheduler.start();
+    await scheduler.idle();
+    expect(Object.keys(seenFile(stateDir).jobs).sort()).toEqual(['nine', 'other']);
+    // Mid-edit (unreadable): the bases are kept.
+    fs.writeFileSync(path.join(folder, 'schedule.json'), '{ "jobs": [ half-typed');
+    await scheduler.tick();
+    expect(Object.keys(seenFile(stateDir).jobs).sort()).toEqual(['nine', 'other']);
+    writeJobs(folder, [nine()]);
+    await scheduler.tick();
+    expect(Object.keys(seenFile(stateDir).jobs)).toEqual(['nine']);
+  });
+
+  it('a corrupt first-seen file degrades to today (from now), with a warning, never blocking valid jobs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanups.push(() => warn.mockRestore());
+    const { scheduler, controller, folder, stateDir } = setup({ now: Date.parse('2026-06-01T09:10:00Z') });
+    fs.writeFileSync(path.join(stateDir, FIRST_SEEN), '{ not json');
+    writeJobs(folder, [nine(), inline('now')]);
+    await scheduler.start();
+    await scheduler.idle();
+    expect(warn.mock.calls.some((c) => String(c[0]).includes(FIRST_SEEN))).toBe(true);
+    // `nine` counts from now (9:10), so 9:00 is not caught up; the `at: "now"` job fires.
+    expect(controller.sends.map((s) => s.origin)).toEqual(['schedule:now']);
+    expect(scheduler.list().jobs.find((j) => j.job.id === 'nine')!.next).toBe('2026-06-02T09:00:00.000Z');
+    // Rewritten valid on the next change.
+    expect(Object.keys(seenFile(stateDir).jobs).sort()).toEqual(['nine', 'now']);
+  });
+
+  it('a malformed entry in the first-seen file is ignored with a warning; the others still count', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanups.push(() => warn.mockRestore());
+    const ctx = setup({ now: Date.parse('2026-06-01T09:10:00Z') });
+    const { scheduler, controller, folder, stateDir } = ctx;
+    fs.writeFileSync(
+      path.join(stateDir, FIRST_SEEN),
+      JSON.stringify({
+        jobs: {
+          nine: { firstSeen: '2026-06-01T08:58:00.000Z', enabled: true, spec: ['0 9 * * *', null, null] },
+          bad: { firstSeen: 'whenever', enabled: true, spec: ['0 9 * * *', null, null] },
+        },
+      }),
+    );
+    writeJobs(folder, [nine(), nine({ id: 'bad' })]);
+    await scheduler.start();
+    await scheduler.idle();
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('"bad"'))).toBe(true);
+    expect(controller.sends.map((s) => s.origin)).toEqual(['schedule:nine']);
+  });
+
+  it('a missing first-seen file is today: no warning, the job counts from when it is first seen', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    cleanups.push(() => warn.mockRestore());
+    const { scheduler, controller, folder } = setup({ now: Date.parse('2026-06-01T09:10:00Z') });
+    writeJobs(folder, [nine()]);
+    await scheduler.start();
+    await scheduler.idle();
+    expect(warn).not.toHaveBeenCalled();
+    expect(controller.sends).toEqual([]);
   });
 });

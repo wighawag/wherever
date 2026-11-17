@@ -2,16 +2,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   DEFAULT_GRACE_MS,
+  FirstSeenStore,
   RunLog,
   ScheduleStore,
   UserTimezone,
   effectiveTimeZone,
+  jobTimeSpec,
   planJob,
   type InvalidJob,
   type JobPlan,
   type RunEntry,
   type ScheduleJob,
   type ScheduleStoreOptions,
+  type SeenJob,
   type ValidJob,
   type ValidatedSchedule,
 } from './assistant-schedule.js';
@@ -40,8 +43,8 @@ import {
  *
  * Exists only while the assistant is ACTIVE (configured AND the folder lock is
  * held): `server/src/index.ts` builds it beside the controller. Nothing is
- * written (no run log, no timezone state) and no timer is armed before
- * `start()`.
+ * written (no run log, no timezone state, no first-seen state) and no timer is
+ * armed before `start()`.
  *
  * Seams: the pure planner `planJob` (assistant-schedule.ts), the
  * `ScheduleStore`, and this loop with an injected clock (`SchedulerClock`),
@@ -143,14 +146,6 @@ export interface ScheduleListing {
   invalid: InvalidJob[];
 }
 
-interface SeenJob {
-  firstSeen: number;
-  enabled: boolean;
-  fingerprint: string;
-  /** When this process last saw the job re-enabled or its time spec edited. */
-  changedAt?: number;
-}
-
 interface RunMark {
   at: number;
   /** An `agent_start` was seen (the run is real, so only a settle ends it). */
@@ -170,6 +165,9 @@ export class AssistantScheduler {
 
   private runLog: RunLog | null = null;
   private timezone: UserTimezone | null = null;
+  private firstSeen: FirstSeenStore | null = null;
+  /** `seen` differs from what was last saved to the first-seen file. */
+  private seenDirty = false;
   private started = false;
   private stopped = false;
   private cancelTimer: (() => void) | null = null;
@@ -206,6 +204,8 @@ export class AssistantScheduler {
     this.started = true;
     this.runLog = new RunLog(this.stateDir);
     this.timezone = new UserTimezone(this.stateDir, this.systemTimezone);
+    this.firstSeen = new FirstSeenStore(this.stateDir);
+    this.seen = this.firstSeen.load();
     for (const e of this.runLog.all()) {
       if (e.mode === 'isolated' && e.sessionFile) this.jobSessions.set(e.sessionFile, e.jobId);
     }
@@ -357,7 +357,11 @@ export class AssistantScheduler {
         this.fire(v, plan.scheduledFor);
       }
     }
-    for (const id of [...this.seen.keys()]) if (!ids.has(id)) this.seen.delete(id);
+    this.prune(read, ids);
+    if (this.seenDirty) {
+      this.seenDirty = false;
+      this.firstSeen?.save(this.seen);
+    }
     this.pendingInline = this.pendingInline.filter((p) => ids.has(p.jobId));
     void this.drainInline();
     this.arm(soonest, now);
@@ -367,24 +371,53 @@ export class AssistantScheduler {
     return this.startingIsolated.has(jobId) || this.pendingInline.some((p) => p.jobId === jobId);
   }
 
-  /** Remember when a job was first seen, re-enabled, or had its time spec edited. */
+  /**
+   * Remember when a job was first seen, re-enabled, or had its time spec edited
+   * (persisted in the first-seen file, so a restart keeps the base). A change
+   * made while the server was down is seen as a change at the first tick after
+   * the restart, since the last-seen `enabled` and spec are persisted too.
+   */
   private track(v: ValidJob, now: number): void {
-    const fingerprint = JSON.stringify([v.job.cron ?? null, v.job.at ?? null, v.job.tz ?? null]);
+    const spec = jobTimeSpec(v.job);
     const prev = this.seen.get(v.job.id);
     if (!prev) {
-      this.seen.set(v.job.id, { firstSeen: now, enabled: v.job.enabled, fingerprint });
+      this.seen.set(v.job.id, { firstSeen: now, enabled: v.job.enabled, spec });
+      this.seenDirty = true;
       return;
     }
-    if ((!prev.enabled && v.job.enabled) || prev.fingerprint !== fingerprint) prev.changedAt = now;
+    const edited = JSON.stringify(prev.spec) !== JSON.stringify(spec);
+    if ((!prev.enabled && v.job.enabled) || edited) {
+      prev.changedAt = now;
+      this.seenDirty = true;
+    }
+    if (prev.enabled !== v.job.enabled || edited) this.seenDirty = true;
     prev.enabled = v.job.enabled;
-    prev.fingerprint = fingerprint;
+    prev.spec = spec;
+  }
+
+  /**
+   * Forget the bases of jobs removed from `schedule.json`. An unreadable file
+   * (mid-edit) prunes nothing, and an entry that is present but invalid keeps
+   * its base, so a transient typo does not reset every job to "from now".
+   */
+  private prune(read: ValidatedSchedule, validIds: ReadonlySet<string>): void {
+    if (read.fileError) return;
+    const keep = new Set(validIds);
+    for (const i of read.invalid) if (i.id) keep.add(i.id);
+    for (const id of [...this.seen.keys()]) {
+      if (keep.has(id)) continue;
+      this.seen.delete(id);
+      this.seenDirty = true;
+    }
   }
 
   /**
    * The planner's `since`: occurrences before it are not "missed". A job with
-   * no run yet counts from when this process first saw it (so a job added, or
-   * hand-written, while the server was down does not catch up on a run from
-   * before it existed); a job re-enabled or edited counts from then. A job WITH
+   * no run yet counts from when the scheduler first saw it, persisted across
+   * restarts (so a job seen at 8:58 whose 9:00 run fell while the server was
+   * down is caught up by the grace rule, while a job hand-written while the
+   * server was down starts from when it is first seen); a job re-enabled or
+   * edited counts from then (also persisted). A job WITH
    * runs and no change counts from its last run, which is what lets a restart
    * catch up on a run missed while the server was down.
    */
