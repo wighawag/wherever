@@ -1189,10 +1189,15 @@ async function main(): Promise<void> {
   const assistant = startAssistantFolder(getWhereverConfig());
   sessionPool.setAssistantFolder(assistant.status.active ? (assistant.status.folder ?? undefined) : undefined);
   // The assistant tools (assistant-tools.ts) in every server session, and the
-  // timezone line in the assistant folder: registered while `assistantFolder`
-  // is CONFIGURED. The backend is the scheduler, set below once it has started;
-  // until then, and for a server refused by the folder lock, every tool answers
-  // the lock-state error. Unset = no hooks, so sessions are exactly as before.
+  // timezone line in the assistant folder: registered ONLY while the assistant
+  // is ACTIVE (configured AND this server holds the folder lock). The backend is
+  // the scheduler, set below once it has started; in that short boot window the
+  // tools answer "the assistant scheduler is still starting". A server refused by the lock (or a lock error)
+  // sets NO session hooks, so its sessions are exactly as with the assistant
+  // unset (decision of assistant-schedule-tools-absent-when-not-active,
+  // reversing assistant-schedule-tools-server decision 4). The CLI twin ops
+  // still get the hooks while CONFIGURED, so a terminal pi's twin (which cannot
+  // be hidden server-side) answers the lock-state error.
   let assistantBackend: AssistantScheduleBackend | null = null;
   // `assistant_notify`'s backend (the channel dispatcher + the scheduler's job
   // mapping), set below once the channels have started. The tool itself is
@@ -1207,7 +1212,9 @@ async function main(): Promise<void> {
       access: () =>
         assistantBackend
           ? { ok: true, backend: assistantBackend }
-          : { ok: false, error: assistantNotActiveError(assistant.status.lock) },
+          : assistant.status.active
+            ? { ok: false, error: 'the assistant scheduler is still starting; try again in a moment' }
+            : { ok: false, error: assistantNotActiveError(assistant.status.lock) },
       ...(assistant.status.active
         ? {
             notify: () =>
@@ -1217,7 +1224,7 @@ async function main(): Promise<void> {
           }
         : {}),
     };
-    sessionPool.setAssistantSessionHooks(assistantHooks);
+    if (assistant.status.active) sessionPool.setAssistantSessionHooks(assistantHooks);
   }
   const currentTimezone = (): string | null => {
     try {

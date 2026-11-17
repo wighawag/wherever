@@ -3,7 +3,7 @@ title: Assistant schedule tools are absent on a server whose assistant is not ac
 slug: assistant-schedule-tools-absent-when-not-active
 blockedBy: []
 covers: []
-needsAnswers: true
+needsAnswers: false
 ---
 
 ## What to build
@@ -52,3 +52,10 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions are recorded in [work/notes/observations/assistant-schedule-tools-absent-when-not-active-decisions.md](../../notes/observations/assistant-schedule-tools-absent-when-not-active-decisions.md):
+1. This reverses the acceptance criterion "With the lock held by another server, the tools return a clear lock-state error" of `work/tasks/done/assistant-schedule-tools-server.md` (its decision 4).
+2. The mechanism: the session pool gets no hooks unless the assistant is active, while the CLI twin router keeps them. This reuses the proven "identical to unset" path instead of adding an active flag inside `assistantSessionParts`.
+3. The boot-window "still starting" message, replacing a lock-state error that contradicted itself on an active server.

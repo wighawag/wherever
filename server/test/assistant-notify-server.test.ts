@@ -327,7 +327,8 @@ describe('assistant_notify and Web Push (real server)', () => {
     const c = await client(second);
     const s = await newSession(c, c.workspace);
     const [req] = await turn(second, c, s.sessionId, 'hello', 'hi');
-    expect(toolNames(req!)).toContain('assistant_schedule_add');
+    // No assistant tool at all on a refused server (assistant-schedule-tools-absent-when-not-active).
+    expect(toolNames(req!)).not.toContain('assistant_schedule_add');
     expect(toolNames(req!)).not.toContain('assistant_notify');
     expect(fs.existsSync(path.join(root, 'second-state', VAPID_FILE))).toBe(false);
     expect(fs.existsSync(path.join(root, 'second-state', SUBSCRIPTIONS_FILE))).toBe(false);

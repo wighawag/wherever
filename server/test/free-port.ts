@@ -29,8 +29,16 @@ import net from 'node:net';
 const BAND_BASE = 20_000;
 const BAND_SIZE = 1_000;
 
-// 1-based under vitest; 1 when a file is run outside a worker (e.g. directly).
-const workerId = Number(process.env.VITEST_WORKER_ID ?? '1') || 1;
+// Which band: keyed on VITEST_POOL_ID, NOT VITEST_WORKER_ID. In vitest 2.x the
+// WORKER_ID is a counter bumped per test FILE (1..N over a whole run), so two
+// files running at the same time can have ids 12 apart and land in the SAME band
+// under `% 12`; their bind-probe-then-spawn windows (which last the whole child
+// startup) then overlap and one file's requests reach the other file's server.
+// POOL_ID is the concurrent worker SLOT, bounded 1..maxWorkers and unique among
+// files running at once, which is exactly the disjointness the bands need.
+// WORKER_ID is only a fallback for a vitest that does not set POOL_ID; 1 when a
+// file is run outside vitest (e.g. directly).
+const workerId = Number(process.env.VITEST_POOL_ID ?? process.env.VITEST_WORKER_ID ?? '1') || 1;
 const bandStart = BAND_BASE + ((workerId - 1) % 12) * BAND_SIZE;
 
 /** Ports already handed out in THIS worker, including ones not yet bound. */
