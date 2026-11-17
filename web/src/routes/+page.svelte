@@ -21,6 +21,7 @@
 		sessionNotice,
 		folderConflict,
 		folderMissing,
+		assistantRetired,
 		continueFolderConflict,
 		isReadOnly,
 		activeSessionInfo,
@@ -281,6 +282,7 @@
 	let notice = $derived($sessionNotice);
 	let fConflict = $derived($folderConflict);
 	let fMissing = $derived($folderMissing);
+	let retired = $derived($assistantRetired);
 	let readOnly = $derived($isReadOnly);
 	let sessionInfo = $derived($activeSessionInfo);
 	let appState = $derived($piState);
@@ -1055,13 +1057,36 @@
 			</div>
 		{/if}
 
+		<!-- RETIRED assistant session (ADR 0020): this session lives in the
+		     assistant folder but is no longer the current one (the assistant was
+		     reset). Hard read-only, no "Continue anyway": writing here would fork
+		     the assistant's conversation into a session nobody points at, so the
+		     way forward is the current session. -->
+		{#if retired}
+			<div
+				class="flex items-center justify-between gap-3 border border-yellow-500/30 bg-yellow-500/10 px-4 py-2 text-sm text-yellow-400"
+			>
+				<span class="min-w-0 flex-1 break-words">
+					The assistant was reset: this is an earlier assistant session,
+					read-only history.
+				</span>
+				{#if connected}
+					<button
+						onclick={() => openAssistant()}
+						class="flex-shrink-0 rounded-md border border-yellow-500/40 bg-yellow-500/20 px-3 py-1 text-xs font-medium text-yellow-300 transition-colors hover:bg-yellow-500/30"
+						>Open current session</button
+					>
+				{/if}
+			</div>
+		{/if}
+
 		<!-- Read-only banner. Suppressed only while the DISMISSIBLE folder-conflict
 		     banner is up: that one already explains why this session is read-only and
 		     carries the "Continue anyway" escape, so showing both reads as a dead end.
 		     Once continued, the conflict banner has no button left, so a read-only
 		     that SURVIVED the continue (a hard sessions.readOnly folder, which the
 		     server refuses to lift) must still explain itself here. -->
-		{#if readOnly && !interrupted && !fMissing && !(fConflict?.active && !fConflict.continued)}
+		{#if readOnly && !interrupted && !fMissing && !retired && !(fConflict?.active && !fConflict.continued)}
 			<div
 				class="border border-yellow-500/30 bg-yellow-500/10 px-4 py-2 text-center text-sm text-yellow-400"
 			>

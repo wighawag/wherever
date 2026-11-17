@@ -179,6 +179,28 @@ export class AssistantController {
     };
   }
 
+  /**
+   * Is this session a RETIRED assistant session (ADR 0020)? True when its cwd is
+   * the assistant folder itself (symlinks resolved; never `jobs/` or anywhere
+   * else) and it is not the current pointer session. Derived from the pointer,
+   * so it needs no state of its own and covers sessions retired before the rule
+   * existed. With no pointer yet, no session is current, so every session in
+   * the folder is retired (opening the Assistant makes one current).
+   *
+   * The server turns it into a HARD read-only verdict for web viewers and drops
+   * retired sessions from the folder-conflict occupants (index.ts).
+   */
+  isRetired(sessionFile: string, cwd: string): boolean {
+    if (!this.isFolder(cwd)) return false;
+    const current = this.pointer?.sessionFile;
+    return !current || path.resolve(current) !== path.resolve(sessionFile);
+  }
+
+  /** Is `cwd` the assistant folder itself (symlinks resolved; `jobs/` is not)? */
+  isFolder(cwd: string): boolean {
+    return isSameFolder(cwd, this.folder);
+  }
+
   /** Every batch of dropped messages recorded so far (bounded), oldest first. */
   droppedMessages(): DroppedMessages[] {
     return [...this.dropped];

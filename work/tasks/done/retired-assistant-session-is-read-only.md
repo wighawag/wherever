@@ -48,3 +48,16 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions are recorded in [work/notes/observations/retired-assistant-session-is-read-only-decisions.md](../../notes/observations/retired-assistant-session-is-read-only-decisions.md):
+- With no pointer yet, every session in the assistant folder counts as retired.
+- A new `assistant_retired` frame plus a `session_created.assistantRetired` flag carry the state, instead of the web working it out itself.
+- The check is keyed on the session the viewer has on screen, so a slow load is covered when the pointer moves.
+- A retired session takes no part in folder conflicts.
+- `session_new` waits for the controller only in the assistant folder.
+- A viewed session that becomes current again is made writable.
+- `POST /session/upload` is unchanged.
+- Sends to a retired session get their own refusal message.
+- The changeset bump is `minor`.

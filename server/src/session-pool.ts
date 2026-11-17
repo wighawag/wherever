@@ -2261,14 +2261,23 @@ export class SessionPool {
     return null;
   }
 
-  detectConflict(sessionFileOrId: string, targetCwd: string): { conflict: boolean; otherSessionId?: string; otherCwd?: string } {
+  /**
+   * Is another viewed session live in `targetCwd`? `ignore`, when given, drops
+   * sessions that never count as occupants (a retired assistant session, ADR
+   * 0020); without it every viewed session counts, as before.
+   */
+  detectConflict(
+    sessionFileOrId: string,
+    targetCwd: string,
+    ignore?: (s: TrackedSession) => boolean,
+  ): { conflict: boolean; otherSessionId?: string; otherCwd?: string } {
     if (this.getSession(sessionFileOrId)) {
       return { conflict: false };
     }
 
     const normalizedTargetCwd = normalizePath(targetCwd);
     for (const s of this.sessions.values()) {
-      if (s.cwd === normalizedTargetCwd && s.clients.size > 0) {
+      if (s.cwd === normalizedTargetCwd && s.clients.size > 0 && !ignore?.(s)) {
         return { conflict: true, otherSessionId: s.sessionId, otherCwd: s.cwd };
       }
     }
