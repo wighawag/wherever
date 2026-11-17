@@ -23,16 +23,22 @@ import {
  *
  * - `assistant_schedule_add`, `assistant_schedule_list`, `assistant_schedule_remove`,
  *   `assistant_set_timezone`: registered in EVERY server session (not only the
- *   assistant's) while `assistantFolder` is CONFIGURED, so any session's agent can
+ *   assistant's) while the assistant is ACTIVE, so any session's agent can
  *   hand a job to the assistant. Every job belongs to and runs as the assistant;
  *   the calling session is stamped as `originSessionId` / `originCwd` (context,
  *   not the execution location). Self-contained in the `say` / `attach_file`
  *   style: each `execute` calls the scheduler directly (its write queue and its
  *   timezone setter), no bridge, no side channel.
  * - When configured but NOT active (another server holds the folder lock, or the
- *   lock could not be taken), the tools stay registered and answer a clear
- *   lock-state error (decision: same tool set whatever the lock says, so the
- *   agent learns WHY it cannot schedule instead of not seeing the tools).
+ *   lock could not be taken), the pool gets no hooks: no tool is registered and
+ *   no timezone line is added, exactly as with `assistantFolder` unset
+ *   (assistant-schedule-tools-absent-when-not-active, reversing the earlier
+ *   "same tool set whatever the lock says" decision: a refused server is a
+ *   misconfiguration already reported in the log and status, and tools that can
+ *   only fail add prompt noise and invite retries). The lock-state error is still
+ *   what the CLI twin ops answer, and what the tools answer in the short boot
+ *   window where the assistant is active but the scheduler has not started.
+ *   (`assistantNotActiveError` is that message.)
  * - `assistant_notify` (channel-seam-notify-and-web-push, ADR 0014): the one way
  *   to reach the user proactively, delivered at once to every channel through
  *   the dispatcher (assistant-channels.ts). Registered ONLY while the assistant
@@ -89,8 +95,11 @@ export type AssistantNotifyAccess = { ok: true; backend: AssistantNotifyBackend 
 
 /**
  * What the pool needs to give a server session its assistant tools and, in the
- * assistant folder, its timezone line. Set on the pool only while
- * `assistantFolder` is configured (`SessionPool.setAssistantSessionHooks`).
+ * assistant folder, its timezone line. Built while `assistantFolder` is
+ * configured (the CLI twin ops read it then, answering the lock-state error
+ * when not active), but set on the pool ONLY while the assistant is active
+ * (`SessionPool.setAssistantSessionHooks`): a refused server's sessions get no
+ * assistant tools and no timezone line.
  */
 export interface AssistantSessionHooks {
   /** The configured (resolved) assistant folder. */
@@ -101,8 +110,10 @@ export interface AssistantSessionHooks {
    * `assistant_notify`'s backend, read at every call. Set ONLY while the
    * assistant is ACTIVE (configured AND this server holds the folder lock):
    * without it the tool is not registered at all (decision, per the task's
-   * acceptance criteria: unlike the schedule tools, a refused server's sessions
-   * do not see `assistant_notify`, since no channel could run there).
+   * acceptance criteria: a refused server's sessions do not see
+   * `assistant_notify`, since no channel could run there; since
+   * assistant-schedule-tools-absent-when-not-active the schedule tools follow
+   * the same rule, by the pool getting no hooks at all).
    */
   notify?: () => AssistantNotifyAccess;
 }
@@ -416,8 +427,8 @@ export type AssistantCliOp = (args: unknown, caller: AssistantToolCaller) => Pro
  * server tool it twins, behind the same gates: `hooks` undefined (assistant not
  * configured) answers `ASSISTANT_NOT_CONFIGURED_ERROR`; configured but not
  * active answers the lock-state error, `notify` included (a server session has
- * no `assistant_notify` then, a CLI twin has nothing to hide behind, so it gets
- * the same error as the schedule tools). `caller` is resolved from the bridge
+ * no assistant tool at all then, but a CLI twin cannot be hidden server-side,
+ * so it gets the error). `caller` is resolved from the bridge
  * registration, never from `args`.
  */
 export function assistantCliOps(hooks: AssistantSessionHooks | undefined): Record<string, AssistantCliOp> {
@@ -615,8 +626,8 @@ export function hooksTimezone(hooks: AssistantSessionHooks): string | null {
 
 /**
  * What a server session in `cwd` gets from the assistant: the four schedule
- * tools (always, while configured), `assistant_notify` (only while active) and, only in the assistant folder or `jobs/`, the timezone
- * line extension. Empty with `hooks` undefined (assistant not configured), so
+ * tools (always, given hooks), `assistant_notify` (only with `hooks.notify`) and, only in the assistant folder or `jobs/`, the timezone
+ * line extension. Empty with `hooks` undefined (assistant unset or not active), so
  * the session's tools and extensions are exactly as without the feature.
  */
 export function assistantSessionParts(

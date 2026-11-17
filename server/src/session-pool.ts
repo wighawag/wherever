@@ -1262,9 +1262,10 @@ export class SessionPool {
    * The assistant's per-session additions (assistant-tools.ts): the
    * `assistant_schedule_*` / `assistant_set_timezone` tools in EVERY server
    * session, and the timezone line in the assistant folder and its `jobs/`. Set
-   * once at server start ONLY while `assistantFolder` is CONFIGURED (active or
-   * not: a refused server's tools answer a lock-state error), so with it unset a
-   * server session's tools, extensions and system prompt are exactly as before.
+   * once at server start ONLY while the assistant is ACTIVE (configured AND this
+   * server holds the folder lock), so with it unset, or refused by another
+   * server's lock, a server session's tools, extensions and system prompt are
+   * exactly as before.
    */
   private assistantHooks: AssistantSessionHooks | undefined;
 

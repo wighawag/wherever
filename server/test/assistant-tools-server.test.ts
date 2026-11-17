@@ -17,7 +17,9 @@ import { timezoneLine } from '../src/assistant-tool-text.ts';
  *    line; a web report and `assistant_set_timezone` both change it, push
  *    `assistant_info_changed` to CLI bridges and `assistant_status` to the web,
  *    and the next assistant turn carries the new line;
- *  - lock held by another server: the tools answer a lock-state error.
+ *  - lock held by another server: sessions get NONE of the tools and no
+ *    timezone line (tools and system prompt identical to an unset server),
+ *    while the CLI twin ops still answer the lock-state error.
  *
  * Isolation: `assistantFolder`, `WHEREVER_CONFIG_DIR` and `WHEREVER_STATE_DIR`
  * point at temp dirs, and the real ~/.wherever is asserted untouched.
@@ -226,20 +228,48 @@ describe('assistant tools (real server)', () => {
     expect(tzState.history.map((e: { source: string }) => e.source)).toEqual(['system', 'web', 'assistant_set_timezone']);
   }, 180_000);
 
-  it('lock held by another server: the tools answer a clear lock-state error', async () => {
+  it('lock held by another server: no tools and no timezone line (as unset), but the CLI twins answer the lock-state error', async () => {
     const root = tmp();
     const folder = path.join(root, 'assistant');
+    const code = path.join(root, 'code');
+    fs.mkdirSync(code);
     const first = await boot(root, 'first', { assistantFolder: folder });
     expect((await assistantStatus(first.port)).active).toBe(true);
     const second = await boot(root, 'second', { assistantFolder: folder });
     expect((await assistantStatus(second.port)).lock.state).toBe('refused');
-    const c = await client(second);
-    const s = await newSession(c, c.workspace);
-    const reqs = await toolTurn(second, c, s.sessionId, 'assistant_schedule_list', {}, 'listed');
-    expect(toolNames(reqs[0]!)).toEqual(expect.arrayContaining(ASSISTANT_TOOLS));
-    const followUp = JSON.stringify(reqs[1]!.messages);
-    expect(followUp).toContain('NOT active on this server (folder lock refused)');
-    expect(followUp).toContain('in use by another wherever server');
+    const off = await boot(root, 'off', {});
+
+    // The same cwds on the refused server and on an unset one: what reaches the
+    // model (tools and system prompt) is identical, in the folder and jobs/ too.
+    const firstRequest = async (h: Harness, cwd: string) => {
+      const c = await client(h);
+      const s = await newSession(c, cwd);
+      const [req] = await turn(h, c, s.sessionId, 'hello', 'hi');
+      return req!;
+    };
+    for (const cwd of [code, folder, path.join(folder, 'jobs')]) {
+      const refused = await firstRequest(second, cwd);
+      const unset = await firstRequest(off, cwd);
+      for (const name of [...ASSISTANT_TOOLS, 'assistant_notify']) expect(toolNames(refused)).not.toContain(name);
+      expect(systemOf(refused)).not.toContain("User's current timezone");
+      expect(toolNames(refused)).toEqual(toolNames(unset));
+      expect(refused.tools).toEqual(unset.tools);
+      expect(systemOf(refused)).toBe(systemOf(unset));
+    }
+
+    // A terminal pi's twin cannot be hidden server-side: its ops answer the lock-state error.
+    const cli = await client(second);
+    const cliFile = path.join(root, 'cli.jsonl');
+    cli.send({ type: 'cli_register', sessionFile: cliFile, cwd: code, model: 'fake:fake-model', isStreaming: false, isNew: false });
+    await second.waitForActive(cliFile);
+    for (const op of ['schedule_list', 'schedule_add', 'set_timezone']) {
+      const id = crypto.randomUUID();
+      cli.send({ type: 'cli_request', id, op, args: { name: 'x', at: 'now', mode: 'isolated', prompt: 'p', timezone: 'UTC' } });
+      const res = await cli.waitFor((m) => m.type === 'cli_response' && m.id === id);
+      expect(res.ok, op).toBe(false);
+      expect(res.error, op).toContain('NOT active on this server (folder lock refused)');
+      expect(res.error, op).toContain('in use by another wherever server');
+    }
     expect(fs.existsSync(path.join(folder, 'schedule.json'))).toBe(false);
-  }, 120_000);
+  }, 180_000);
 });

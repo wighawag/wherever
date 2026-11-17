@@ -300,7 +300,7 @@ describe('assistant_set_timezone and the web report', () => {
   });
 });
 
-describe('lock held by another server', () => {
+describe('configured but not active (the CLI twin ops; server sessions get no tools then)', () => {
   it('every tool answers a clear lock-state error and touches nothing', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-assistant-tools-'));
     cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -381,7 +381,7 @@ describe('composeServerAgentParts (what buildServerAgent registers)', () => {
   const extra: InlineExtension = { name: 'extra', factory: () => {} };
   const caller = () => ({ sessionId: 's', cwd: '/x' });
 
-  it('assistantFolder unset: exactly the pre-assistant extension list and tools', () => {
+  it('no hooks (assistantFolder unset, or refused by the folder lock): exactly the pre-assistant extension list and tools', () => {
     for (const cwd of ['/home/u/code', '/home/u/assistant', '/home/u/assistant/jobs']) {
       const parts = composeServerAgentParts({ cwd, conversationExtension, extraExtensionFactories: [extra], assistant: undefined, caller });
       expect(parts.extensionFactories).toEqual([...serverBuiltinExtensions, conversationExtension, extra]);
@@ -390,7 +390,7 @@ describe('composeServerAgentParts (what buildServerAgent registers)', () => {
     }
   });
 
-  it('assistantFolder set: the tools in every session, the timezone line only in the folder', () => {
+  it('hooks set (assistant active): the tools in every session, the timezone line only in the folder', () => {
     const hooks: AssistantSessionHooks = { folder: '/home/u/assistant', access: () => ({ ok: false, error: 'off' }) };
     const elsewhere = composeServerAgentParts({ cwd: '/home/u/code', conversationExtension, extraExtensionFactories: [], assistant: hooks, caller });
     expect(elsewhere.customTools.map((t) => t.name)).toEqual(['attach_file', 'say', ...ASSISTANT_SCHEDULE_TOOL_TEXTS.map((t) => t.name)]);
