@@ -73,6 +73,7 @@ describe('assistant tool twin ops (cli_request)', () => {
       removeJob: async (id) => id === 'job-1',
       list: () => ({ timezone: tz, fileError: null, jobs: [], invalid: [] }) as any,
       getUserTimezone: () => tz,
+      getUserTimezoneSource: () => null,
       setUserTimezone: (next) => {
         const changed = next !== tz;
         tz = next;

@@ -49,3 +49,7 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions (the device remembers a zone once sent, whether or not the server applied it; storage key `wherever-timezone-reported` per browser rather than per server; unreadable storage reads as a first report; `first === true` on the wire, so an absent field reads as non-first; "set explicitly" means the latest history source is `assistant_set_timezone`, exposed as `getUserTimezoneSource`; an ignored first report is `ok` with `details.ignored`, not an error) are recorded in [work/notes/observations/web-timezone-report-only-when-the-device-moves-decisions.md](../../notes/observations/web-timezone-report-only-when-the-device-moves-decisions.md).

@@ -236,6 +236,15 @@ export class AssistantScheduler {
   }
 
   /**
+   * Who set the user's current timezone: the latest recorded change's `source`
+   * (`system`, `assistant_set_timezone`, `web`, ...), null when none is recorded.
+   * The web's first report from a device consults it (ADR 0019).
+   */
+  getUserTimezoneSource(): string | null {
+    return this.requireTimezone().source();
+  }
+
+  /**
    * Change the user's timezone (validated IANA name; recorded). Re-plans at
    * once, since every follows-the-user job moves with it. Resolves false when
    * it was already that zone.
