@@ -1242,6 +1242,10 @@ export const folderConflict = derived(piState, ($s) => $s.folderConflict);
 // dismiss: the composer is replaced by a notice naming `cwd`, and only restoring
 // that folder and reloading brings the session back.
 export const folderMissing = derived(piState, ($s) => $s.folderMissing);
+// The active session is a RETIRED assistant session (ADR 0020): in the assistant
+// folder but not the current one (the assistant was reset). HARD read-only: the
+// UI explains the reset and offers to open the current assistant session.
+export const assistantRetired = derived(piState, ($s) => $s.assistantRetired);
 // The restore of that folder: the server's path-keyed job (running, finished, or
 // not yet started) plus this client's own last request. Drives the restore panel
 // that replaces the composer. null when no folder-missing session is open.

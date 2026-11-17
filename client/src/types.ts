@@ -248,6 +248,12 @@ export interface WhereverState {
 	// coming: the composer is replaced by a notice naming the path. Cleared with
 	// the session it belongs to.
 	folderMissing: FolderMissingInfo | null;
+	// The active session is a RETIRED assistant session (ADR 0020): it lives in
+	// the assistant folder but is not the current pointer session (the assistant
+	// was reset). Implies `readOnly`, HARD (no "Continue anyway"): the UI explains
+	// the reset and offers to open the current assistant session. Set from
+	// session_created's `assistantRetired` and live from `assistant_retired`.
+	assistantRetired: boolean;
 	// The restore of the active session's missing folder: the server's job for
 	// that path (running, finished or not yet started) plus this client's own last
 	// request. Non-null exactly while a folder-missing session is open, so the

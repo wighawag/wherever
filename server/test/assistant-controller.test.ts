@@ -289,6 +289,38 @@ describe('AssistantController: reset', () => {
   });
 });
 
+describe('AssistantController: retired sessions (ADR 0020)', () => {
+  it('a session in the folder that is not the pointer is retired; the pointer, jobs/ and elsewhere never are', async () => {
+    const { ctl, folder, root } = make();
+    const old = await ctl.ensureCurrent();
+    expect(ctl.isRetired(old.sessionFile, folder)).toBe(false);
+
+    const next = await ctl.reset();
+    expect(ctl.isRetired(old.sessionFile, folder)).toBe(true);
+    expect(ctl.isRetired(next.sessionFile, folder)).toBe(false);
+    // An unnormalised spelling of the folder is still the folder.
+    expect(ctl.isRetired(old.sessionFile, folder + '/')).toBe(true);
+
+    expect(ctl.isRetired(path.join(root, 'job.jsonl'), path.join(folder, 'jobs'))).toBe(false);
+    expect(ctl.isRetired(path.join(root, 'other.jsonl'), path.join(root, 'elsewhere'))).toBe(false);
+  });
+
+  it('with no pointer yet, every session in the folder is retired (none is current)', () => {
+    const { ctl, folder, root } = make();
+    expect(ctl.isRetired(path.join(root, 'old.jsonl'), folder)).toBe(true);
+  });
+
+  it('a symlinked spelling of the folder is the folder', async () => {
+    const { ctl, folder, root } = make();
+    const link = path.join(root, 'link');
+    fs.symlinkSync(folder, link);
+    const cur = await ctl.ensureCurrent();
+    expect(ctl.isRetired(cur.sessionFile, link)).toBe(false);
+    expect(ctl.isRetired(path.join(root, 'old.jsonl'), link)).toBe(true);
+    expect(ctl.isRetired(path.join(root, 'job.jsonl'), path.join(link, 'jobs'))).toBe(false);
+  });
+});
+
 describe('AssistantController: restart and idle eviction', () => {
   it('the pointer survives a restart (read back from the state dir)', async () => {
     const first = make();

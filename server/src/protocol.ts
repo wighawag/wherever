@@ -203,7 +203,7 @@ export type ServerMessage =
   // bash_sudo_cancel carrying the same promptId. `command` is the sudo command
   // line WITHOUT any password, safe to display.
   | { type: 'bash_sudo_prompt'; sessionId: string; promptId: string; command: string }
-  | { type: 'session_created'; sessionId: string; sessionFile: string; cwd: string; model: string; isStreaming?: boolean; readOnly?: boolean; contextUsage?: ContextUsageInfo | null; pending?: boolean; folderConflict?: boolean; folderMissing?: boolean }
+  | { type: 'session_created'; sessionId: string; sessionFile: string; cwd: string; model: string; isStreaming?: boolean; readOnly?: boolean; contextUsage?: ContextUsageInfo | null; pending?: boolean; folderConflict?: boolean; folderMissing?: boolean; assistantRetired?: boolean }
   // Sent after a `pending` session_created once the live agent has finished
   // building (createAgentSession). Until it arrives, the UI can render the
   // conversation (from message_history) but must keep the composer disabled:
@@ -328,6 +328,16 @@ export type ServerMessage =
   // the Reset action track it without refetching `/config`.
   // Also sent when the user's timezone changes (`timezone`, the current one).
   | { type: 'assistant_status'; currentSessionId: string | null; currentSessionFile: string | null; timezone?: string | null }
+  // Server -> each web viewer whose session's RETIRED verdict changed (ADR 0020),
+  // sent live when the assistant pointer moves (a reset, a `/new` in the
+  // assistant folder), so a tab still on the old session learns it without a
+  // reload. A RETIRED assistant session is one in `assistantFolder` (not `jobs/`)
+  // that is not the current pointer session: read-only for web viewers, HARD
+  // ("Continue anyway" does not lift it), and never an occupant for the
+  // folder-conflict check. `readOnly` is the server's verdict for this client
+  // right after the change. The load-time verdict rides on session_created
+  // (`assistantRetired`). Never sent while the assistant is not active.
+  | { type: 'assistant_retired'; sessionId: string; retired: boolean; readOnly: boolean }
   // Server -> CLI bridge: the answer to a `cli_request` (ADR 0016).
   | { type: 'cli_response'; id: string; ok: true; result: unknown }
   | { type: 'cli_response'; id: string; ok: false; error: string }

@@ -260,6 +260,7 @@ const defaultState: WhereverState = {
 	piVersion: null,
 	folderConflict: null,
 	folderMissing: null,
+	assistantRetired: false,
 	restore: null,
 	isInterrupted: false,
 	notice: null,
@@ -1890,6 +1891,11 @@ export class WhereverClient {
           // by a notice naming the path. Hard (no "Continue anyway"); the
           // authoritative `folder_missing` frame follows with the same cwd.
           folderMissing: msg.folderMissing ? {cwd: msg.cwd} : null,
+          // A RETIRED assistant session (ADR 0020): not the current pointer
+          // session in the assistant folder. Hard read-only (no "Continue
+          // anyway"); the UI offers to open the current assistant session.
+          // Updated live by `assistant_retired` when the pointer moves.
+          assistantRetired: msg.assistantRetired === true,
           // The restore panel's state belongs to the folder we are leaving; the
           // authoritative `folder_missing` frame below re-creates it for this
           // session (carrying any job already running for its path).
@@ -2016,6 +2022,7 @@ export class WhereverClient {
               loadingSession: false,
               agentPending: false,
               folderMissing: null,
+              assistantRetired: false,
               restore: null,
               notice: null,
               sudoPrompt: null,
@@ -2059,6 +2066,23 @@ export class WhereverClient {
         if (rejectedHydration) this.rejectHydration();
         break;
       }
+
+      case 'assistant_retired':
+        // The assistant pointer moved (a reset, a `/new` in the assistant
+        // folder), so the session on screen became RETIRED (or, rarely, current
+        // again). The server's verdict: mirror its readOnly. A retired session
+        // is not a party to a folder conflict, so its banner goes. Ignore a
+        // frame for a session we already switched away from.
+        this.stateStore.update((s: WhereverState) => {
+          if (!s.sessionId || s.sessionId !== msg.sessionId) return s;
+          return {
+            ...s,
+            assistantRetired: msg.retired === true,
+            readOnly: msg.readOnly ?? s.readOnly,
+            folderConflict: msg.retired === true ? null : s.folderConflict,
+          };
+        });
+        break;
 
       case 'folder_missing':
         // The server states, authoritatively, that this session's working folder
@@ -3109,6 +3133,7 @@ export class WhereverClient {
       // Both folder verdicts belong to the session being left; the load we are
       // starting re-states its own (the server re-checks on every load).
       folderMissing: null,
+      assistantRetired: false,
       restore: null,
       sessionError: null,
       loadingSession: true,
@@ -3190,6 +3215,7 @@ export class WhereverClient {
       readOnly: false,
       folderConflict: null,
       folderMissing: null,
+      assistantRetired: false,
       restore: null,
       sessionError: null,
       notice: null,
@@ -3239,6 +3265,7 @@ export class WhereverClient {
       // Creating a session creates its folder, so no missing-folder lock can
       // survive into it.
       folderMissing: null,
+      assistantRetired: false,
       restore: null,
       sessionError: null,
       creatingSession: true,
@@ -3302,6 +3329,7 @@ export class WhereverClient {
       activeModel: null,
       readOnly: false,
       folderMissing: null,
+      assistantRetired: false,
       restore: null,
       notice: null,
       sudoPrompt: null,
@@ -3414,6 +3442,9 @@ export class WhereverClient {
     // hard lock (there is nothing to drive, and no agent was built), and the
     // server refuses to lift it, so do not flash an enabled composer here.
     if (s.folderMissing) return;
+    // Same for a retired assistant session (ADR 0020): hard, its remedy is
+    // opening the current assistant session.
+    if (s.assistantRetired) return;
 
     this.send({
       type: 'folder_conflict_continue',

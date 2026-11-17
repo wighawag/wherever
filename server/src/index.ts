@@ -436,6 +436,16 @@ interface WSClient {
   paintedSessionId?: string;
   /** The painted session's cwd: the upload target folder. See `paintedSessionFile`. */
   paintedCwd?: string;
+  /**
+   * The painted session is a RETIRED assistant session (ADR 0020): in
+   * `assistantFolder` (not `jobs/`) and not the current pointer session. A HARD
+   * read-only reason (see hasHardReadOnly): "Continue anyway" never lifts it.
+   * Set at the paint of every load/create, re-evaluated live whenever the
+   * assistant pointer moves (refreshRetiredViewers), and cleared with the
+   * painted session (clearPaintedSession). Never set while the assistant is not
+   * active.
+   */
+  assistantRetired?: boolean;
   // Stable identity supplied by the client on connect, carried across
   // reconnects. Used to retire this viewer's own superseded connection so a
   // dropped-and-reconnected client is never mistaken for a second viewer.
@@ -1268,6 +1278,7 @@ async function main(): Promise<void> {
           for (const c of clients.values()) {
             if (!c.isCliBridge) sendWS(c.ws, update);
           }
+          refreshRetiredViewers();
         },
         // Messages a reset or an aborted settle dropped: reported to the
         // channels they came from (the dispatcher exists by then; before it
@@ -1277,6 +1288,38 @@ async function main(): Promise<void> {
     : null;
   if (assistantController) {
     sessionPool.onSessionCreated = (sessionFile, cwd) => assistantController.handleSessionCreated(sessionFile, cwd);
+  }
+
+  /**
+   * The pointer moved: re-evaluate every web viewer's RETIRED verdict (ADR 0020)
+   * and tell those whose verdict changed, live (`assistant_retired`), so a tab
+   * still on the old session turns read-only without a reload. Keyed on the
+   * PAINTED session, so a cold load still building is covered too (its attach
+   * re-derives read-only from the flag). Then every folder-conflict verdict is
+   * re-sent: the newly retired session stopped being an occupant.
+   */
+  function refreshRetiredViewers(): void {
+    if (!assistantController) return;
+    for (const c of clients.values()) {
+      if (c.isCliBridge || !c.paintedSessionFile || !c.paintedCwd || !c.paintedSessionId) continue;
+      const retired = assistantController.isRetired(c.paintedSessionFile, c.paintedCwd);
+      if (retired === (c.assistantRetired === true)) continue;
+      c.assistantRetired = retired || undefined;
+      if (retired) {
+        // Hard: it replaces any folder-conflict observation the client was in.
+        c.readOnly = true;
+        c.conflictObserver = false;
+      } else {
+        // Became current again (the pointer moved onto the painted session):
+        // only the remaining reasons decide.
+        c.readOnly =
+          sessionPool.isReadOnlyCwd(c.paintedCwd) ||
+          c.folderMissingCwd !== undefined ||
+          (c.conflictObserver === true && !c.conflictContinued);
+      }
+      sendWS(c.ws, { type: 'assistant_retired', sessionId: c.paintedSessionId, retired, readOnly: c.readOnly });
+    }
+    broadcastFolderConflicts();
   }
 
   // The assistant scheduler (assistant-scheduler.ts, ADR 0015): fires the jobs in
@@ -1590,7 +1633,7 @@ async function main(): Promise<void> {
     // readOnly rides along every time so the client's composer mirrors the
     // server's authority rather than inferring it from `active`.
     for (const c of clients.values()) {
-      sendFolderConflict(c, sessionPool);
+      sendFolderConflict(c, sessionPool, assistantController);
     }
   }
 
@@ -3265,6 +3308,8 @@ function clearPaintedSession(client: WSClient): void {
   client.paintedSessionFile = undefined;
   client.paintedSessionId = undefined;
   client.paintedCwd = undefined;
+  // The retired verdict describes the painted session, so it goes with it.
+  client.assistantRetired = undefined;
 }
 
 /**
@@ -3284,14 +3329,30 @@ function coldBuildTestDelay(): Promise<void> {
 // is the whole definition of a folder conflict: two agents pointed at one working
 // tree. Two viewers of the SAME conversation are not a conflict (they share one
 // agent), and a session nobody is attached to is not one either (idle, no turns).
+//
+// A RETIRED assistant session (ADR 0020) never counts as an occupant: the
+// conflict would be one our own reset created, and it would open the CURRENT
+// session read-only behind the banner while a tab still views the old one.
 function folderHasOtherViewedSession(
   pool: SessionPool,
   mySessionFile: string,
   cwd: string,
+  assistant: AssistantController | null,
 ): boolean {
   return pool
     .getAllSessions()
-    .some((s) => s.sessionFile !== mySessionFile && s.cwd === cwd && s.clients.size > 0);
+    .some(
+      (s) =>
+        s.sessionFile !== mySessionFile &&
+        s.cwd === cwd &&
+        s.clients.size > 0 &&
+        !isRetiredAssistantSession(assistant, s.sessionFile, s.cwd),
+    );
+}
+
+/** Is this a retired assistant session (ADR 0020)? Always false while the assistant is not active. */
+function isRetiredAssistantSession(assistant: AssistantController | null, sessionFile: string, cwd: string): boolean {
+  return assistant !== null && assistant.isRetired(sessionFile, cwd);
 }
 
 // Recompute ONE client's folder-conflict state and settle the read-only it
@@ -3303,12 +3364,15 @@ function folderHasOtherViewedSession(
 function resolveFolderConflictState(
   c: WSClient,
   pool: SessionPool,
+  assistant: AssistantController | null,
 ): { cwd: string; active: boolean } | null {
   if (c.isCliBridge || !c.sessionId) return null;
   const mine = pool.getSession(c.sessionId);
   if (!mine) return null;
 
-  const active = folderHasOtherViewedSession(pool, mine.sessionFile, mine.cwd);
+  // A retired assistant session is not a party to a folder conflict at all: its
+  // own (hard) verdict already says why it is read-only and what to open instead.
+  const active = c.assistantRetired !== true && folderHasOtherViewedSession(pool, mine.sessionFile, mine.cwd, assistant);
   // NOTE: every conflict is now between DIFFERENT session files in one folder --
   // an observer gets its own new session (session_new) or loads its own
   // (session_load), never the occupant's file -- so the scan above sees them all.
@@ -3327,17 +3391,20 @@ function resolveFolderConflictState(
   return { cwd: mine.cwd, active };
 }
 
-// Read-only PRECEDENCE in one place. Of the three reasons a client can be
-// read-only, two are HARD and one is dismissible:
+// Read-only PRECEDENCE in one place. Of the four reasons a client can be
+// read-only, three are HARD and one is dismissible:
 //   - a configured `sessions.readOnly` folder: a policy rule, never lifted;
 //   - FOLDER MISSING: the working folder does not exist on this machine, so
 //     there is nothing to drive; lifted only by restoring it and RELOADING;
+//   - a RETIRED assistant session (ADR 0020): not the current pointer session
+//     in `assistantFolder`; writing would fork the assistant's conversation into
+//     a session nobody points at, so the remedy is opening the current one;
 //   - a folder conflict: two live sessions in one folder, lifted by the user's
 //     "Continue anyway".
 // Every site that LIFTS read-only asks this first, so the dismissible reason can
 // never dismiss a hard one.
 function hasHardReadOnly(client: WSClient, pool: SessionPool, cwd: string): boolean {
-  return pool.isReadOnlyCwd(cwd) || client.folderMissingCwd !== undefined;
+  return pool.isReadOnlyCwd(cwd) || client.folderMissingCwd !== undefined || client.assistantRetired === true;
 }
 
 // ---------------------------------------------------------------------------
@@ -3572,8 +3639,8 @@ async function cloneForNewSession(
 // Resolve and report in one step. Every folder_conflict frame goes out through
 // here, so the `readOnly` it carries can never drift from the authority that
 // produced `active`.
-function sendFolderConflict(client: WSClient, pool: SessionPool): void {
-  const verdict = resolveFolderConflictState(client, pool);
+function sendFolderConflict(client: WSClient, pool: SessionPool, assistant: AssistantController | null): void {
+  const verdict = resolveFolderConflictState(client, pool, assistant);
   if (!verdict) return;
   sendWS(client.ws, {
     type: 'folder_conflict',
@@ -3800,8 +3867,15 @@ async function handleWSMessage(
       // client starts read-only (observing) until the user clicks "Continue
       // anyway" (folder_conflict_continue), which lifts read-only WITHOUT
       // aborting the other session -- both then run concurrently.
-      const conflict = pool.detectConflict(meta.sessionFile, meta.cwd);
-      const folderConflict = conflict.conflict && !!conflict.otherSessionId;
+      //
+      // A RETIRED assistant session (ADR 0020) is neither a party to a conflict
+      // nor an occupant of one: it is hard read-only on its own account, and a
+      // tab still viewing it must not lock the CURRENT session out.
+      const retired = isRetiredAssistantSession(assistantController, meta.sessionFile, meta.cwd);
+      const conflict = pool.detectConflict(meta.sessionFile, meta.cwd, (s) =>
+        isRetiredAssistantSession(assistantController, s.sessionFile, s.cwd),
+      );
+      const folderConflict = !retired && conflict.conflict && !!conflict.otherSessionId;
 
       // This session's working folder is not usable as a working folder. TWO
       // things produce that, and they are one state because they have one
@@ -3823,11 +3897,13 @@ async function handleWSMessage(
       client.folderMissingCwd = folderMissing ? meta.cwd : undefined;
 
       // A session whose cwd matches a sessions.readOnly glob is forced read-only.
-      // A missing folder forces it too (hard, see hasHardReadOnly). A folder
-      // conflict also starts the client read-only until they continue.
-      const forcedReadOnly = meta.readOnly || folderMissing || folderConflict;
+      // A missing folder forces it too (hard, see hasHardReadOnly), and so does a
+      // retired assistant session. A folder conflict also starts the client
+      // read-only until they continue.
+      const forcedReadOnly = meta.readOnly || folderMissing || retired || folderConflict;
       client.readOnly = forcedReadOnly;
       client.conflictObserver = folderConflict;
+      client.assistantRetired = retired || undefined;
       client.pendingCwd = meta.cwd;
       // Bind uploads (and this load's late attach) to the session painted now.
       client.paintedSessionFile = meta.sessionFile;
@@ -3847,6 +3923,7 @@ async function handleWSMessage(
         readOnly: forcedReadOnly,
         folderConflict,
         folderMissing,
+        ...(retired ? { assistantRetired: true } : {}),
         contextUsage: meta.resident ? (pool.getContextUsage(meta.sessionFile) ?? null) : null,
         // A resident session mid-/reload has no usable agent yet: paint it as
         // pending; the reload's own session_ready (sent to every viewer, this
@@ -3959,9 +4036,12 @@ async function handleWSMessage(
         // it, while `message` dropped their sends in silence. The conflict having
         // RESOLVED during the build is handled just below by the verdict, which
         // re-scans and releases read-only.
+        // The retired verdict is read from the client, not from `retired`: the
+        // pointer may have moved during the build (refreshRetiredViewers).
         client.readOnly =
           meta.readOnly ||
           pool.isReadOnlyCwd(result.tracked.cwd) ||
+          client.assistantRetired === true ||
           (client.conflictObserver === true && !client.conflictContinued);
         sendWS(client.ws, {
           type: 'session_ready',
@@ -3979,7 +4059,7 @@ async function handleWSMessage(
         // user continued through it). session_ready carries no readOnly, and the
         // periodic conflict broadcast is throttled, so state the verdict here
         // explicitly rather than leaving the composer to guess for up to 2s.
-        sendFolderConflict(client, pool);
+        sendFolderConflict(client, pool, assistantController);
       })();
       break;
     }
@@ -4085,9 +4165,20 @@ async function handleWSMessage(
       // clicks "Continue anyway", which lifts read-only WITHOUT touching the other
       // session. The difference from before is that the banner now sits on the
       // conversation they asked for, so continuing does what it says.
-      const folderOccupied = folderHasOtherViewedSession(pool, result.tracked.sessionFile, result.tracked.cwd);
-      client.readOnly = folderOccupied || pool.isReadOnlyCwd(result.tracked.cwd);
+      //
+      // A session created IN the assistant folder becomes the current assistant
+      // session through the pool's session-created callback, which the
+      // controller runs on its serial queue: wait for it, so the verdict below
+      // sees the pointer already on the new session (and the one it replaced
+      // already retired, so it is no occupant). Only for that folder: the queue
+      // can hold a seconds-long load, which no other create should wait on.
+      if (assistantController?.isFolder(result.tracked.cwd)) await assistantController.idle();
+      const retired = isRetiredAssistantSession(assistantController, result.tracked.sessionFile, result.tracked.cwd);
+      const folderOccupied =
+        !retired && folderHasOtherViewedSession(pool, result.tracked.sessionFile, result.tracked.cwd, assistantController);
+      client.readOnly = retired || folderOccupied || pool.isReadOnlyCwd(result.tracked.cwd);
       client.conflictObserver = folderOccupied;
+      client.assistantRetired = retired || undefined;
       client.paintedSessionFile = result.tracked.sessionFile;
       client.paintedSessionId = result.tracked.sessionId;
       client.paintedCwd = result.tracked.cwd;
@@ -4101,6 +4192,7 @@ async function handleWSMessage(
         isStreaming: pool.isStreaming(result.tracked.sessionFile),
         readOnly: client.readOnly,
         folderConflict: folderOccupied,
+        ...(retired ? { assistantRetired: true } : {}),
       });
 
       sendWS(client.ws, {
@@ -4192,7 +4284,7 @@ async function handleWSMessage(
       // was already in flight when the continue was sent, so an in-flight update
       // carrying the pre-continue readOnly:true cannot leave the composer
       // disabled with the banner's button already gone.
-      sendFolderConflict(client, pool);
+      sendFolderConflict(client, pool, assistantController);
       break;
     }
 
@@ -4298,6 +4390,18 @@ async function handleWSMessage(
         return;
       }
       if (!client.sessionId) return;
+      if (client.assistantRetired) {
+        // A retired assistant session (ADR 0020): hard, so do not point at the
+        // banner's "Continue anyway", point at the current session instead.
+        sendWS(client.ws, {
+          type: 'session_error',
+          sessionId: msg.sessionId,
+          error:
+            'This assistant session was retired (the assistant was reset), so it is read-only and the message was not delivered. ' +
+            'Open the current assistant session to continue.',
+        });
+        return;
+      }
       if (client.readOnly) {
         // Never swallow a send. This is a legitimate refusal for an observe-only
         // session (a sessions.readOnly folder, or a folder conflict not continued
