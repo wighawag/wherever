@@ -3,7 +3,7 @@ title: The scheduler catches up a new job's missed first run, by persisting when
 slug: scheduler-catches-up-a-missed-first-run
 blockedBy: []
 covers: []
-needsAnswers: true
+needsAnswers: false
 ---
 
 ## What to build
@@ -57,3 +57,7 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions (the first-seen file's name and shape; persisting the last-seen `enabled` and time spec so an edit or re-enable made while the server was down resets the base after restart; no pruning while `schedule.json` is unreadable or an entry is invalid; the rules for a missing or corrupt file; one-shots tracked too; a `patch` bump) are recorded in [work/notes/observations/scheduler-catches-up-a-missed-first-run-decisions.md](../../notes/observations/scheduler-catches-up-a-missed-first-run-decisions.md).
