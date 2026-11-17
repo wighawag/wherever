@@ -22,6 +22,12 @@ export default defineConfig({
   test: {
     maxWorkers: MAX_TEST_WORKERS,
     minWorkers: 1,
+    // Isolation from the real home (and from an ambient wherever unit's
+    // WHEREVER_CONFIG_DIR / WHEREVER_STATE_DIR): one temp root per run plus a
+    // guard that the real ~/.wherever is unchanged, then a fresh HOME for every
+    // test file. See the two files for why.
+    globalSetup: ['./test/global-setup.ts'],
+    setupFiles: ['./test/setup-isolate-env.ts'],
     // `--expose-gc` so the memory regression tests (session-transcript.test.ts)
     // can settle the heap before measuring. Without it `global.gc` is undefined
     // and those assertions would be measuring uncollected garbage rather than

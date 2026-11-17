@@ -784,6 +784,7 @@ Standing per-change rules agents must follow in this repo.
 - **Never revert / do destructive git ops** without explicit confirmation.
 - Enforcement, if wanted, belongs in the `dorfl.json` `verify` gate (e.g.
   `changeset status --since=main`) — not injected automatically.
+- **Server tests never see a real home.** `server/test/setup-isolate-env.ts` (vitest `setupFiles`) gives every test file a fresh temp `HOME` and UNSETS `WHEREVER_CONFIG_DIR`, `WHEREVER_STATE_DIR` and `PI_CODING_AGENT_DIR`, so a run inside a wherever session behaves like a clean CI runner, and an env var a test saves and restores goes back to the isolated value, not to the real home. `server/test/global-setup.ts` owns the run's temp root and fails the run if the REAL `~/.wherever` (via `os.userInfo()`, which ignores HOME) changed. Per-file "real ~/.wherever untouched" guards built on `os.homedir()` therefore watch that file's temp home. A test that needs its own config still sets the env itself, as before.
 
 ## The work/ contract
 
