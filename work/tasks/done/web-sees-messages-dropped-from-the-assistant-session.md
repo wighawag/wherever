@@ -48,3 +48,7 @@ dorfl claim <slug> --arbiter <remote>
 git fetch <remote> && git switch -c work/<slug> <remote>/main
 git mv work/tasks/ready/<slug>.md work/tasks/done/<slug>.md   # on completion
 ```
+
+## Decisions
+
+The non-obvious in-scope decisions (reusing `session_notice` instead of a new frame, the pending-steer UI clearing from pi's own `queue_update`, unknown-origin texts going to the web notice, the notice going to viewers of the dropped session rather than whoever triggered it, and scheduler drops being logged rather than added to the run log) are recorded in [work/notes/observations/web-sees-messages-dropped-from-the-assistant-session-decisions.md](../../notes/observations/web-sees-messages-dropped-from-the-assistant-session-decisions.md).

@@ -1,0 +1,11 @@
+# Decisions: web-sees-messages-dropped-from-the-assistant-session (2026-10-31)
+
+1. **The web notice reuses the existing `session_notice` frame** (level `warning`), not a new protocol message. Why: the web already renders it as a dismissible banner (`whitespace-pre-wrap`, so the `• <text>` list shows), older clients understand it, and no client code change was needed. Alternative: a structured `assistant_dropped {sessionId, reason, messages}` frame the client would format and use to prune `pendingSteering`. Touches: `server/src/index.ts` `onDropped` wiring, `server/src/protocol.ts` (unchanged).
+
+2. **The pending-steer UI clears from pi's own `queue_update`.** pi's `AgentSession.clearQueue()` (called by `clearQueuedMessages`) emits an empty `queue_update`, which the server already relays, and the client replaces `pendingSteering` outright (and also clears it on `agent_end`). So no extra clearing was added; the server test asserts the empty `queue_update` reaches the viewer and the client test pins the end state. The dropped steer's chat bubble stays in the live list (as with a cancelled steer) so its text is not lost; the notice names it, and a reload never shows it because it never reached the session file.
+
+3. **Unknown-origin (null) texts, and a record without `origins`, go to the web notice.** They are reported to no channel, and the web is where the session is shown, so it is the only place left that keeps such a drop from being silent. Alternative: web shows only `none` texts (unknown would stay silent, against the task's "every drop visible"). Touches: `webDroppedMessages` in `server/src/assistant-channels.ts`.
+
+4. **Recipients are the web clients attached to the dropped session's file** (`c.sessionId === sessionFile`, not CLI bridges). On a reset from another tab or a channel, that is the retired session's viewers, as the acceptance asks. A tab that did `/new` itself has already moved to the new session when the retire runs, so it does not get the notice; the notice follows the session, not the actor.
+
+5. **Scheduler-origin drops are logged** (`console.log`, one line per text, cut at 200 characters), not appended to `assistant-runs.jsonl`. The task allowed either; a log line needs no change to the run-log format the scheduler and its tests own.
