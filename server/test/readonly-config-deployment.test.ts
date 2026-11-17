@@ -348,6 +348,31 @@ describe('read-only config dir + separate state dir', () => {
     60_000,
   );
 
+  it('logs at start which config file it reads, and that it was found', async () => {
+    const configDir = readOnlyConfigDir({ gitInitDefault: false });
+    const server = await startServer({
+      args: ['--no-ssl'],
+      env: { WHEREVER_CONFIG_DIR: configDir, WHEREVER_STATE_DIR: tmpDir('state') },
+    });
+    expect(server.stdout()).toContain(`config: ${path.join(configDir, 'config.json')} (found)`);
+  }, 60_000);
+
+  it('boots with NO config file, says so, and creates nothing in the config dir (ADR 0022)', async () => {
+    const parent = tmpDir('noconfig');
+    const configDir = path.join(parent, 'wherever');
+    const server = await startServer({
+      args: ['--no-ssl'],
+      env: { WHEREVER_CONFIG_DIR: configDir, WHEREVER_STATE_DIR: tmpDir('state') },
+    });
+    // A request that reads the config, so a read-time seed would have happened.
+    await api(server.port, '/drafts', { method: 'POST', body: { text: 'no config' } });
+    expect(server.stdout()).toContain(
+      `config: ${path.join(configDir, 'config.json')} (not found, using built-in defaults)`,
+    );
+    expect(server.stdout()).not.toContain('could not seed');
+    expect(fs.existsSync(configDir)).toBe(false);
+  }, 60_000);
+
   it('defaults the state dir to the config dir when WHEREVER_STATE_DIR is unset', async () => {
     const configDir = tmpDir('config');
     const server = await startServer({

@@ -16,3 +16,18 @@ export function getWhereverConfigDir(): string {
   const override = process.env.WHEREVER_CONFIG_DIR;
   return override && override.trim() ? path.resolve(override.trim()) : path.join(os.homedir(), '.wherever');
 }
+
+/** The config file itself: `config.json` in the config dir. It is OPTIONAL (ADR 0022). */
+export function getWhereverConfigPath(): string {
+  return path.join(getWhereverConfigDir(), 'config.json');
+}
+
+/**
+ * The built-in defaults used when there is no `config.json`, and the content
+ * `wherever config init` writes. Exactly what the old read-time seed wrote, so
+ * dropping the seed (ADR 0022) changed no effective value. A FRESH object per
+ * call: callers may mutate what they get.
+ */
+export function defaultWhereverConfig(): { gitInitDefault: boolean; remoteRepoRules: never[]; commonFolders: string[] } {
+  return { gitInitDefault: false, remoteRepoRules: [], commonFolders: [] };
+}

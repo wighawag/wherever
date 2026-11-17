@@ -357,7 +357,7 @@ Both the server and CLI bridge extension accept standard flags to customize port
 
 #### Directories: config (read) vs state (written)
 
-- `WHEREVER_CONFIG_DIR` (Default: `~/.wherever`) — where `config.json` is **read** from. It may be **read-only**: nothing the server writes goes here.
+- `WHEREVER_CONFIG_DIR` (Default: `~/.wherever`): where `config.json` is **read** from. It may be **read-only** (or absent): nothing the server writes goes here, and a missing `config.json` is never created (`wherever config init` does that on request).
 - `WHEREVER_STATE_DIR` (Default: **the resolved config dir**) — where the server **writes**: `drafts.json` and the auto-generated self-signed pair in `certs/`.
 
 With `WHEREVER_STATE_DIR` unset the layout is exactly what it has always been (`~/.wherever/config.json`, `~/.wherever/drafts.json`, `~/.wherever/certs/`), so nothing changes for an existing install. Set it when the config directory is rendered by a deployment and cannot be written to — see [Deploying declaratively](docs/deployment-nixos.md).
@@ -418,7 +418,16 @@ Whenever you run `pi`, you can override bridge defaults:
 
 Wherever supports user configuration to customize defaults for session creation, enable automatic Git remote repository setup, and visually identify each server instance.
 
-The configuration file is located at `~/.wherever/config.json` on the server machine.
+The configuration file is located at `~/.wherever/config.json` on the server machine (or in `WHEREVER_CONFIG_DIR`, see [Directories](#directories-config-read-vs-state-written)).
+
+The file is **optional**. Without it the server runs on its built-in defaults, and nothing creates it for you: reading the config never writes it ([ADR 0022](docs/adr/0022-reading-the-config-never-writes-it.md)). To get a starter file to edit, run:
+
+```bash
+wherever config init   # writes the built-in defaults; refuses to overwrite an existing config.json
+wherever config show   # prints the config path, whether it exists, and the effective config (credentials redacted)
+```
+
+At start the server logs which file it reads and whether it was found, e.g. `[wherever] config: /home/u/.wherever/config.json (not found, using built-in defaults)`. A `config.json` seeded by an older release is left exactly as it is; note it pins the defaults of that release until you edit or remove it.
 
 ### Configuration Properties
 

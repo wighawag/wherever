@@ -54,6 +54,8 @@ import {
   parseInstallOptions,
   printInstallHelp,
 } from './commands/install.js';
+import { runConfigCommand } from './commands/config.js';
+import { getWhereverConfigPath } from './config-dir.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1169,6 +1171,13 @@ async function main(): Promise<void> {
   console.log(
     `[wherever] pi SDK ${piSdkInfo.version}: ` +
       (piSdkInfo.tier === 'bundled' ? `bundled (${piSdkInfo.why})` : `${piSdkInfo.tier}, from ${piSdkInfo.root} (${piSdkInfo.why})`),
+  );
+  // Where the config comes from (ADR 0022): reading it never creates it, so a
+  // missing file is said here instead of being silently seeded.
+  const configPath = getWhereverConfigPath();
+  console.log(
+    `[wherever] config: ${configPath} ` +
+      (fs.existsSync(configPath) ? '(found)' : '(not found, using built-in defaults)'),
   );
   const sessionPool = new SessionPool(idleTimeout, { getStarred: readStarredSet });
   await sessionPool.initialize();
@@ -4758,6 +4767,7 @@ function getVersion(): string {
  * Subcommand dispatch. Every action is an explicit verb:
  *   - `wherever start [server flags]` runs the server
  *   - `wherever install|uninstall|service-status` manage the background service
+ *   - `wherever config init|show` write a starter config / show the effective one
  *   - `wherever --version` (or `-v` / `version`) prints the version
  *   - bare `wherever` (or `help`) prints usage
  * Server flags after `start` are consumed by parseArgs() (which reads
@@ -4787,6 +4797,9 @@ function dispatch(): void {
     case 'service-status':
     case 'status':
       runServiceStatus(parseInstallOptions(rest));
+      return;
+    case 'config':
+      process.exitCode = runConfigCommand(rest);
       return;
     case 'version':
     case '--version':

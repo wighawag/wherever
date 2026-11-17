@@ -19,14 +19,18 @@ New behaviour:
 
 ## Acceptance criteria
 
-- [ ] With no `config.json`, calling the config reader any number of times writes nothing: the config dir (and its parent) is not created (test with a temp `WHEREVER_CONFIG_DIR` pointing at a non-existent path, and with a read-only dir: no warning logged).
-- [ ] The effective config with no file equals today's seeded defaults (test pins the values).
-- [ ] Server start logs the config path and found / not found (real-server test).
-- [ ] `wherever config init` creates the file with the defaults; a second run refuses with a non-zero exit and leaves the file byte-identical (test spawns the CLI).
-- [ ] `wherever config show` prints path, existence and the effective config, with credential values redacted (test).
-- [ ] Existing files are untouched by an upgrade: nothing rewrites or deletes a previously seeded file.
-- [ ] Tests isolate the config dir in temp dirs (the suite's `setup-isolate-env.ts` already gives every test file a temp HOME and unsets `WHEREVER_CONFIG_DIR`); the suite's global real-home guard stays green.
-- [ ] Docs: README "Configuration File" section and `docs/USAGE.md` say the file is optional and created by `wherever config init`; `CONTEXT.md` (the config/state dir section, which today mentions the best-effort seed) updated with targeted edits, linking ADR 0022. Changeset `"wherever-dev": minor` (user-visible: no starter file on first run, two new CLI verbs).
+- [x] With no `config.json`, calling the config reader any number of times writes nothing: the config dir (and its parent) is not created (test with a temp `WHEREVER_CONFIG_DIR` pointing at a non-existent path, and with a read-only dir: no warning logged).
+- [x] The effective config with no file equals today's seeded defaults (test pins the values).
+- [x] Server start logs the config path and found / not found (real-server test).
+- [x] `wherever config init` creates the file with the defaults; a second run refuses with a non-zero exit and leaves the file byte-identical (test spawns the CLI).
+- [x] `wherever config show` prints path, existence and the effective config, with credential values redacted (test).
+- [x] Existing files are untouched by an upgrade: nothing rewrites or deletes a previously seeded file.
+- [x] Tests isolate the config dir in temp dirs (the suite's `setup-isolate-env.ts` already gives every test file a temp HOME and unsets `WHEREVER_CONFIG_DIR`); the suite's global real-home guard stays green.
+- [x] Docs: README "Configuration File" section and `docs/USAGE.md` say the file is optional and created by `wherever config init`; `CONTEXT.md` (the config/state dir section, which today mentions the best-effort seed) updated with targeted edits, linking ADR 0022. Changeset `"wherever-dev": minor` (user-visible: no starter file on first run, two new CLI verbs).
+
+## Decisions
+
+The non-obvious in-scope decisions (the defaults' home and fresh-object return, the startup log wording, the `config init` file format and `wx` no-clobber write, `config show` semantics with no merge of defaults into a present file, the exact redaction rule, the exit codes, and the rework of the pool-dispose late-read test) are recorded in [work/notes/observations/config-read-never-writes-decisions.md](../../notes/observations/config-read-never-writes-decisions.md).
 
 ## Blocked by
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,7 +14,9 @@ import { SessionPool } from '../src/session-pool.ts';
  * intermittent failure of assistant-scheduler-server.test.ts's real-dir guard).
  *
  * Isolation: PI_CODING_AGENT_DIR and WHEREVER_CONFIG_DIR are temp dirs, and the
- * config dir is SWITCHED to an empty one right after dispose to catch a late read.
+ * config dir is SWITCHED right after dispose to one holding an UNPARSEABLE
+ * config.json, to catch a late read. (A read no longer seeds a file, ADR 0022,
+ * so the parse error a read logs is now the observable.)
  */
 
 let root: string;
@@ -52,14 +54,22 @@ afterAll(() => {
 });
 
 describe('SessionPool after disposeAll', () => {
-  it('the startup warm-up never reads (or seeds) the config once the pool is disposed', async () => {
+  it('the startup warm-up never reads the config once the pool is disposed', async () => {
     const pool = new SessionPool(300_000);
     await pool.initialize();
     await pool.disposeAll();
     const after = path.join(root, 'config-after');
     fs.mkdirSync(after);
+    fs.writeFileSync(path.join(after, 'config.json'), '{ late read marker');
+    const error = vi.spyOn(console, 'error');
     process.env.WHEREVER_CONFIG_DIR = after;
-    await new Promise((r) => setTimeout(r, 1_000));
-    expect(fs.readdirSync(after)).toEqual([]);
+    try {
+      await new Promise((r) => setTimeout(r, 1_000));
+      const lateReads = error.mock.calls.filter((c) => String(c[0]).includes('Failed to parse wherever config file'));
+      expect(lateReads).toEqual([]);
+      expect(fs.readdirSync(after)).toEqual(['config.json']);
+    } finally {
+      error.mockRestore();
+    }
   }, 30_000);
 });

@@ -523,6 +523,8 @@ Usage:
   wherever install [options]       Install & start a background service
   wherever uninstall [options]     Stop & remove the background service
   wherever service-status          Show the service status
+  wherever config init             Write a starter config.json (refuses to overwrite)
+  wherever config show             Show the config path and the effective config
   wherever --version               Show the installed version
   wherever help                    Show this help
 

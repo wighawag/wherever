@@ -51,6 +51,9 @@ When you run `pi` in a local directory, the **CLI Bridge Extension** connects to
 >
 > The CLI side is warned too. When it takes over a mid-turn session, the server tells it explicitly, so the CLI surfaces a matching notice (tool-call result lost, or streaming reply discarded). This covers the streaming-text case that the CLI could not otherwise detect: a still-streaming turn is never persisted, so the CLI's own resumed-mid-tool-call check (which reads the saved transcript) sees nothing. For the tool-call case, the CLI's transcript check already warns with the tool names, so the server notice defers to it to avoid a duplicate.
 
+### The configuration file is optional
+Every "Config (`~/.wherever/config.json`)" block below refers to `config.json` in the config dir (`WHEREVER_CONFIG_DIR`, default `~/.wherever`). The file is **optional**: without it the server uses its built-in defaults, and reading the config never creates the file or the directory ([ADR 0022](adr/0022-reading-the-config-never-writes-it.md)). At start the server logs which file it reads and whether it was found (`[wherever] config: /home/u/.wherever/config.json (not found, using built-in defaults)`). `wherever config init` writes a starter file (the defaults; it refuses to overwrite an existing one), and `wherever config show` prints the path, whether the file exists and the effective config, with credential values such as `assistantTelegram.token` shown as `<redacted>`.
+
 ---
 
 ## 2. HTTP REST API Reference

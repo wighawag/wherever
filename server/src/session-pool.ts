@@ -767,8 +767,8 @@ async function runDiskScan(
   return infos;
 }
 
-export { getWhereverConfigDir } from './config-dir.js';
-import { getWhereverConfigDir } from './config-dir.js';
+export { getWhereverConfigDir, getWhereverConfigPath, defaultWhereverConfig } from './config-dir.js';
+import { getWhereverConfigDir, getWhereverConfigPath, defaultWhereverConfig } from './config-dir.js';
 
 /**
  * Directory holding everything the RUNNING SERVER WRITES (drafts, generated
@@ -800,35 +800,20 @@ export function getWhereverCertsDir(): string {
   return path.join(getWhereverStateDir(), 'certs');
 }
 
+/**
+ * The single reader of `config.json`. READ ONLY (ADR 0022): a missing file
+ * means the built-in defaults and creates nothing, neither the file nor the
+ * config dir, from any caller at any time. A config file is created only by
+ * `wherever config init`. An unparseable file is logged and read as `{}`.
+ */
 export function getWhereverConfig(): WhereverConfig {
-  const configDir = getWhereverConfigDir();
-  const configPath = path.join(configDir, 'config.json');
-  if (!fs.existsSync(configPath)) {
-    try {
-      fs.mkdirSync(configDir, { recursive: true });
-      const defaultConfig: WhereverConfig = {
-        gitInitDefault: false,
-        remoteRepoRules: [],
-        commonFolders: []
-      };
-      fs.writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2), 'utf8');
-      return defaultConfig;
-    } catch (err) {
-      // A READ-ONLY config dir is a supported deployment (the config is rendered
-      // by the deployment and the service cannot write there), so seeding a
-      // default must never be fatal, and must not look like a crash in the log.
-      console.warn(
-        `[wherever] could not seed a default config at ${configPath} ` +
-          `(${(err as Error).message}); continuing with built-in defaults.`,
-      );
-    }
-  } else {
-    try {
-      const content = fs.readFileSync(configPath, 'utf8');
-      return JSON.parse(content);
-    } catch (err) {
-      console.error('Failed to parse wherever config file:', err);
-    }
+  const configPath = getWhereverConfigPath();
+  if (!fs.existsSync(configPath)) return defaultWhereverConfig();
+  try {
+    const content = fs.readFileSync(configPath, 'utf8');
+    return JSON.parse(content);
+  } catch (err) {
+    console.error('Failed to parse wherever config file:', err);
   }
   return {};
 }
