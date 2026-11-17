@@ -16,6 +16,10 @@ New behaviour: persist, in the STATE dir (never in `schedule.json`), when the sc
 
 Gate-3 (conductor): the first gate went red ONLY on an environmental cause: server/test/readonly-config-deployment.test.ts's TLS suite reported `openssl` not on PATH in the gate process, although this branch does not touch that test or PATH handling, and the same suite passed in the four gates just before it in this drive. No code change is needed for it: do NOT change, skip or weaken that test. Re-run the gate on the kept work; only fix something if Gate 1 shows a real failure in this task's own tests.
 
+## Requeue 2026-11-17
+
+Conductor (2nd recovery): the gate failed again ONLY because openssl was missing from the gate's PATH. Diagnosed live: dorfl 0.15.1 spawns the gate's `bash -c` with socket stdin, so bash sources /etc/bashrc -> /etc/profile and PATH loses the nix-store openssl (work/notes/findings/bash-c-with-socket-stdin-sources-bashrc-and-resets-path.md). The re-run sets NOSYSBASHRC=1 for the gate. The code is unchanged and needs no change for this.
+
 ## Acceptance criteria
 
 - [ ] A job seen at 8:58 with a 9:00 occurrence, server down 8:59 to 9:10: on restart it fires once; down until 11:00 (outside the 1 h grace): it is skipped and recorded (injected clock, no real timers).
