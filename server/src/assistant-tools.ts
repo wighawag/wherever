@@ -62,6 +62,8 @@ export interface AssistantScheduleBackend {
   removeJob(id: string): Promise<boolean>;
   list(): ScheduleListing;
   getUserTimezone(): string;
+  /** Who set the current zone (the latest history entry's `source`), null when unknown. */
+  getUserTimezoneSource(): string | null;
   setUserTimezone(timezone: string, source: string): boolean;
 }
 
@@ -122,7 +124,7 @@ export type OpResult = { ok: true; text: string; details: unknown } | { ok: fals
 
 /** The `source` recorded in the timezone history for a change made by `assistant_set_timezone`. */
 export const SET_TIMEZONE_SOURCE = 'assistant_set_timezone';
-/** The `source` recorded for a change reported by a web client on connect. */
+/** The `source` recorded for a change reported by a web client (`webTimezoneReport`). */
 export const WEB_TIMEZONE_SOURCE = 'web';
 
 /** The lock-state error a tool answers when the assistant is configured but not active here. */
@@ -249,6 +251,48 @@ export function setTimezone(backend: AssistantScheduleBackend, args: unknown, so
       : `The user's timezone was already ${tz}; nothing changed.`,
     details: { timezone: tz, changed },
   };
+}
+
+/** A web client's timezone report (`client_timezone`), as the server reads it. */
+export interface WebTimezoneReport {
+  timezone: unknown;
+  /**
+   * True when this is the device's FIRST report (it remembers no earlier one).
+   * Absent (an older web, which reported on every connect) reads as a
+   * non-first report, i.e. the previous "applies when it differs" behaviour.
+   */
+  first?: unknown;
+}
+
+/**
+ * Apply a web client's timezone report (ADR 0019: a report is a signal that a
+ * DEVICE MOVED, not a reading of where the user is). The web sends one only
+ * when the browser's zone differs from the last zone that browser reported.
+ * A non-first report applies when it differs (like `assistant_set_timezone`,
+ * through the scheduler's setter, source `web`). A FIRST report applies only
+ * when the current zone was not set by `assistant_set_timezone` (its latest
+ * history source); otherwise it is ignored: nothing written, nothing recorded,
+ * nothing pushed (`details.ignored: true`). An unknown zone is an error.
+ */
+export function webTimezoneReport(backend: AssistantScheduleBackend, report: WebTimezoneReport): OpResult {
+  const tz = str(report.timezone)?.trim();
+  if (!tz || !isValidTimeZone(tz)) return setTimezone(backend, { timezone: report.timezone }, WEB_TIMEZONE_SOURCE);
+  if (report.first === true) {
+    let source: string | null;
+    try {
+      source = backend.getUserTimezoneSource();
+    } catch (err) {
+      return { ok: false, error: errorOf(err) };
+    }
+    if (source === SET_TIMEZONE_SOURCE) {
+      return {
+        ok: true,
+        text: `Ignored a new device's first report (${tz}): the user's timezone was set explicitly.`,
+        details: { timezone: tz, changed: false, ignored: true },
+      };
+    }
+  }
+  return setTimezone(backend, { timezone: tz }, WEB_TIMEZONE_SOURCE);
 }
 
 /** How the tap target was chosen (the precedence of `resolveNotifyTarget`). */

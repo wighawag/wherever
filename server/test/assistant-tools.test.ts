@@ -12,6 +12,7 @@ import {
   createTimezoneLineExtension,
   isAssistantFolderCwd,
   setTimezone,
+  webTimezoneReport,
   WEB_TIMEZONE_SOURCE,
   type AssistantSessionHooks,
   type AssistantToolCaller,
@@ -285,6 +286,56 @@ describe('assistant_set_timezone and the web report', () => {
     // Unchanged: nothing recorded, nothing pushed.
     expect(setTimezone(scheduler, { timezone: 'Europe/Paris' }, WEB_TIMEZONE_SOURCE)).toMatchObject({ ok: true, details: { changed: false } });
     expect(tzChanges).toHaveLength(2);
+  });
+
+  // ADR 0019: a web report is a signal that a DEVICE MOVED. A device's first
+  // report applies only when the current zone was not set explicitly.
+  it('with no explicit setting, a first report applies (source web)', async () => {
+    const { scheduler, stateDir, tzChanges } = await setup();
+    expect(webTimezoneReport(scheduler, { timezone: 'Europe/Paris', first: true })).toMatchObject({ ok: true, details: { changed: true } });
+    expect(scheduler.getUserTimezone()).toBe('Europe/Paris');
+    expect(tzChanges).toEqual(['Europe/Paris']);
+    const state = JSON.parse(fs.readFileSync(path.join(stateDir, 'assistant-timezone.json'), 'utf8'));
+    expect(state.history.at(-1)).toMatchObject({ timezone: 'Europe/Paris', source: WEB_TIMEZONE_SOURCE });
+  });
+
+  it("after assistant_set_timezone a new device's first report is ignored (not recorded), a known device that moved applies", async () => {
+    const { tools, scheduler, stateDir, tzChanges } = await setup();
+    await tools.assistant_set_timezone!.execute('t', { timezone: 'Asia/Tokyo' });
+    const file = path.join(stateDir, 'assistant-timezone.json');
+    const before = fs.readFileSync(file, 'utf8');
+
+    const ignored = webTimezoneReport(scheduler, { timezone: 'Europe/Paris', first: true });
+    expect(ignored).toMatchObject({ ok: true, details: { changed: false, ignored: true } });
+    expect(scheduler.getUserTimezone()).toBe('Asia/Tokyo');
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    expect(tzChanges).toEqual(['Asia/Tokyo']);
+
+    // A device that already reported and whose zone really changed (travel).
+    expect(webTimezoneReport(scheduler, { timezone: 'America/New_York', first: false })).toMatchObject({ ok: true, details: { changed: true } });
+    expect(scheduler.getUserTimezone()).toBe('America/New_York');
+    expect(tzChanges).toEqual(['Asia/Tokyo', 'America/New_York']);
+    const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(state.history.map((h: { source: string }) => h.source)).toEqual(['system', 'assistant_set_timezone', 'web']);
+
+    // The latest source is now `web`, so a new device's first report applies again.
+    expect(webTimezoneReport(scheduler, { timezone: 'Europe/Paris', first: true })).toMatchObject({ details: { changed: true } });
+  });
+
+  it('an older web (no first flag) is treated as a non-first report', async () => {
+    const { tools, scheduler } = await setup();
+    await tools.assistant_set_timezone!.execute('t', { timezone: 'Asia/Tokyo' });
+    expect(webTimezoneReport(scheduler, { timezone: 'Europe/Paris' })).toMatchObject({ details: { changed: true } });
+    expect(scheduler.getUserTimezone()).toBe('Europe/Paris');
+  });
+
+  it('an unknown zone in a web report is an error and writes nothing, first or not', async () => {
+    const { scheduler, stateDir, tzChanges } = await setup();
+    const file = path.join(stateDir, 'assistant-timezone.json');
+    const before = fs.readFileSync(file, 'utf8');
+    for (const first of [true, false]) expect(webTimezoneReport(scheduler, { timezone: 'Mars/Olympus', first }).ok).toBe(false);
+    expect(fs.readFileSync(file, 'utf8')).toBe(before);
+    expect(tzChanges).toEqual([]);
   });
 
   it('an unknown zone is an isError result and writes nothing', async () => {

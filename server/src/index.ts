@@ -11,12 +11,12 @@ import { AssistantController } from './assistant-controller.js';
 import { AssistantScheduler } from './assistant-scheduler.js';
 import {
   assistantNotActiveError,
-  setTimezone,
   testNotification,
-  WEB_TIMEZONE_SOURCE,
+  webTimezoneReport,
   type AssistantNotifyBackend,
   type AssistantScheduleBackend,
   type AssistantSessionHooks,
+  type WebTimezoneReport,
 } from './assistant-tools.js';
 import { ChannelDispatcher, type AssistantChannel } from './assistant-channels.js';
 import { WebPushChannel, resolveVapidSubject, validateSubscription } from './web-push.js';
@@ -1408,13 +1408,16 @@ async function main(): Promise<void> {
     }
   };
   /**
-   * A web client's timezone report (`client_timezone`, sent on connect): made the
-   * user's current timezone when it differs, only while the assistant is active.
-   * Otherwise ignored, so nothing is written. An unknown zone is logged and ignored.
+   * A web client's timezone report (`client_timezone`, sent only when the
+   * device's zone moved, ADR 0019): applied by `webTimezoneReport` (a first
+   * report never overrides `assistant_set_timezone`), only while the assistant
+   * is active. Otherwise ignored, so nothing is written. An unknown zone is
+   * logged and ignored.
    */
-  const onClientTimezone = (timezone: unknown): void => {
+  const onClientTimezone = (report: WebTimezoneReport): void => {
+    const { timezone } = report;
     if (!assistantBackend || typeof timezone !== 'string' || !timezone.trim()) return;
-    const r = setTimezone(assistantBackend, { timezone }, WEB_TIMEZONE_SOURCE);
+    const r = webTimezoneReport(assistantBackend, report);
     if (!r.ok) console.warn(`[wherever] assistant: ignoring the web's timezone report: ${r.error}`);
   };
 
@@ -3623,12 +3626,12 @@ async function handleWSMessage(
   onSessionsUpdated: () => void,
   assistantController: AssistantController | null = null,
   cliRequests: CliRequestRouter | null = null,
-  onClientTimezone: (timezone: unknown) => void = () => {},
+  onClientTimezone: (report: WebTimezoneReport) => void = () => {},
 ): Promise<void> {
   switch (msg.type) {
     case 'client_timezone':
-      // The web's timezone report on connect (see onClientTimezone in main).
-      onClientTimezone(msg.timezone);
+      // The web's timezone report when its device moved (see onClientTimezone in main).
+      onClientTimezone({ timezone: msg.timezone, first: msg.first });
       break;
     case 'assistant_open':
     case 'assistant_reset': {

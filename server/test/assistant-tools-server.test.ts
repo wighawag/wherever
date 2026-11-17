@@ -16,7 +16,9 @@ import { timezoneLine } from '../src/assistant-tool-text.ts';
  *    isolated job in `jobs/`); the assistant folder's turns carry the timezone
  *    line; a web report and `assistant_set_timezone` both change it, push
  *    `assistant_info_changed` to CLI bridges and `assistant_status` to the web,
- *    and the next assistant turn carries the new line;
+ *    and the next assistant turn carries the new line; after
+ *    `assistant_set_timezone` a new device's FIRST report is ignored while a
+ *    known device that moved applies (ADR 0019);
  *  - lock held by another server: sessions get NONE of the tools and no
  *    timezone line (tools and system prompt identical to an unset server),
  *    while the CLI twin ops still answer the lock-state error.
@@ -130,6 +132,7 @@ describe('assistant tools (real server)', () => {
     const h = await boot(root, 'off', {});
     const c = await client(h);
     c.send({ type: 'client_timezone', timezone: 'Pacific/Auckland' });
+    c.send({ type: 'client_timezone', timezone: 'Europe/Paris', first: true });
     const s = await newSession(c, c.workspace);
     const [req] = await turn(h, c, s.sessionId, 'hello', 'hi');
     expect(toolNames(req!)).toEqual(expect.arrayContaining(['attach_file', 'say']));
@@ -223,9 +226,26 @@ describe('assistant tools (real server)', () => {
     // A bogus report is ignored.
     phone.send({ type: 'client_timezone', timezone: 'Mars/Olympus' });
     await new Promise((r) => setTimeout(r, 200));
-    const tzState = JSON.parse(fs.readFileSync(path.join(stateDir, 'assistant-timezone.json'), 'utf8'));
+    const tzFile = path.join(stateDir, 'assistant-timezone.json');
+    let tzState = JSON.parse(fs.readFileSync(tzFile, 'utf8'));
     expect(tzState.timezone).toBe('Asia/Tokyo');
     expect(tzState.history.map((e: { source: string }) => e.source)).toEqual(['system', 'web', 'assistant_set_timezone']);
+
+    // ADR 0019: a NEW device's first report does not override the explicit setting
+    // (nothing written, nothing pushed)...
+    const before = fs.readFileSync(tzFile, 'utf8');
+    const laptop = await client(h);
+    laptop.send({ type: 'client_timezone', timezone: 'Europe/Paris', first: true });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(fs.readFileSync(tzFile, 'utf8')).toBe(before);
+    expect(await assistantStatus(h.port)).toMatchObject({ timezone: 'Asia/Tokyo' });
+    expect(cli.messages.some((m) => m.type === 'assistant_info_changed' && m.timezone === 'Europe/Paris')).toBe(false);
+    // ...but a known device whose zone actually changed does, pushed like any change.
+    phone.send({ type: 'client_timezone', timezone: 'America/New_York', first: false });
+    await cli.waitFor((m) => m.type === 'assistant_info_changed' && m.timezone === 'America/New_York');
+    await web.waitFor((m) => m.type === 'assistant_status' && m.timezone === 'America/New_York');
+    tzState = JSON.parse(fs.readFileSync(tzFile, 'utf8'));
+    expect(tzState.history.map((e: { source: string }) => e.source)).toEqual(['system', 'web', 'assistant_set_timezone', 'web']);
   }, 180_000);
 
   it('lock held by another server: no tools and no timezone line (as unset), but the CLI twins answer the lock-state error', async () => {

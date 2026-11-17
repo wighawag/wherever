@@ -74,10 +74,14 @@ export type ClientMessage =
   | { type: 'assistant_open' }
   | { type: 'assistant_reset' }
   // Client -> server: the web client's timezone (`Intl.DateTimeFormat()
-  // .resolvedOptions().timeZone`), sent on every connect. While the assistant is
-  // active the server makes it the user's current timezone when it differs
-  // (recorded, source `web`); otherwise it is ignored and nothing is written.
-  | { type: 'client_timezone'; timezone: string }
+  // .resolvedOptions().timeZone`), sent on connect ONLY when it differs from the
+  // last zone this browser reported (ADR 0019); `first` marks the device's first
+  // report (nothing remembered; absent = an older web, read as not first). While
+  // the assistant is active the server applies a non-first report when it
+  // differs, and a first one only when the current zone was not set by
+  // `assistant_set_timezone` (recorded, source `web`); otherwise it is ignored
+  // and nothing is written.
+  | { type: 'client_timezone'; timezone: string; first?: boolean }
   | { type: 'session_leave'; sessionId: string }
   // Client -> server: ask for the skill commands available in this session so
   // the composer can offer `/skill:<name>` autocomplete. The server replies with

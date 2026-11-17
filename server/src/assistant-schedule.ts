@@ -520,6 +520,11 @@ export class UserTimezone {
     return this.state.history;
   }
 
+  /** Who set the current zone: the latest history entry's `source` (null when the history is empty). */
+  source(): string | null {
+    return this.state.history.at(-1)?.source ?? null;
+  }
+
   /** Change it. Throws on an unknown zone; resolves false (nothing written) when unchanged. */
   set(timezone: string, source: string): boolean {
     if (!isValidTimeZone(timezone)) throw new Error(`not a known IANA timezone: ${JSON.stringify(timezone)}`);

@@ -18,7 +18,7 @@ import {buildAttachmentMessage} from './core/attachments';
 import {shouldDropStaleHash} from './core/view-mode';
 import {fileStillReadable, postUpload} from './core/post-upload';
 import {adoptTokenFromUrlOnce} from './core/token-adoption';
-import {timezoneReportFrame} from './core/timezone-report';
+import {reportTimezoneIfMoved} from './core/timezone-report';
 import {normalizeDrafts, type Draft} from './core/drafts';
 import {
 	createConversationCache,
@@ -771,11 +771,11 @@ client.onMessage((msg) => {
 			break;
 
 		case 'connected': {
-			// Every new socket reports this browser's timezone: while the assistant
-			// is active the server makes it the user's current one when it differs
-			// (core/timezone-report.ts); otherwise the server ignores it.
-			const report = timezoneReportFrame();
-			if (report) client.send(report);
+			// A new socket reports this browser's timezone only when it moved since
+			// this browser's last report (ADR 0019, core/timezone-report.ts); the
+			// server decides what it changes, and ignores it while the assistant is
+			// not active.
+			reportTimezoneIfMoved((frame) => client.send(frame));
 			break;
 		}
 
