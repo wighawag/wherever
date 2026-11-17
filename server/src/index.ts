@@ -18,7 +18,7 @@ import {
   type AssistantSessionHooks,
   type WebTimezoneReport,
 } from './assistant-tools.js';
-import { ChannelDispatcher, type AssistantChannel } from './assistant-channels.js';
+import { ChannelDispatcher, reportDroppedBeyondChannels, type AssistantChannel } from './assistant-channels.js';
 import { WebPushChannel, resolveVapidSubject, validateSubscription } from './web-push.js';
 import { TelegramChannel } from './telegram-channel.js';
 import { normalizeToolCalls } from './telegram-replies.js';
@@ -1282,8 +1282,22 @@ async function main(): Promise<void> {
         },
         // Messages a reset or an aborted settle dropped: reported to the
         // channels they came from (the dispatcher exists by then; before it
-        // does, nothing has been sent from a channel, so nothing is lost).
-        onDropped: (dropped) => channelDispatcher?.reportDropped(dropped),
+        // does, nothing has been sent from a channel, so nothing is lost);
+        // the web's own become a notice to the session's web viewers (the
+        // retired session's, on a reset), and a scheduled job's are logged.
+        onDropped: (dropped) => {
+          channelDispatcher?.reportDropped(dropped);
+          reportDroppedBeyondChannels(dropped, {
+            notifyWebViewers: (sessionFile, message) => {
+              const sessionId = sessionPool.getSession(sessionFile)?.sessionId;
+              if (!sessionId) return;
+              const notice: ServerMessage = { type: 'session_notice', sessionId, level: 'warning', message };
+              for (const c of clients.values()) {
+                if (!c.isCliBridge && c.sessionId === sessionFile) sendWS(c.ws, notice);
+              }
+            },
+          });
+        },
       })
     : null;
   if (assistantController) {

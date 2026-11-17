@@ -198,12 +198,21 @@ describe('Telegram conversation (real server)', () => {
     h.setNext({ kind: 'slow-reply', text: 'a very long and slow answer '.repeat(40), charDelayMs: 20 });
     api.message(USER, 'start something slow');
     await until(() => api.of('sendMessageDraft').length > 0, 30_000, 'streaming');
+    // A web tab viewing the assistant session: a Telegram drop is not its to show.
+    const web = await webClient(h);
+    web.send({ type: 'assistant_open' });
+    const cur = await web.waitForType('assistant_current');
+    web.send({ type: 'session_load', sessionFile: cur.sessionFile });
+    await web.waitFor((m) => m.type === 'session_ready' && m.sessionFile === cur.sessionFile);
     api.message(USER, 'queued steer text');
     await until(() => api.of('setMessageReaction').length === 1, 30_000, 'the steer reaction');
     api.message(USER, 'stop');
     await until(() => sent(api).includes(STOPPED_REPLY), 30_000, 'the stop reply');
     await until(() => sent(api).some((t) => t.includes('• queued steer text')), 30_000, 'the dropped report');
     expect(sent(api).find((t) => t.includes('• queued steer text'))).toMatch(/stopped/);
+    // Reported on Telegram only: the web viewer gets no dropped notice.
+    await new Promise((r) => setTimeout(r, 500));
+    expect(web.messages.some((m) => m.type === 'session_notice')).toBe(false);
 
     h.setNext({ kind: 'reply', text: 'routed back to telegram' });
     api.message(USER, 'are you there?');

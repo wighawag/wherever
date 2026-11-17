@@ -7,6 +7,10 @@ import {
   NO_CHANNEL_ERROR,
   destinationIsChannel,
   droppedByOrigin,
+  formatWebDroppedNotice,
+  reportDroppedBeyondChannels,
+  scheduleDroppedMessages,
+  webDroppedMessages,
   type AssistantChannel,
   type ChannelContext,
   type ChannelDroppedReport,
@@ -292,6 +296,54 @@ describe('dropped messages are reported to the channels of their origins', () =>
     expect(
       droppedByOrigin({ ...d, origins: { steering: ['telegram'], followUp: ['telegram'] } }),
     ).toEqual(new Map([['telegram', ['a', 'b']]]));
+  });
+});
+
+describe('dropped messages beyond the channels: the web and the scheduler (web-sees-messages-dropped)', () => {
+  const mixed: DroppedMessages = {
+    sessionFile: '/s.jsonl',
+    reason: 'aborted',
+    steering: ['steer from telegram', 'steer from the web', 'older, unknown'],
+    followUp: ['follow-up from telegram', 'a job', 'web follow-up'],
+    origins: { steering: ['telegram', 'none', null], followUp: ['telegram:chat-1', 'schedule:j1', 'none'] },
+    at: 'now',
+  };
+
+  it('the web gets its own (`none`) and unknown-origin texts, never a channel or job text', () => {
+    expect(webDroppedMessages(mixed)).toEqual(['steer from the web', 'older, unknown', 'web follow-up']);
+    // A record without origins (an older pool): every text is unknown, so the web shows them all.
+    expect(webDroppedMessages({ ...mixed, origins: undefined })).toEqual([...mixed.steering, ...mixed.followUp]);
+  });
+
+  it('scheduler-origin texts are picked out with their job origin', () => {
+    expect(scheduleDroppedMessages(mixed)).toEqual([{ origin: 'schedule:j1', text: 'a job' }]);
+    expect(scheduleDroppedMessages({ ...mixed, origins: undefined })).toEqual([]);
+  });
+
+  it('the notice names each dropped text, worded by reason', () => {
+    expect(formatWebDroppedNotice('aborted', ['do X instead'])).toBe('Stopped before it read this message; send it again if still needed:\n• do X instead');
+    expect(formatWebDroppedNotice('reset', ['a', 'b'])).toBe('The assistant was reset before it read these 2 messages; send them again if still needed:\n• a\n• b');
+  });
+
+  it('notifies the web viewers of the session and logs job drops; nothing for an empty or channel-only drop', () => {
+    const notices: Array<[string, string]> = [];
+    const logs: string[] = [];
+    const sinks = { notifyWebViewers: (f: string, m: string) => void notices.push([f, m]), log: (l: string) => void logs.push(l) };
+    reportDroppedBeyondChannels(mixed, sinks);
+    expect(notices).toEqual([['/s.jsonl', formatWebDroppedNotice('aborted', ['steer from the web', 'older, unknown', 'web follow-up'])]]);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain('schedule:j1');
+    expect(logs[0]).toContain('a job');
+
+    notices.length = 0;
+    logs.length = 0;
+    reportDroppedBeyondChannels({ ...mixed, steering: [], followUp: [], origins: { steering: [], followUp: [] } }, sinks);
+    reportDroppedBeyondChannels(
+      { ...mixed, steering: ['only telegram'], followUp: [], origins: { steering: ['telegram'], followUp: [] } },
+      sinks,
+    );
+    expect(notices).toEqual([]);
+    expect(logs).toEqual([]);
   });
 });
 

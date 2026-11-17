@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import type { DroppedMessages } from './assistant-controller.js';
+import { WEB_ORIGIN } from './reply-routing.js';
 
 /**
  * The assistant's CHANNEL SEAM (spec `assistant-session-and-channels`, ADRs 0014
@@ -248,6 +249,74 @@ export function droppedByOrigin(dropped: DroppedMessages): Map<string, string[]>
   return out;
 }
 
+/** Every dropped text with its routing origin (null = not known), steering first. */
+function droppedWithOrigins(dropped: DroppedMessages): Array<{ text: string; origin: string | null }> {
+  const out: Array<{ text: string; origin: string | null }> = [];
+  const add = (texts: string[], origins: Array<string | null> | undefined) =>
+    texts.forEach((text, i) => out.push({ text, origin: origins?.[i] ?? null }));
+  add(dropped.steering, dropped.origins?.steering);
+  add(dropped.followUp, dropped.origins?.followUp);
+  return out;
+}
+
+/**
+ * The dropped texts the WEB must be told about (task
+ * `web-sees-messages-dropped-from-the-assistant-session`): the web's own
+ * (`WEB_ORIGIN`) and those of no known origin. An unknown origin is reported
+ * nowhere else, and the web is where the session itself is shown, so it is
+ * the one place left that keeps such a drop from being silent. Never a text
+ * from a channel or a scheduled job.
+ */
+export function webDroppedMessages(dropped: DroppedMessages): string[] {
+  return droppedWithOrigins(dropped)
+    .filter((d) => d.origin === null || d.origin === WEB_ORIGIN)
+    .map((d) => d.text);
+}
+
+/** The dropped texts a scheduled job sent (origin `schedule:<jobId>`, ADR 0014). */
+export function scheduleDroppedMessages(dropped: DroppedMessages): Array<{ origin: string; text: string }> {
+  return droppedWithOrigins(dropped)
+    .filter((d): d is { text: string; origin: string } => !!d.origin && d.origin.startsWith('schedule:'))
+    .map((d) => ({ origin: d.origin, text: d.text }));
+}
+
+/** The web `session_notice` naming dropped web texts (the web twin of Telegram's `formatDroppedReport`). */
+export function formatWebDroppedNotice(reason: DroppedMessages['reason'], texts: string[]): string {
+  const n = texts.length;
+  const what = n === 1 ? 'this message' : `these ${n} messages`;
+  const it = n === 1 ? 'it' : 'them';
+  const head =
+    reason === 'reset'
+      ? `The assistant was reset before it read ${what}; send ${it} again if still needed:`
+      : `Stopped before it read ${what}; send ${it} again if still needed:`;
+  return [head, ...texts.map((t) => `• ${t}`)].join('\n');
+}
+
+/** Where the drops the channels do not take go (the server wires these, index.ts). */
+export interface DroppedSinks {
+  /** Tell the web viewers of `sessionFile` (a `session_notice`). */
+  notifyWebViewers(sessionFile: string, message: string): void;
+  /** Log a line (defaults to `console.log`). */
+  log?(line: string): void;
+}
+
+/**
+ * The rest of the controller's `onDropped`, beside `ChannelDispatcher.reportDropped`
+ * (which reports channel-origin texts to their channel): the web's texts become
+ * a notice to the session's web viewers, and a scheduled job's texts are logged,
+ * so no drop is silent. Nothing at all for a drop with neither.
+ */
+export function reportDroppedBeyondChannels(dropped: DroppedMessages, sinks: DroppedSinks): void {
+  const web = webDroppedMessages(dropped);
+  if (web.length > 0) sinks.notifyWebViewers(dropped.sessionFile, formatWebDroppedNotice(dropped.reason, web));
+  const log = sinks.log ?? ((line: string) => console.log(line));
+  const what = dropped.reason === 'reset' ? 'reset' : 'aborted turn';
+  for (const { origin, text } of scheduleDroppedMessages(dropped)) {
+    const shown = text.length > 200 ? `${text.slice(0, 200)}...` : text;
+    log(`[wherever] assistant ${what} dropped the queued message of scheduled job ${origin} in ${dropped.sessionFile}: ${shown}`);
+  }
+}
+
 export interface ChannelDispatcherOptions {
   controller: ChannelControllerPort;
   pool: ChannelPoolPort;
@@ -340,7 +409,8 @@ export class ChannelDispatcher {
   /**
    * The controller's `onDropped`: report each dropped message to the channel of
    * its routing origin. Messages from the web (`none`), the scheduler or no
-   * known origin are reported to nobody (the web shows the session itself).
+   * known origin are not a channel's: `reportDroppedBeyondChannels` shows the
+   * web's (and the unknown) to the session's web viewers and logs the jobs'.
    */
   reportDropped(dropped: DroppedMessages): void {
     const byOrigin = droppedByOrigin(dropped);

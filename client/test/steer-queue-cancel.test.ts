@@ -120,6 +120,21 @@ describe('queued steer tracking + cancel', () => {
 		expect(state().pendingSteering).toEqual([]);
 	});
 
+	it('an assistant stop that drops the queued steer: the pending set clears and the notice names it', () => {
+		// What the server sends a web viewer of the assistant session on a stop
+		// with a web steer queued (task web-sees-messages-dropped-from-the-assistant-session):
+		// the turn ends, pi's cleared queue, and a session_notice naming the text.
+		ws.last().receive({type: 'queue_update', sessionId: 'sid-1', steering: ['do X instead']});
+		expect(state().pendingSteering).toEqual(['do X instead']);
+		ws.last().receive({type: 'agent_end', sessionId: 'sid-1'});
+		ws.last().receive({type: 'queue_update', sessionId: 'sid-1', steering: []});
+		const message = 'Stopped before it read this message; send it again if still needed:\n• do X instead';
+		ws.last().receive({type: 'session_notice', sessionId: 'sid-1', level: 'warning', message});
+		vi.advanceTimersByTime(500);
+		expect(state().pendingSteering).toEqual([]);
+		expect(state().notice).toEqual({level: 'warning', message});
+	});
+
 	it('cancelSteer with no session is a no-op (no frame sent)', () => {
 		client.leaveSession();
 		const sock = ws.last();
