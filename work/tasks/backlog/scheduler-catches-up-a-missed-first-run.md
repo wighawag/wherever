@@ -12,6 +12,10 @@ Decided (grilling 2026-10-31, Q6): reverse `assistant-scheduler` decision 4's ac
 
 New behaviour: persist, in the STATE dir (never in `schedule.json`), when the scheduler first saw each job and when a re-enable or an edit of `cron` / `at` / `tz` reset that base. After a restart the base survives, so the normal grace rule (fire once if the latest missed run is within the grace window, else skip and record) applies to the first run too. Entries for jobs removed from `schedule.json` are pruned. A job first seen while the server was down (hand-added to the file) still starts from when it is first seen, as today.
 
+## Requeue 2026-11-17
+
+Gate-3 (conductor): the first gate went red ONLY on an environmental cause: server/test/readonly-config-deployment.test.ts's TLS suite reported `openssl` not on PATH in the gate process, although this branch does not touch that test or PATH handling, and the same suite passed in the four gates just before it in this drive. No code change is needed for it: do NOT change, skip or weaken that test. Re-run the gate on the kept work; only fix something if Gate 1 shows a real failure in this task's own tests.
+
 ## Acceptance criteria
 
 - [ ] A job seen at 8:58 with a 9:00 occurrence, server down 8:59 to 9:10: on restart it fires once; down until 11:00 (outside the 1 h grace): it is skipped and recorded (injected clock, no real timers).
