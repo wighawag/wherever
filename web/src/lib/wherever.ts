@@ -43,6 +43,7 @@ import {
 	searchFolderStore,
 	searchCreateRemoteStore,
 	applyAssistantPointer,
+	applyKenningUpdate,
 } from './session-store';
 
 export type {ChatMessage, WhereverState};
@@ -739,6 +740,47 @@ export function prefillComposer(text: string) {
 // (forked) session, not the source one.
 let pendingForkPrefill: string | null = null;
 
+/** Answers to kenning items in flight, by request id, settled by `kenning_answer_result`. */
+const pendingKenningAnswers = new Map<
+	string,
+	(r: {ok: true} | {ok: false; error: string}) => void
+>();
+let kenningAnswerSeq = 0;
+
+/**
+ * Answer a kenning attention item from the web reply box (wherever ADR 0023):
+ * the server records it as the human's answer (channel `web`) and delivers it
+ * to the asking session. Resolves with the server's verdict (matched by a
+ * request id, so a second answer in flight gets its own), or an error when not
+ * connected or no answer came within 15 s.
+ */
+export function answerKenningItem(
+	itemId: string,
+	text: string,
+): Promise<{ok: true} | {ok: false; error: string}> {
+	return new Promise((resolve) => {
+		const requestId = `ka-${Date.now()}-${++kenningAnswerSeq}`;
+		const timer = setTimeout(() => {
+			if (!pendingKenningAnswers.delete(requestId)) return;
+			resolve({
+				ok: false,
+				error: 'no answer from the server; check the connection and try again',
+			});
+		}, 15_000);
+		pendingKenningAnswers.set(requestId, (r) => {
+			clearTimeout(timer);
+			resolve(r);
+		});
+		if (!client.send({type: 'kenning_answer', itemId, text, requestId})) {
+			pendingKenningAnswers.get(requestId)?.({
+				ok: false,
+				error: 'not connected',
+			});
+			pendingKenningAnswers.delete(requestId);
+		}
+	});
+}
+
 // Sync WebSocket messages with Svelte session-store state side-effects
 client.onMessage((msg) => {
 	switch (msg.type) {
@@ -840,6 +882,24 @@ client.onMessage((msg) => {
 		case 'sessions_updated':
 			fetchSessions();
 			break;
+
+		case 'kenning_update':
+			applyKenningUpdate(msg);
+			break;
+
+		case 'kenning_answer_result': {
+			const m = msg as {requestId?: string; ok: boolean; error?: string};
+			const pending = m.requestId
+				? pendingKenningAnswers.get(m.requestId)
+				: undefined;
+			if (pending && m.requestId) {
+				pendingKenningAnswers.delete(m.requestId);
+				pending(
+					m.ok ? {ok: true} : {ok: false, error: m.error || 'not answered'},
+				);
+			}
+			break;
+		}
 
 		case 'session_working': {
 			const m = msg as {sessionFile: string; working: boolean};

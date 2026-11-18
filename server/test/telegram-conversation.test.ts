@@ -49,9 +49,16 @@ class FakeController {
   resets = 0;
   aborts = 0;
   resetError: string | null = null;
+  /** Answers a reply to a notification (the kenning inbox's role); unset = never handled. */
+  notificationReply: ((r: { channel: string; ref: string; text: string }) => { handled: false } | { handled: true; reply: string }) | null = null;
+  replies: Array<{ channel: string; ref: string; text: string }> = [];
   private ends: Array<() => void> = [];
   ctx(): ChannelContext {
     return {
+      onNotificationReply: async (r) => {
+        this.replies.push(r);
+        return this.notificationReply ? this.notificationReply(r) : { handled: false };
+      },
       onUserMessage: (m: ChannelUserMessage, hooks?: ChannelInboundHooks) => {
         this.received.push({ text: m.text, channel: m.channel });
         const steered = this.busy;
@@ -234,13 +241,33 @@ describe('Telegram conversation: outbound', () => {
     const { api, channel } = setup({ publicUrl: 'https://box.example/' });
     await until(() => api.of('getUpdates').length > 0);
     const r = await channel.notify({ title: 'CI', body: 'tests are red', source: 'app', navigate: 'sess-1' });
-    expect(r).toEqual({ ok: true, detail: 'sent' });
+    // `refs` name the sent message, so a reply to it can be matched (kenning).
+    expect(r).toEqual({ ok: true, detail: 'sent', refs: [`telegram:${USER}:1`] });
     expect(sentTexts(api)).toEqual(['🔔 app: CI\n\ntests are red\n\nhttps://box.example/#sess-1']);
 
     const { api: api2, channel: plain } = setup();
     await until(() => api2.of('getUpdates').length > 0);
     await plain.notify({ title: 'Hi', body: '', source: 'assistant', navigate: 's' });
     expect(sentTexts(api2)).toEqual(['🔔 assistant: Hi']);
+  });
+
+  it('a text reply to a notification goes to its handler (a kenning answer), not to the assistant', async () => {
+    const { api, channel, controller } = setup();
+    await until(() => api.of('getUpdates').length > 0);
+    const r = await channel.notify({ title: 'Question for you', body: 'Publish?', source: 'lane', navigate: 's' });
+    const ref = r.ok ? r.refs?.[0] : undefined;
+    expect(ref).toBe(`telegram:${USER}:1`);
+    controller.notificationReply = (x) => (x.ref === ref ? { handled: true, reply: '✅ Answered: Publish?' } : { handled: false });
+
+    api.message(USER, 'yes, publish', { replyTo: 1 });
+    await until(() => sentTexts(api).includes('✅ Answered: Publish?'));
+    expect(controller.replies).toEqual([{ channel: 'telegram', ref: `telegram:${USER}:1`, text: 'yes, publish' }]);
+    expect(controller.received).toEqual([]);
+
+    // A reply to a message nobody handles is an ordinary message for the assistant.
+    api.message(USER, 'about that earlier reply', { replyTo: 77 });
+    await until(() => controller.received.length === 1);
+    expect(controller.received[0].text).toBe('about that earlier reply');
   });
 
   it('notify while unpaired is a failed delivery (nothing sent)', async () => {

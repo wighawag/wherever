@@ -20,7 +20,7 @@ import * as path from "node:path";
 import { Type } from "typebox";
 import { WhereverClient } from "@wherever-dev/client";
 import { createConversationModeSignal } from "./conversation-mode-hint.js";
-import { cliMessageContent } from "./cli-message.js";
+import { cliHumanInputMark, cliMessageContent, KENNING_HUMAN_INPUT_EVENT } from "./cli-message.js";
 import { isInsideWhereverServer } from "./server-process-marker.js";
 import {
   AssistantInfoCache,
@@ -849,6 +849,11 @@ export default async function (pi: ExtensionAPI) {
             // Arm/disarm the conversation-mode hint for the turn this message
             // starts (absent flag = off), then let before_agent_start consume it.
             conversationSignal.arm(msg.conversationMode === true);
+            // A human typed it (web, Telegram): tell kenning on this session's own
+            // bus, right before the send, so the turn counts as the human's words
+            // (ADR 0023). Never for a scheduled job: the server omits the field.
+            const humanMark = cliHumanInputMark(msg);
+            if (humanMark) pi.events.emit(KENNING_HUMAN_INPUT_EVENT, humanMark);
             // Images (a channel's photos) go as image content; none = the plain string.
             pi.sendUserMessage(cliMessageContent(msg), {
               deliverAs: msg.streamingBehavior,

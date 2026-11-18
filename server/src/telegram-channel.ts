@@ -125,7 +125,14 @@ export interface TelegramMessage {
   media_group_id?: string;
   photo?: Array<{ file_id: string; file_size?: number; width?: number; height?: number }>;
   document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
+  /** The message this one replies to (a reply to a kenning question answers it). */
+  reply_to_message?: { message_id: number };
   [k: string]: unknown;
+}
+
+/** A sent message's ref, as `notify` returns it in `refs` and a reply names it. */
+export function telegramMessageRef(chatId: number | string, messageId: number): string {
+  return `${TELEGRAM_CHANNEL}:${chatId}:${messageId}`;
 }
 
 /** How long an album's messages are gathered before it is handled (pi-telegram's 1200 ms). */
@@ -394,15 +401,18 @@ export class TelegramChannel implements AssistantChannel {
     const chatId = this.started ? this.pairedChatId() : null;
     if (!chatId) return { ok: false, error: this.started ? 'Telegram is not paired yet' : 'the Telegram channel is not running' };
     let first: number | undefined;
+    // Every part's id: a reply to any of them can be matched (onNotificationReply).
+    const refs: string[] = [];
     try {
       for (const part of splitTelegramText(formatTelegramNotification(n, this.publicUrl))) {
         const sent = await this.call<{ message_id?: number }>('sendMessage', { chat_id: chatId, text: part });
         if (first === undefined && typeof sent?.message_id === 'number') first = sent.message_id;
+        if (typeof sent?.message_id === 'number') refs.push(telegramMessageRef(chatId, sent.message_id));
       }
     } catch (err) {
       return { ok: false, error: this.redact(errMessage(err)) };
     }
-    if (!n.files?.length) return { ok: true, detail: 'sent' };
+    if (!n.files?.length) return { ok: true, detail: 'sent', refs };
     const files: ChannelFileOutcome[] = [];
     for (const f of n.files) {
       const name = f.name || path.basename(f.path);
@@ -413,7 +423,7 @@ export class TelegramChannel implements AssistantChannel {
         files.push({ path: f.path, name, status: 'failed', error: this.redact(errMessage(err)) });
       }
     }
-    return { ok: true, detail: 'sent', files };
+    return { ok: true, detail: 'sent', files, refs };
   }
 
   /** An error message without the bot token (a URL in a network error carries it). */
@@ -633,6 +643,18 @@ export class TelegramChannel implements AssistantChannel {
     const wanted = messages.flatMap((m) => inboundFilesOf(m));
     const unsupported = messages.some((m) => hasUnsupportedMedia(m));
     const trimmed = text.trim();
+    // A text reply to a message this channel sent for a notification (a kenning
+    // question): the answer, from the paired user, i.e. a human act (wherever
+    // ADR 0023). Checked first: replying is explicit. A reply to anything else
+    // is an ordinary message.
+    const repliedTo = first.reply_to_message?.message_id;
+    if (messages.length === 1 && wanted.length === 0 && !unsupported && trimmed && typeof repliedTo === 'number' && ctx.onNotificationReply) {
+      const r = await ctx.onNotificationReply({ channel: TELEGRAM_CHANNEL, ref: telegramMessageRef(chatId, repliedTo), text: trimmed });
+      if (r.handled) {
+        await this.reply(chatId, r.reply);
+        return;
+      }
+    }
     const cmd = parseCommand(trimmed);
     // Commands are a TEXT message's; a caption is text for the assistant.
     if (wanted.length === 0 && !unsupported) {

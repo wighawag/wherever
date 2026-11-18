@@ -362,7 +362,7 @@ describe('pool reply routing (CLI-bridge sessions)', () => {
     const { seen } = record(pool, file);
 
     await pool.sendUserMessage(file, 'from telegram', undefined, false, 'telegram');
-    expect(cli.sent.at(-1)).toEqual({ type: 'cli_message', message: 'from telegram' });
+    expect(cli.sent.at(-1)).toEqual({ type: 'cli_message', message: 'from telegram', humanInput: { channel: 'telegram' } });
     await pool.sendUserMessage(file, 'from the web', 'steer');
     await pool.sendUserMessage(file, '!ls'); // a shell send records nothing
     expect(pool.getRoutingSnapshot(file)).toEqual({ promptOrSteer: ['telegram', 'none'], followUp: [] });

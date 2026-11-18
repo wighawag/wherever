@@ -56,6 +56,7 @@ import {
 } from './commands/install.js';
 import { runConfigCommand } from './commands/config.js';
 import { getWhereverConfigPath } from './config-dir.js';
+import { KenningService, type KenningNotifyOutcome } from './kenning-service.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1438,6 +1439,37 @@ async function main(): Promise<void> {
       jobForSession: (sessionFile) => scheduler.jobForSession(sessionFile),
     };
   }
+  // wherever as a kenning host (kenning-service.ts): the attention inbox and
+  // presence on every dashboard (`kenning_update`), and blocking items pushed
+  // once through the channels above, a Telegram reply to one answering it. It
+  // opens kenning's database only once that exists, so nothing is written for
+  // a user who does not use kenning. Independent of the assistant: without
+  // active channels the inbox is still on the web, it is just never pushed.
+  const kenning = new KenningService({
+    enabled: getWhereverConfig().kenning?.enabled !== false,
+    whereverStateDir: getWhereverStateDir(),
+    // The same knob kenning-pi reads (its shared.ts), so one setting speeds up both.
+    pollMs: Number(process.env.KENNING_POLL_MS) || undefined,
+    onUpdate: (snapshot) => {
+      const frame: ServerMessage = { type: 'kenning_update', ...snapshot };
+      for (const c of clients.values()) {
+        if (!c.isCliBridge) sendWS(c.ws, frame);
+      }
+    },
+  });
+  kenning.start();
+  if (channelDispatcher) {
+    const dispatcher = channelDispatcher;
+    kenning.setNotifier(async (n): Promise<KenningNotifyOutcome> => {
+      const out = await dispatcher.notify({ title: n.title, body: n.body, source: n.source, navigate: n.navigate });
+      const refs = out.deliveries.flatMap((d) => (d.result.ok ? (d.result.refs ?? []) : []));
+      return out.ok ? { delivered: true, refs } : { delivered: false, refs, error: out.error };
+    });
+    dispatcher.setNotificationReplyHandler((r) =>
+      r.channel === 'telegram' ? kenning.answerFromReply(r.ref, r.text, 'telegram') : { handled: false },
+    );
+  }
+
   /** The Web Push part of the assistant status (only while active). */
   const webPushStatus = () => ({
     enabled: !!webPushChannel,
@@ -3094,6 +3126,9 @@ async function main(): Promise<void> {
     });
 
     sendWS(ws, { type: 'connected', clientId, serverVersion: getVersion(), capabilities: [UPLOAD_CAPABILITY], piVersion: piSdkInfo.version });
+    // The kenning inbox and presence as they are now; live changes follow as
+    // further `kenning_update` frames. A CLI bridge ignores it (unknown frame).
+    sendWS(ws, { type: 'kenning_update', ...kenning.snapshot() });
 
     ws.on('message', async (data, isBinary) => {
       // Binary frames are upload chunks (`upload.v1`), routed BEFORE any
@@ -3124,7 +3159,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated, assistantController, cliRequests, onClientTimezone);
+        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated, assistantController, cliRequests, onClientTimezone, kenning);
       } catch (err) {
         console.error('WS message processing error:', err);
         const errorText = (err as Error).message || 'An error occurred';
@@ -3296,6 +3331,7 @@ This encrypts all network traffic securely and enables safe, private remote acce
     }
     assistantScheduler?.stop();
     await channelDispatcher?.stop();
+    kenning.stop();
     await sessionPool.disposeAll();
     assistant.release();
     server.close();
@@ -3708,8 +3744,26 @@ async function handleWSMessage(
   assistantController: AssistantController | null = null,
   cliRequests: CliRequestRouter | null = null,
   onClientTimezone: (report: WebTimezoneReport) => void = () => {},
+  kenning: KenningService | null = null,
 ): Promise<void> {
   switch (msg.type) {
+    case 'kenning_answer': {
+      // The human answering a kenning attention item from the web: an
+      // authenticated dashboard is a human act (ADR 0003, wherever ADR 0023).
+      // Never from a CLI bridge connection, which an agent's process holds.
+      const r = client.isCliBridge
+        ? { ok: false as const, error: 'a CLI bridge cannot answer the inbox' }
+        : kenning
+          ? kenning.answer(msg.itemId, msg.text, 'web')
+          : { ok: false as const, error: 'kenning is not available on this server' };
+      sendWS(client.ws, {
+        type: 'kenning_answer_result',
+        itemId: msg.itemId,
+        ...(typeof msg.requestId === 'string' ? { requestId: msg.requestId } : {}),
+        ...r,
+      });
+      return;
+    }
     case 'client_timezone':
       // The web's timezone report when its device moved (see onClientTimezone in main).
       onClientTimezone({ timezone: msg.timezone, first: msg.first });
@@ -4384,6 +4438,14 @@ async function handleWSMessage(
     }
 
     case 'message': {
+      // A user message is a dashboard's (origin `none`, which the pool marks as
+      // the human's for kenning, ADR 0023). A CLI bridge connection is held by
+      // an agent's process: it relays its terminal's input as `cli_event`, never
+      // as `message`, so refuse it rather than let it mark text as human.
+      if (client.isCliBridge) {
+        sendWS(client.ws, { type: 'session_error', sessionId: msg.sessionId, error: 'A CLI bridge connection cannot send user messages.' });
+        return;
+      }
       // The session's working folder does not exist on this machine, so no live
       // agent was built for it and there is nothing to attach to (which would
       // otherwise make this a SILENT drop on the sessionId check below). Refuse

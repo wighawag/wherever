@@ -135,7 +135,8 @@ describe('pool send with images (server sessions)', () => {
       expect(opts.images).toBeUndefined();
     }
     expect(spy.mock.calls[0]![1]).toMatchObject({ expandPromptTemplates: false, source: 'extension' });
-    expect(spy.mock.calls[2]![1]).toMatchObject({ expandPromptTemplates: true, source: 'interactive' });
+    // `extension` for "/" text too: `interactive` would make kenning take it for typed in a terminal (ADR 0023).
+    expect(spy.mock.calls[2]![1]).toMatchObject({ expandPromptTemplates: true, source: 'extension' });
     expect(lastUserContent(fake.requests().at(-1)).some((p) => p.type === 'image')).toBe(false);
     spy.mockRestore();
   }, 60_000);
@@ -155,10 +156,10 @@ describe('pool send with images (CLI-bridge sessions)', () => {
     await pool.registerCliSession(file, cwd, '', cli.ws);
 
     await pool.sendUserMessage(file, 'look', undefined, false, 'telegram', [PNG]);
-    expect(cli.sent.at(-1)).toEqual({ type: 'cli_message', message: 'look', images: [PNG] });
+    expect(cli.sent.at(-1)).toEqual({ type: 'cli_message', message: 'look', images: [PNG], humanInput: { channel: 'telegram' } });
 
     await pool.sendUserMessage(file, 'no images', 'steer');
-    expect(cli.sent.at(-1)).toEqual({ type: 'cli_message', message: 'no images', streamingBehavior: 'steer' });
+    expect(cli.sent.at(-1)).toEqual({ type: 'cli_message', message: 'no images', streamingBehavior: 'steer', humanInput: { channel: 'web' } });
     expect(Object.keys(cli.sent.at(-1))).not.toContain('images');
     await pool.sendUserMessage(file, 'empty list', undefined, false, 'telegram', []);
     expect(Object.keys(cli.sent.at(-1))).not.toContain('images');

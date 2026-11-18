@@ -46,7 +46,7 @@ export class FakeBotApi {
   constructor(private readonly holdMs = 150) {}
 
   /** Queue an incoming text message from `fromId` (private chat). */
-  message(fromId: number, text: string, opts: { chatType?: string; chatId?: number; username?: string } = {}): number {
+  message(fromId: number, text: string, opts: { chatType?: string; chatId?: number; username?: string; replyTo?: number } = {}): number {
     const update_id = this.nextId++;
     this.pending.push({
       update_id,
@@ -55,6 +55,7 @@ export class FakeBotApi {
         from: { id: fromId, first_name: `user${fromId}`, ...(opts.username ? { username: opts.username } : {}) },
         chat: { id: opts.chatId ?? fromId, type: opts.chatType ?? 'private' },
         text,
+        ...(opts.replyTo !== undefined ? { reply_to_message: { message_id: opts.replyTo } } : {}),
       },
     });
     for (const w of this.waiters.splice(0)) w();

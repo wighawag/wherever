@@ -12,11 +12,15 @@
 		autocompletePath,
 		setCurrentSession,
 		setSessionStarred,
+		kenningStore,
 		type ModelInfo,
 		type FolderWithSessions,
 	} from '$lib/session-store';
+	import {presenceByFile, presenceLine} from '$lib/core/kenning';
 	// Fork-hierarchy flattening + recency ordering (unit-tested in core).
 	import {buildForkTree} from '$lib/core/fork-tree.js';
+	// kenning presence (role, state, status line) by session file, the listing's `path`.
+	let presence = $derived(presenceByFile($kenningStore.presence));
 
 	// When true, this browser shows the read-only sessions page: it sources from
 	// the read-only folder list, hides the create form, and hides all delete
@@ -838,6 +842,18 @@
 												{formatRelative(session.modified)} · {session.messageCount}
 												msgs
 											</div>
+											{#if presenceLine(presence.get(session.path))}
+												{@const p = presence.get(session.path)}
+												<div
+													class="truncate text-[10px] {p?.state ===
+													'waiting-for-human'
+														? 'text-amber-400'
+														: 'text-brand-blue'}"
+													title={presenceLine(p)}
+												>
+													{presenceLine(p)}
+												</div>
+											{/if}
 										</div>
 										{#if session.clientCount > 0}
 											<span

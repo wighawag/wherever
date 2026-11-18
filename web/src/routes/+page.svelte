@@ -8,6 +8,8 @@
 	import ChatInput from '$lib/components/ChatInput.svelte';
 	import SessionBrowser from '$lib/components/SessionBrowser.svelte';
 	import ConversationSearch from '$lib/components/ConversationSearch.svelte';
+	import KenningInbox from '$lib/components/KenningInbox.svelte';
+	import {inboxBadge} from '$lib/core/kenning';
 	import SudoPasswordDialog from '$lib/components/SudoPasswordDialog.svelte';
 	import RestorePanel from '$lib/components/RestorePanel.svelte';
 	import RestoreProgress from '$lib/components/RestoreProgress.svelte';
@@ -64,6 +66,7 @@
 		setSessionStarred,
 		assistantStatusStore,
 		isAssistantSession,
+		kenningStore,
 	} from '$lib/session-store';
 	import {onMount} from 'svelte';
 	import {version} from '$app/environment';
@@ -76,7 +79,9 @@
 	// read-only page (sessions.readOnly folders) reached via the sidebar link, or
 	// conversation search (full-text over every past session, GET /search).
 	// The read-only page hides the create form, delete controls, and the composer.
-	let sessionView = $state<'main' | 'readonly' | 'search'>('main');
+	// Or kenning's attention inbox ('inbox', wherever ADR 0023), shown only while
+	// the server has kenning.
+	let sessionView = $state<'main' | 'readonly' | 'search' | 'inbox'>('main');
 	// Search mirrors the two list views rather than spanning them: it is opened
 	// from one of them and searches exactly that view's sessions, so the visibility
 	// rule a user already understands from the list also holds for search.
@@ -433,6 +438,16 @@
 	// server (configured and holding its folder lock); Reset only on the current
 	// assistant session itself.
 	let assistantActive = $derived($assistantStatusStore.active);
+	// kenning's inbox badge: how many questions wait for the human, and whether
+	// a session is blocked on one. Null when empty or when the server has no kenning.
+	let kenningBadge = $derived(
+		$kenningStore.available ? inboxBadge($kenningStore.inbox) : null,
+	);
+	$effect(() => {
+		// The server lost kenning (or a reconnect to one without it): leave the panel.
+		if (sessionView === 'inbox' && !$kenningStore.available)
+			sessionView = 'main';
+	});
 	let viewingAssistant = $derived(
 		isAssistantSession($assistantStatusStore, sessionInfo.sessionFile),
 	);
@@ -761,6 +776,29 @@
 							>
 						</button>
 					{/if}
+					{#if $kenningStore.available}
+						<button
+							onclick={() => (sessionView = 'inbox')}
+							class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-brand-surface-3/50 hover:text-brand-text {kenningBadge
+								? 'text-brand-text'
+								: 'text-brand-text-muted'}"
+							title="Questions your sessions asked you (kenning)"
+						>
+							<span>🙋</span>
+							<span>Needs you</span>
+							{#if kenningBadge}
+								<span
+									class="ml-auto rounded-full px-1.5 text-[10px] font-semibold {kenningBadge.blocking
+										? 'bg-amber-500 text-black'
+										: 'bg-brand-surface-3 text-brand-text'}"
+									>{kenningBadge.count}</span
+								>
+								<span>→</span>
+							{:else}
+								<span class="ml-auto">→</span>
+							{/if}
+						</button>
+					{/if}
 					<button
 						onclick={() => openSearch(false)}
 						class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-brand-text-muted transition-colors hover:bg-brand-surface-3/50 hover:text-brand-text"
@@ -782,15 +820,19 @@
 						<span>Read-only sessions</span>
 						<span class="ml-auto">→</span>
 					</button>
-				{:else if sessionView === 'search'}
+				{:else if sessionView === 'search' || sessionView === 'inbox'}
 					<button
-						onclick={() => (sessionView = searchReadOnly ? 'readonly' : 'main')}
+						onclick={() =>
+							(sessionView =
+								sessionView === 'search' && searchReadOnly
+									? 'readonly'
+									: 'main')}
 						class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs font-semibold text-brand-blue transition-colors hover:bg-brand-surface-3/50"
 						title="Back to the session list"
 					>
 						<span>←</span>
 						<span
-							>Back to {searchReadOnly
+							>Back to {sessionView === 'search' && searchReadOnly
 								? 'read-only sessions'
 								: 'sessions'}</span
 						>
@@ -818,7 +860,9 @@
 
 			<!-- Session Browser -->
 			<div class="flex-1 overflow-hidden">
-				{#if sessionView === 'search'}
+				{#if sessionView === 'inbox'}
+					<KenningInbox onOpened={() => (sidebarOpen = false)} />
+				{:else if sessionView === 'search'}
 					<!-- onOpened closes the mobile sidebar even when the tapped result is
 					     the session already open: that path starts no load, so the
 					     loading/resync effect below would never fire for it. -->
@@ -844,9 +888,20 @@
 		>
 			<button
 				onclick={() => (sidebarOpen = !sidebarOpen)}
-				class="p-1 text-brand-text-muted hover:text-brand-text md:hidden"
+				class="relative p-1 text-brand-text-muted hover:text-brand-text md:hidden"
 			>
 				=
+				{#if kenningBadge}
+					<!-- kenning: something needs the human (the sidebar holds the inbox). -->
+					<span
+						class="absolute -top-0.5 -right-1 h-2 w-2 rounded-full {kenningBadge.blocking
+							? 'bg-amber-500'
+							: 'bg-brand-blue'}"
+						title="{kenningBadge.count} question{kenningBadge.count === 1
+							? ''
+							: 's'} for you"
+					></span>
+				{/if}
 			</button>
 
 			<!-- Compact search affordance (active-session case): drop to the search
