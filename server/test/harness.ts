@@ -83,8 +83,9 @@ export interface Harness {
   /** Everything the server printed so far (stdout and stderr, interleaved). */
   output(): string;
   /** Open a WS client and wait for the socket to open. `clientKey` is the stable
-   *  per-viewer identity the server uses to retire a superseded connection. */
-  connect(clientKey?: string): Promise<TestClient>;
+   *  per-viewer identity the server uses to retire a superseded connection.
+   *  `params` are extra socket URL parameters (e.g. `{kenning: '1'}`). */
+  connect(clientKey?: string, params?: Record<string, string>): Promise<TestClient>;
   /** Wait until `sessionFile` is resident in the server's pool (it shows in
    *  `GET /sessions` `activeSessions`). `cli_register` has no ack and registers
    *  asynchronously, so a viewer that `session_load`s the same file right after
@@ -260,8 +261,8 @@ export async function startHarness(opts?: HarnessOptions): Promise<Harness> {
     agentDir,
     setNext: (b) => fake.setNext(b),
     output: () => output,
-    async connect(clientKey?: string) {
-      const c = await TestClient.open(port, workspace, clientKey);
+    async connect(clientKey?: string, params?: Record<string, string>) {
+      const c = await TestClient.open(port, workspace, clientKey, params);
       clients.push(c);
       return c;
     },
@@ -322,9 +323,10 @@ export class TestClient {
     });
   }
 
-  static open(port: number, workspace: string, clientKey?: string): Promise<TestClient> {
+  static open(port: number, workspace: string, clientKey?: string, params?: Record<string, string>): Promise<TestClient> {
     return new Promise((resolve, reject) => {
-      const query = clientKey ? `?clientKey=${encodeURIComponent(clientKey)}` : '';
+      const search = new URLSearchParams({ ...(clientKey ? { clientKey } : {}), ...params }).toString();
+      const query = search ? `?${search}` : '';
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws${query}`);
       const c = new TestClient(ws, workspace);
       ws.on('open', () => resolve(c));

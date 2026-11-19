@@ -1,5 +1,5 @@
 import type { KenningSnapshot } from './kenning-service.js';
-import { HistoryMessage, ContextUsageInfo, ToolImage, SkillCommand } from './session-types.js';
+import { HistoryMessage, ContextUsageInfo, ToolImage, SkillCommand, KenningDeliveryInfo } from './session-types.js';
 export type { ContextUsageInfo, ToolImage, SkillCommand } from './session-types.js';
 // Type-only, so declaring the restore frames here does not pull the registry's
 // node:child_process/node:fs surface into anything that merely parses protocol.
@@ -182,6 +182,10 @@ export type ServerMessage =
  | { type: 'thinking_update'; sessionId: string; delta: string }
  | { type: 'message_update'; sessionId: string; delta: string }
   | { type: 'message_end'; sessionId: string; content: string; role?: 'user' | 'assistant' }
+  // Server -> a client that asked (`kenning=1` on the socket URL): kenning
+  // delivered messages into this session (kenning-delivery.ts), the live twin
+  // of a `kenning` history message. Never a user message.
+  | { type: 'kenning_delivery'; sessionId: string; content: string; timestamp: number; kenning: KenningDeliveryInfo }
   // Server -> client: the server accepted an outbound user message and handed it
   // to the agent (as a normal turn OR as a mid-stream steer queued for the next
   // step). This is the DELIVERY acknowledgement: it fires immediately, whereas

@@ -568,6 +568,8 @@ export const client = new WhereverClient({
 	hideTools: !!initialConfig.hideTools,
 	// Large history images come by reference; `toolImageSrc` loads them.
 	imageRefs: true,
+	// kenning's deliveries into a session render as cards (KenningCard.svelte).
+	kenningCards: true,
 });
 
 export const state = client.stateStore;

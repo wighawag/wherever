@@ -9,7 +9,12 @@
 	import SessionBrowser from '$lib/components/SessionBrowser.svelte';
 	import ConversationSearch from '$lib/components/ConversationSearch.svelte';
 	import KenningInbox from '$lib/components/KenningInbox.svelte';
-	import {inboxBadge} from '$lib/core/kenning';
+	import {
+		inboxBadge,
+		inboxCount,
+		syncAppBadge,
+		titleWithInboxCount,
+	} from '$lib/core/kenning';
 	import SudoPasswordDialog from '$lib/components/SudoPasswordDialog.svelte';
 	import RestorePanel from '$lib/components/RestorePanel.svelte';
 	import RestoreProgress from '$lib/components/RestoreProgress.svelte';
@@ -443,6 +448,16 @@
 	let kenningBadge = $derived(
 		$kenningStore.available ? inboxBadge($kenningStore.inbox) : null,
 	);
+	// The same count in the tab title and on the installed app's icon, so a
+	// question is visible from another tab or the home screen. Needs no
+	// assistant: it comes from `kenning_update` alone.
+	let kenningCount = $derived(inboxCount($kenningStore));
+	$effect(() => {
+		syncAppBadge(
+			typeof navigator === 'undefined' ? undefined : navigator,
+			kenningCount,
+		);
+	});
 	$effect(() => {
 		// The server lost kenning (or a reconnect to one without it): leave the panel.
 		if (sessionView === 'inbox' && !$kenningStore.available)
@@ -533,7 +548,10 @@
 </script>
 
 <Head
-	title={appearanceLabel ? `Wherever · ${appearanceLabel}` : 'Wherever'}
+	title={titleWithInboxCount(
+		appearanceLabel ? `Wherever · ${appearanceLabel}` : 'Wherever',
+		kenningCount,
+	)}
 	description="Create & maintain apps from wherever"
 />
 

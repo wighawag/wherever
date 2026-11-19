@@ -144,3 +144,44 @@ export function inboxBadge(
 	if (!inbox.length) return null;
 	return {count: inbox.length, blocking: inbox.some((i) => i.blocking)};
 }
+
+/**
+ * The inbox count outside the page: the tab title's "(N) " prefix and the
+ * installed app's icon badge. Both come from `kenning_update` alone, so they
+ * work without the assistant (its push channels are what reach a phone that
+ * is not looking; see CONTEXT.md).
+ */
+export function inboxCount(state: KenningState): number {
+	return state.available ? state.inbox.length : 0;
+}
+
+/** `title` prefixed with "(N) " while N items wait; idempotent, so a prefixed title is re-counted, not doubled. */
+export function titleWithInboxCount(title: string, count: number): string {
+	const base = title.replace(/^\(\d+\) /, '');
+	return count > 0 ? `(${count}) ${base}` : base;
+}
+
+/** The Badging API surface this needs (absent outside a secure context or on most desktop browsers). */
+export interface AppBadgeNavigator {
+	setAppBadge?: (count?: number) => Promise<void>;
+	clearAppBadge?: () => Promise<void>;
+}
+
+/**
+ * Show `count` on the app icon, or clear it at 0. A browser without the API
+ * does nothing; a refusal (the app not installed, a denied permission) is
+ * dropped, because the badge is a convenience the title already covers.
+ */
+export function syncAppBadge(
+	nav: AppBadgeNavigator | undefined,
+	count: number,
+): void {
+	if (!nav) return;
+	const done =
+		count > 0
+			? nav.setAppBadge?.(count)
+			: nav.clearAppBadge
+				? nav.clearAppBadge()
+				: nav.setAppBadge?.(0);
+	done?.catch?.(() => {});
+}

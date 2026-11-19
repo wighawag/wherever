@@ -39,6 +39,7 @@ import { DEFAULT_DOWNLOAD_MAX_BYTES } from './attach-file-tool.js';
 import { splitFrame, wantsFrameChunks, FRAME_CHUNK_CHARS } from './frame-chunks.js';
 import { compressCached, isCompressible, negotiateEncoding } from './static-compression.js';
 import { stripHistoryImages, wantsImageRefs, SERVABLE_IMAGE_TYPES } from './history-images.js';
+import { kenningDeliveryOf, stripKenningCards, wantsKenningCards } from './kenning-delivery.js';
 import { readToolResultImage } from './session-transcript.js';
 import { DeltaCoalescer } from './delta-coalescer.js';
 import { UploadStaging, UPLOAD_CAPABILITY, isValidUploadId, parseChunkFrame, CHUNK_FRAME_KIND, type Authorize } from './upload-staging.js';
@@ -1087,6 +1088,10 @@ let nextFrameChunkId = 1;
 // Sockets whose client loads large history images by reference (`imageRefs=1`,
 // see history-images.ts) instead of receiving their base64 inline.
 const imageRefSockets = new WeakSet<WebSocket>();
+// Sockets whose client renders kenning's deliveries (`kenning=1`, see
+// kenning-delivery.ts). Every other socket gets history without them and no
+// `kenning_delivery` frame: an older client would show the raw text as a bubble.
+const kenningCardSockets = new WeakSet<WebSocket>();
 // Per-socket coalescing of streamed deltas (delta-coalescer.ts): fewer, larger
 // frames, frame order unchanged. "Backed up" = more than 64 KB still unsent.
 const deltaCoalescers = new WeakMap<WebSocket, DeltaCoalescer<ServerMessage>>();
@@ -1112,8 +1117,13 @@ function sendWS(ws: WebSocket, msg: ServerMessage): void {
 function writeWS(ws: WebSocket, msg: ServerMessage): void {
   if (ws.readyState === WebSocket.OPEN) {
     try {
-      if ((msg.type === 'message_history' || msg.type === 'message_history_prepend') && imageRefSockets.has(ws)) {
-        msg = { ...msg, messages: stripHistoryImages(msg.messages) };
+      if (msg.type === 'message_history' || msg.type === 'message_history_prepend') {
+        // `offset` / `totalCount` keep counting the cards, so a client without
+        // them pages through the same indices and only gets fewer messages.
+        if (!kenningCardSockets.has(ws)) msg = { ...msg, messages: stripKenningCards(msg.messages) };
+        if (imageRefSockets.has(ws)) msg = { ...msg, messages: stripHistoryImages(msg.messages) };
+      } else if (msg.type === 'kenning_delivery' && !kenningCardSockets.has(ws)) {
+        return;
       }
       const json = JSON.stringify(msg);
       if (chunkingSockets.has(ws) && json.length > FRAME_CHUNK_CHARS) {
@@ -1739,9 +1749,29 @@ async function main(): Promise<void> {
       }
       case 'message_end': {
         const role = (event.message as any)?.role;
+        if (role === 'custom') {
+          // A kenning wake (`sendMessage(..., {triggerTurn: true})`) or what its
+          // `before_agent_start` attached. Not a user message: the routing only
+          // ever takes an entry for role `user` (ADR 0014).
+          const d = kenningDeliveryOf(event.message as any);
+          const t = (event.message as any).timestamp;
+          if (d) msg = { type: 'kenning_delivery', sessionId, content: d.content, timestamp: typeof t === 'number' ? t : Date.now(), kenning: d.kenning };
+          break;
+        }
         if (role !== 'assistant' && role !== 'user') break;
         const content = extractText(event.message as any);
         msg = { type: 'message_end', sessionId, content, role };
+        break;
+      }
+      case 'entry_appended' as any: {
+        // What kenning returned from `agent_before_settle` / `turn_end`: pi
+        // writes those boundary entries without a message_end.
+        const entry = (event as any).entry;
+        const d = entry?.type === 'custom_message' ? kenningDeliveryOf(entry) : null;
+        if (d) {
+          const t = Date.parse(entry.timestamp);
+          msg = { type: 'kenning_delivery', sessionId, content: d.content, timestamp: Number.isFinite(t) ? t : Date.now(), kenning: d.kenning };
+        }
         break;
       }
       case 'queue_update' as any: {
@@ -3177,6 +3207,7 @@ async function main(): Promise<void> {
       }
       if (wantsFrameChunks(url.searchParams)) chunkingSockets.add(ws);
       if (wantsImageRefs(url.searchParams)) imageRefSockets.add(ws);
+      if (wantsKenningCards(url.searchParams)) kenningCardSockets.add(ws);
     } catch {}
     if (clientKey) {
       evictPreviousConnection(clientKey, clients, sessionPool, broadcastSessionsUpdated);

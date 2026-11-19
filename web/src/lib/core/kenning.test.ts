@@ -2,6 +2,9 @@ import {describe, it, expect} from 'vitest';
 import {
 	emptyKenningState,
 	inboxBadge,
+	inboxCount,
+	syncAppBadge,
+	titleWithInboxCount,
 	ownedChildren,
 	parseKenningUpdate,
 	presenceByFile,
@@ -119,5 +122,67 @@ describe('kenning on the web', () => {
 			blocking: true,
 		});
 		expect(inboxBadge([item()])).toEqual({count: 1, blocking: false});
+	});
+});
+
+describe('the inbox count outside the page', () => {
+	const item = (id: string): KenningInboxItem => ({
+		id,
+		question: 'q',
+		options: null,
+		blocking: false,
+		createdAt: 0,
+		sessionFile: '/s/a.jsonl',
+		sessionId: 'a',
+		from: 'a',
+		onBehalfOf: 0,
+	});
+
+	it('counts open items only while kenning is available', () => {
+		expect(
+			inboxCount({
+				...emptyKenningState,
+				available: true,
+				inbox: [item('1'), item('2')],
+			}),
+		).toBe(2);
+		expect(
+			inboxCount({...emptyKenningState, available: false, inbox: [item('1')]}),
+		).toBe(0);
+	});
+
+	it('prefixes the title, idempotently, and drops the prefix at 0', () => {
+		expect(titleWithInboxCount('Wherever', 3)).toBe('(3) Wherever');
+		expect(titleWithInboxCount('(3) Wherever', 1)).toBe('(1) Wherever');
+		expect(titleWithInboxCount('(3) Wherever', 0)).toBe('Wherever');
+		expect(titleWithInboxCount('Wherever', 0)).toBe('Wherever');
+	});
+
+	it('sets and clears the app badge where supported, and ignores a refusal', async () => {
+		const calls: string[] = [];
+		const nav = {
+			setAppBadge: (n?: number) => {
+				calls.push(`set ${n}`);
+				return Promise.reject(new Error('not installed'));
+			},
+			clearAppBadge: () => {
+				calls.push('clear');
+				return Promise.resolve();
+			},
+		};
+		syncAppBadge(nav, 2);
+		syncAppBadge(nav, 0);
+		expect(calls).toEqual(['set 2', 'clear']);
+		// No Badging API (or no navigator at all): nothing to do, nothing thrown.
+		expect(() => syncAppBadge({}, 2)).not.toThrow();
+		expect(() => syncAppBadge(undefined, 2)).not.toThrow();
+		// Only setAppBadge: clear by setting 0.
+		const only: string[] = [];
+		syncAppBadge(
+			{setAppBadge: (n) => (only.push(`set ${n}`), Promise.resolve())},
+			0,
+		);
+		expect(only).toEqual(['set 0']);
+		await Promise.resolve();
 	});
 });
