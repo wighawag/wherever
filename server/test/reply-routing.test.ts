@@ -135,4 +135,41 @@ describe('ReplyRouting', () => {
     r.drop(t);
     expect(r.snapshot()).toEqual({ promptOrSteer: [], followUp: [] });
   });
+
+  describe('kenning deliveries (never user messages)', () => {
+    const askedOnTelegram = () => {
+      const r = new ReplyRouting();
+      r.runStarted();
+      r.started(r.record('telegram', 'promptOrSteer'));
+      r.takeForUserMessage();
+      return r;
+    };
+
+    it('a wake (a delivery opening a run, no user message in it) answers nobody', () => {
+      const r = askedOnTelegram();
+      r.runEnded();
+      r.runStarted();
+      r.kenningDelivered('message');
+      expect(r.destination()).toBeNull();
+      // It never takes an entry: the next user message still finds its own.
+      r.record('telegram', 'promptOrSteer');
+      expect(r.takeForUserMessage()).toBe('telegram');
+    });
+
+    it("a delivery attached to the human's prompt keeps the human's destination", () => {
+      const r = askedOnTelegram();
+      r.kenningDelivered('message');
+      expect(r.destination()).toBe('telegram');
+    });
+
+    it('a settle-boundary entry (after agent_end) answers nobody; a turn_end one (mid-run) keeps it', () => {
+      const midRun = askedOnTelegram();
+      midRun.kenningDelivered('entry');
+      expect(midRun.destination()).toBe('telegram');
+      const settled = askedOnTelegram();
+      settled.runEnded();
+      settled.kenningDelivered('entry');
+      expect(settled.destination()).toBeNull();
+    });
+  });
 });

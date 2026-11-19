@@ -1017,6 +1017,7 @@ import type { InlineExtension, ToolDefinition } from '@earendil-works/pi-coding-
 const EXTENSION_DISCOVERY_WAIT_MS = 10_000;
 import { matchRemoteRepoRule } from './remote-candidates.js';
 import { ReplyRouting, WEB_ORIGIN, type ReplyOrigin, type RoutingSnapshot } from './reply-routing.js';
+import { KENNING_CUSTOM_TYPE } from './kenning-delivery.js';
 import { createHumanInputMarker, humanInputChannel, willReachInputEvent, type HumanInputMarker } from './kenning-human-input.js';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { Model, Api, ImageContent } from '@earendil-works/pi-ai';
@@ -2093,10 +2094,24 @@ export class SessionPool {
    * CLI sessions, whose queues the server cannot see, are emptied.
    */
   private routeEvent(tracked: TrackedSession, event: AgentSessionEvent): void {
+    // Run boundaries are tracked from the first run on, even before any send
+    // recorded an origin: a kenning delivery is judged by where in a run it falls.
+    if (event.type === 'agent_start') {
+      this.routingFor(tracked.sessionFile).runStarted();
+      return;
+    }
     const r = this.routing.get(tracked.sessionFile);
     if (!r) return;
-    if (event.type === 'message_end' && (event as any).message?.role === 'user') {
+    const message = (event as any).message;
+    if (event.type === 'message_end' && message?.role === 'user') {
       r.takeForUserMessage();
+    } else if (event.type === 'message_end' && message?.role === 'custom' && message.customType === KENNING_CUSTOM_TYPE) {
+      r.kenningDelivered('message');
+    } else if ((event.type as string) === 'entry_appended') {
+      const entry = (event as any).entry;
+      if (entry?.type === 'custom_message' && entry.customType === KENNING_CUSTOM_TYPE) r.kenningDelivered('entry');
+    } else if (event.type === 'agent_end') {
+      r.runEnded();
     } else if (event.type === 'agent_settled') {
       if (tracked.type === 'server') {
         r.trimToPiQueues(

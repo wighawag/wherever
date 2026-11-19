@@ -296,6 +296,103 @@ describe('pool reply routing (server sessions)', () => {
   }, 60_000);
 });
 
+/**
+ * Delivers the way kenning-pi does (its `session.ts` `payload()` and index.ts),
+ * on demand: a wake (`sendMessage(..., {triggerTurn: true})`), a message
+ * attached by `before_agent_start`, and boundary entries from `turn_end` and
+ * `agent_before_settle`. Deterministic where the real kenning-pi depends on
+ * timing; kenning-chat-cards.test.ts runs the real one.
+ */
+function fakeKenning() {
+  let api: ExtensionAPI | undefined;
+  const armed = { attach: false, turnEnd: false, settle: false };
+  let n = 0;
+  const payload = (label: string) => ({
+    customType: 'kenning',
+    content: `[kenning] 1 message for you:\n--- m_${++n} · from lane · origin: agent · tell\n${label}\n---`,
+    display: true,
+    details: { ids: [`m_${n}`], from: ['lane'], origins: ['agent'] },
+  });
+  const once = (k: keyof typeof armed) => {
+    const was = armed[k];
+    armed[k] = false;
+    return was;
+  };
+  const extension: InlineExtension = {
+    name: 'fake-kenning',
+    factory: (pi: ExtensionAPI) => {
+      api = pi;
+      pi.on('before_agent_start', (event: any) => {
+        if (event.messageType === 'custom') return;
+        return once('attach') ? { message: payload('attached') } : undefined;
+      });
+      pi.on('turn_end', () => (once('turnEnd') ? { entries: [{ type: 'custom_message', ...payload('urgent') }], continue: true } : undefined));
+      pi.on('agent_before_settle', () => (once('settle') ? { entries: [{ type: 'custom_message', ...payload('at settle') }], continue: true } : undefined));
+    },
+  };
+  return {
+    extension,
+    armed,
+    wake: () => api!.sendMessage(payload('wake') as any, { triggerTurn: true }),
+  };
+}
+
+describe('pool reply routing: kenning deliveries', () => {
+  async function setup() {
+    const k = fakeKenning();
+    const pool = new SessionPool(300_000, { extraExtensionFactories: [handlers, k.extension] });
+    pools.push(pool);
+    const s = await newServerSession(pool);
+    const rec = record(pool, s.sessionFile);
+    // A human asked on Telegram first: that is the destination a kenning turn
+    // must NOT inherit.
+    await pool.sendUserMessage(s.sessionFile, 'from my phone', undefined, false, 'telegram');
+    await until(() => rec.settled() === 1);
+    return { k, pool, s, ...rec };
+  }
+  const repliesAfter = (seen: Seen[], from: number) => seen.slice(from).filter((x) => x.role === 'assistant');
+
+  it('a wake after a Telegram message answers nobody, and the next human message routes again', async () => {
+    const { k, pool, s, seen, settled } = await setup();
+    const before = seen.length;
+    k.wake();
+    await until(() => settled() === 2);
+    expect(repliesAfter(seen, before).map((x) => x.dest)).toEqual([null]);
+    expect(pool.getReplyDestination(s.sessionFile)).toBeNull();
+
+    await pool.sendUserMessage(s.sessionFile, 'again', undefined, false, 'telegram');
+    await until(() => settled() === 3);
+    expect(seen.at(-1)).toMatchObject({ role: 'assistant', dest: 'telegram' });
+  }, 60_000);
+
+  it("a delivery attached to the human's prompt, or mid-run at turn_end, still answers the human", async () => {
+    const { k, pool, s, seen, settled } = await setup();
+    const before = seen.length;
+    k.armed.attach = true;
+    k.armed.turnEnd = true;
+    await pool.sendUserMessage(s.sessionFile, 'second question', undefined, false, 'telegram');
+    await until(() => settled() === 2);
+    const replies = repliesAfter(seen, before);
+    // One reply, then one more for the turn_end continuation.
+    expect(replies.length).toBe(2);
+    expect(replies.map((x) => x.dest)).toEqual(['telegram', 'telegram']);
+  }, 60_000);
+
+  it('a delivery at agent_before_settle continues the session for nobody', async () => {
+    const { k, pool, s, seen, settled, events } = await setup();
+    const before = seen.length;
+    k.armed.settle = true;
+    await pool.sendUserMessage(s.sessionFile, 'third question', undefined, false, 'telegram');
+    await until(() => settled() === 2);
+    expect(repliesAfter(seen, before).map((x) => x.dest)).toEqual(['telegram', null]);
+    // What the rule relies on: pi commits the settle entry after agent_end and
+    // before the continuation's agent_start, i.e. outside any run.
+    const at = events.findIndex((e) => (e.type as string) === 'entry_appended' && (e as any).entry?.customType === 'kenning');
+    const runs = events.slice(0, at).filter((e) => e.type === 'agent_start' || e.type === 'agent_end');
+    expect(runs.at(-1)?.type).toBe('agent_end');
+  }, 60_000);
+});
+
 describe('pool event fan-out', () => {
   it('runs the broadcaster first with identical events, isolates a throwing subscriber, and keeps onEvent assignable', async () => {
     const pool = newPool();
@@ -394,6 +491,22 @@ describe('pool reply routing (CLI-bridge sessions)', () => {
 
     // Typed directly in the terminal, with nothing recorded: no origin.
     pool.handleCliEvent(file, userEnd('typed in the terminal'));
+    expect(pool.getReplyDestination(file)).toBeNull();
+  }, 30_000);
+
+  it('a kenning wake forwarded by the bridge answers nobody', async () => {
+    const pool = newPool();
+    const cwd = fs.realpathSync(fs.mkdtempSync(path.join(root, 'cli-')));
+    const file = path.join(root, 'cli-kenning.jsonl');
+    await pool.registerCliSession(file, cwd, '', fakeCliWs().ws);
+    await pool.sendUserMessage(file, 'from telegram', undefined, false, 'telegram');
+    pool.handleCliEvent(file, { type: 'agent_start' } as any);
+    pool.handleCliEvent(file, { type: 'message_end', message: { role: 'user', content: 'from telegram' } } as any);
+    pool.handleCliEvent(file, { type: 'agent_end' } as any);
+    expect(pool.getReplyDestination(file)).toBe('telegram');
+    // kenning-pi in the terminal wakes it: the forwarded custom message_end.
+    pool.handleCliEvent(file, { type: 'agent_start' } as any);
+    pool.handleCliEvent(file, { type: 'message_end', message: { role: 'custom', customType: 'kenning', content: 'x', details: {} } } as any);
     expect(pool.getReplyDestination(file)).toBeNull();
   }, 30_000);
 
