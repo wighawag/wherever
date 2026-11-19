@@ -34,16 +34,27 @@ export interface KenningPresence {
 	waitingOn: string | null;
 }
 
+/** A delete that took a session and everything it owns, undoable until `undoUntil` (kenning D24). */
+export interface KenningArchive {
+	batch: string;
+	root: string;
+	sessions: string[];
+	at: number;
+	undoUntil: number;
+}
+
 export interface KenningState {
 	available: boolean;
 	inbox: KenningInboxItem[];
 	presence: KenningPresence[];
+	archives: KenningArchive[];
 }
 
 export const emptyKenningState: KenningState = {
 	available: false,
 	inbox: [],
 	presence: [],
+	archives: [],
 };
 
 /** A `kenning_update` frame as the store keeps it; anything malformed reads as no kenning. */
@@ -63,7 +74,35 @@ export function parseKenningUpdate(frame: unknown): KenningState {
 					(p): p is KenningPresence => !!p && typeof p.sessionFile === 'string',
 				)
 			: [],
+		// Absent from an older server: none.
+		archives: Array.isArray(f.archives)
+			? f.archives.filter(
+					(a): a is KenningArchive =>
+						!!a &&
+						typeof a.batch === 'string' &&
+						Array.isArray(a.sessions) &&
+						typeof a.undoUntil === 'number',
+				)
+			: [],
 	};
+}
+
+/**
+ * The sessions each owner spawned, from the listing's `ownerSessionPath`
+ * (kenning D23), by owner path, in listing order. Owner and child may be in
+ * different folders (a worktree), so this spans the whole listing.
+ */
+export function ownedChildren<
+	T extends {path: string; ownerSessionPath?: string},
+>(sessions: T[]): Map<string, T[]> {
+	const out = new Map<string, T[]>();
+	for (const s of sessions) {
+		if (!s.ownerSessionPath) continue;
+		const list = out.get(s.ownerSessionPath) ?? [];
+		list.push(s);
+		out.set(s.ownerSessionPath, list);
+	}
+	return out;
 }
 
 /** Presence by session file, for the session list. */

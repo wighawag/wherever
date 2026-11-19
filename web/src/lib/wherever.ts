@@ -740,6 +740,37 @@ export function prefillComposer(text: string) {
 // (forked) session, not the source one.
 let pendingForkPrefill: string | null = null;
 
+/** Undo requests in flight, by batch, settled by `kenning_undo_result`. */
+const pendingKenningUndos = new Map<
+	string,
+	(r: {ok: true} | {ok: false; error: string}) => void
+>();
+
+/**
+ * Undo a delete that cascaded through kenning ownership (kenning D24): the
+ * sessions come back to the list (the server re-lists). Resolves with the
+ * server's verdict, or an error when not connected or after 15 s.
+ */
+export function undoKenningDelete(
+	batch: string,
+): Promise<{ok: true} | {ok: false; error: string}> {
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => {
+			if (!pendingKenningUndos.delete(batch)) return;
+			resolve({ok: false, error: 'no answer from the server'});
+		}, 15_000);
+		pendingKenningUndos.get(batch)?.({ok: false, error: 'superseded'});
+		pendingKenningUndos.set(batch, (r) => {
+			clearTimeout(timer);
+			resolve(r);
+		});
+		if (!client.send({type: 'kenning_undo_delete', batch})) {
+			pendingKenningUndos.get(batch)?.({ok: false, error: 'not connected'});
+			pendingKenningUndos.delete(batch);
+		}
+	});
+}
+
 /** Answers to kenning items in flight, by request id, settled by `kenning_answer_result`. */
 const pendingKenningAnswers = new Map<
 	string,
@@ -886,6 +917,18 @@ client.onMessage((msg) => {
 		case 'kenning_update':
 			applyKenningUpdate(msg);
 			break;
+
+		case 'kenning_undo_result': {
+			const m = msg as {batch: string; ok: boolean; error?: string};
+			const pending = pendingKenningUndos.get(m.batch);
+			if (pending) {
+				pendingKenningUndos.delete(m.batch);
+				pending(
+					m.ok ? {ok: true} : {ok: false, error: m.error || 'not undone'},
+				);
+			}
+			break;
+		}
 
 		case 'kenning_answer_result': {
 			const m = msg as {requestId?: string; ok: boolean; error?: string};

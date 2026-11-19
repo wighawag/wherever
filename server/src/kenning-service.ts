@@ -57,7 +57,22 @@ export interface KenningSnapshot {
   available: boolean;
   inbox: KenningInboxItemView[];
   presence: KenningPresenceView[];
+  /** Deletions this server cascaded through ownership that can still be undone (kenning D24). */
+  archives: KenningArchiveView[];
 }
+
+/** One delete that took a session and everything it owns, undoable until `undoUntil`. */
+export interface KenningArchiveView {
+  batch: string;
+  /** The session the human deleted (normalized file). */
+  root: string;
+  /** Every session the batch hid, the root first. */
+  sessions: string[];
+  at: number;
+  undoUntil: number;
+}
+
+export const KENNING_ARCHIVES_FILE = 'kenning-archives.json';
 
 /** A blocking item to push through the channels (`ChannelNotification` shape). */
 export interface KenningNotification {
@@ -157,6 +172,8 @@ export interface KenningServiceOptions {
   kenningStateDir?: string;
   /** Called with a new snapshot whenever it changed (throttled). */
   onUpdate(snapshot: KenningSnapshot): void;
+  /** Called on every kenning change, unthrottled (the host wakes evicted children from it). */
+  onKenningChange?(): void;
   /** Leading + trailing throttle of `onUpdate`, like `sessions_updated` (default 2000 ms). */
   throttleMs?: number;
   /** How often kenning's database is polled for changes (kenning's D6 interval, default 1000 ms). */
@@ -169,6 +186,8 @@ export interface KenningServiceOptions {
   notifyRetryMs?: number;
   log?: Pick<Console, 'log' | 'warn' | 'error'>;
   now?: () => number;
+  /** kenning's own clock (tests: an archive made "8 days ago"). */
+  kenningNow?: () => number;
 }
 
 export class KenningService {
@@ -236,12 +255,13 @@ export class KenningService {
         mod = await import('kenning');
         if (this.stopped) return;
         mod.silenceSqliteWarning();
-        this.kenning = mod.openKenning({ stateDir: path.dirname(this.dbPath) });
+        this.kenning = mod.openKenning({ stateDir: path.dirname(this.dbPath), ...(this.opts.kenningNow ? { now: this.opts.kenningNow } : {}) });
       } catch (err) {
         this.log.warn(`[wherever] kenning: could not open ${this.dbPath} (${(err as Error).message}); the inbox stays off`);
         return;
       }
       this.loadNotified();
+      this.loadArchives();
       this.log.log(`[wherever] kenning: inbox and presence from ${this.dbPath}`);
       this.watcher = mod.watchChanges(this.kenning, () => this.onChange(), { intervalMs: this.opts.pollMs ?? 1000 });
       this.refreshTimer = setInterval(() => {
@@ -271,15 +291,15 @@ export class KenningService {
   /** The current snapshot (sent to a dashboard as it connects). */
   snapshot(): KenningSnapshot {
     const k = this.kenning;
-    if (!k) return { available: false, inbox: [], presence: [] };
+    if (!k) return { available: false, inbox: [], presence: [], archives: [] };
     try {
       const live = k.list();
       const bySession = new Map(live.map((p) => [p.sessionFile, p]));
       const inbox = k.inbox().map((item) => inboxItemView(item, bySession.get(item.session) ?? k.presence(item.session)));
-      return { available: true, inbox, presence: live.map(presenceView) };
+      return { available: true, inbox, presence: live.map(presenceView), archives: this.archiveViews() };
     } catch (err) {
       this.log.warn(`[wherever] kenning: reading the inbox failed: ${(err as Error).message}`);
-      return { available: true, inbox: [], presence: [] };
+      return { available: true, inbox: [], presence: [], archives: this.archiveViews() };
     }
   }
 
@@ -301,6 +321,158 @@ export class KenningService {
     }
     this.onChange();
     return { ok: true };
+  }
+
+  /** The open kenning connection (the spawn/stop host reads ownership through it), or null. */
+  api(): Kenning | null {
+    return this.kenning;
+  }
+
+  // ------------------------------------------------ ownership in the sidebar
+
+  /**
+   * Per-session lookups the `/sessions` listing makes for every session
+   * (owner, archived), memoized until the next kenning change: one indexed
+   * query each, but a real listing has thousands of sessions.
+   */
+  private lookups = new Map<string, { owner: string | null; archived: boolean }>();
+
+  private lookup(sessionFile: string): { owner: string | null; archived: boolean } {
+    const hit = this.lookups.get(sessionFile);
+    if (hit) return hit;
+    const k = this.kenning;
+    let v = { owner: null as string | null, archived: false };
+    if (k) {
+      try {
+        v = { owner: k.ownerOf(sessionFile), archived: k.archiveMark(sessionFile) !== null };
+      } catch {}
+    }
+    this.lookups.set(sessionFile, v);
+    return v;
+  }
+
+  /** The session that spawned this one (kenning D23), normalized; null when none or no kenning. */
+  ownerOf(sessionFile: string): string | null {
+    const o = this.lookup(sessionFile).owner;
+    return o ? normalizeSessionFile(o) : null;
+  }
+
+  /** Hidden by a cascaded delete (or another host's archive), within its undo window. */
+  isArchived(sessionFile: string): boolean {
+    return this.lookup(sessionFile).archived;
+  }
+
+  /** Whether deleting this session must cascade (it owns sessions, kenning D24). */
+  ownsSessions(sessionFile: string): boolean {
+    try {
+      return (this.kenning?.ownedBy(sessionFile).length ?? 0) > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  // ------------------------------------------------------- cascaded delete
+
+  private archives = new Map<string, KenningArchiveView>();
+
+  private archiveViews(): KenningArchiveView[] {
+    const now = this.now();
+    return [...this.archives.values()].filter((a) => a.undoUntil > now).sort((a, b) => b.at - a.at);
+  }
+
+  /**
+   * The human deleted a session that owns others (kenning D24): mark it and
+   * its whole owned subtree as one batch. The host hides every session in it
+   * and keeps their transcripts until the undo window has passed
+   * (`purgeExpired`). Null without kenning.
+   */
+  deleteCascade(sessionFile: string): KenningArchiveView | null {
+    const k = this.kenning;
+    if (!k) return null;
+    const r = k.archive(sessionFile, { kind: 'deleted', by: 'web' });
+    const view: KenningArchiveView = {
+      batch: r.batch,
+      root: normalizeSessionFile(sessionFile),
+      sessions: r.sessions.map(normalizeSessionFile),
+      at: r.at,
+      undoUntil: r.undoUntil,
+    };
+    this.archives.set(r.batch, view);
+    this.saveArchives();
+    this.onChange();
+    return view;
+  }
+
+  /** Undo a cascaded delete within its window: the sessions come back. */
+  undoDelete(batch: string): { ok: true; sessions: string[] } | { ok: false; error: string } {
+    const k = this.kenning;
+    if (!k) return { ok: false, error: KENNING_DISABLED_ERROR };
+    try {
+      const sessions = k.undoArchive(batch).map(normalizeSessionFile);
+      this.archives.delete(batch);
+      this.saveArchives();
+      this.onChange();
+      return { ok: true, sessions };
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+  }
+
+  /**
+   * The cascaded deletes whose undo window kenning says has passed
+   * (`expiredArchives`): `remove` deletes each transcript for good, then the
+   * batch is forgotten. Never before kenning lists it (D24).
+   */
+  purgeExpired(remove: (sessionFile: string) => void): number {
+    const k = this.kenning;
+    if (!k) return 0;
+    let expired: Set<string>;
+    try {
+      expired = new Set(k.expiredArchives().map((m) => `${m.batch}\n${normalizeSessionFile(m.session)}`));
+    } catch {
+      return 0;
+    }
+    let n = 0;
+    for (const [batch, a] of this.archives) {
+      if (a.undoUntil > this.now()) continue;
+      for (const s of a.sessions) {
+        if (!expired.has(`${batch}\n${s}`)) continue;
+        try {
+          remove(s);
+          n++;
+        } catch (err) {
+          this.log.warn(`[wherever] kenning: could not delete ${s}: ${(err as Error).message}`);
+        }
+      }
+      this.archives.delete(batch);
+    }
+    if (n) this.saveArchives();
+    return n;
+  }
+
+  private archivesPath(): string {
+    return path.join(this.opts.whereverStateDir, KENNING_ARCHIVES_FILE);
+  }
+
+  private loadArchives(): void {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.archivesPath(), 'utf8')) as { batches?: KenningArchiveView[] };
+      for (const a of raw.batches ?? []) if (a && typeof a.batch === 'string' && Array.isArray(a.sessions)) this.archives.set(a.batch, a);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') this.log.warn(`[wherever] kenning: ignoring an unreadable ${KENNING_ARCHIVES_FILE}: ${(err as Error).message}`);
+    }
+  }
+
+  private saveArchives(): void {
+    const file = this.archivesPath();
+    const tmp = `${file}.tmp`;
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify({ batches: [...this.archives.values()] }, null, 2) + '\n', { mode: 0o600 });
+      fs.renameSync(tmp, file);
+    } catch (err) {
+      this.log.warn(`[wherever] kenning: could not record deleted sessions: ${(err as Error).message}`);
+    }
   }
 
   /**
@@ -332,7 +504,13 @@ export class KenningService {
   }
 
   private onChange(): void {
+    this.lookups.clear();
     this.checkNotifications();
+    try {
+      this.opts.onKenningChange?.();
+    } catch (err) {
+      this.log.error('[wherever] kenning: a change listener failed:', err);
+    }
     if (this.throttleTimer) return;
     const throttle = this.opts.throttleMs ?? 2000;
     const elapsed = this.now() - this.lastUpdateAt;

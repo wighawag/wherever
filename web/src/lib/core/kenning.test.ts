@@ -2,6 +2,7 @@ import {describe, it, expect} from 'vitest';
 import {
 	emptyKenningState,
 	inboxBadge,
+	ownedChildren,
 	parseKenningUpdate,
 	presenceByFile,
 	presenceLine,
@@ -48,12 +49,29 @@ describe('kenning on the web', () => {
 				inbox: [item(), {nope: 1}],
 				presence: [presence(), 5],
 			}),
-		).toEqual({available: true, inbox: [item()], presence: [presence()]});
+		).toEqual({
+			available: true,
+			inbox: [item()],
+			presence: [presence()],
+			archives: [],
+		});
 		expect(parseKenningUpdate({available: true})).toEqual({
 			available: true,
 			inbox: [],
 			presence: [],
+			archives: [],
 		});
+		const archive = {
+			batch: 'ar_1',
+			root: '/s/a.jsonl',
+			sessions: ['/s/a.jsonl', '/s/b.jsonl'],
+			at: 1,
+			undoUntil: 2,
+		};
+		expect(
+			parseKenningUpdate({available: true, archives: [archive, {batch: 5}]})
+				.archives,
+		).toEqual([archive]);
 	});
 
 	it('the presence line: roles, a state worth saying, the status; nothing for a plain idle session', () => {
@@ -70,6 +88,23 @@ describe('kenning on the web', () => {
 		expect(presenceLine(presence({roles: ['a', 'b'], status: 'done'}))).toBe(
 			'a, b · done',
 		);
+	});
+
+	it('owned children are grouped by owner across folders, in listing order', () => {
+		const m = ownedChildren([
+			{path: '/a/owner.jsonl'},
+			{path: '/b/lane1.jsonl', ownerSessionPath: '/a/owner.jsonl'},
+			{path: '/c/lane2.jsonl', ownerSessionPath: '/a/owner.jsonl'},
+			{path: '/b/helper.jsonl', ownerSessionPath: '/b/lane1.jsonl'},
+		]);
+		expect(m.get('/a/owner.jsonl')?.map((s) => s.path)).toEqual([
+			'/b/lane1.jsonl',
+			'/c/lane2.jsonl',
+		]);
+		expect(m.get('/b/lane1.jsonl')?.map((s) => s.path)).toEqual([
+			'/b/helper.jsonl',
+		]);
+		expect(m.has('/b/helper.jsonl')).toBe(false);
 	});
 
 	it('presence joins the session list by file; the badge counts items and flags blocking ones', () => {

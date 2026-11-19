@@ -4,9 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import type { InlineExtension } from '@earendil-works/pi-coding-agent';
 import kenningPi from 'kenning-pi';
-import { HUMAN_INPUT_EVENT, openKenning, type Kenning } from 'kenning';
+import { HUMAN_INPUT_END_EVENT, HUMAN_INPUT_EVENT, openKenning, type Kenning } from 'kenning';
 import { SessionPool, composeServerAgentParts, type ServerTrackedSession } from '../src/session-pool.ts';
-import { HUMAN_INPUT_EVENT as SERVER_HUMAN_INPUT_EVENT, humanInputChannel, willReachInputEvent } from '../src/kenning-human-input.ts';
+import { HUMAN_INPUT_EVENT as SERVER_HUMAN_INPUT_EVENT, HUMAN_INPUT_END_EVENT as SERVER_HUMAN_INPUT_END_EVENT, humanInputChannel, willReachInputEvent } from '../src/kenning-human-input.ts';
 import { serverBuiltinExtensions } from '../src/builtin-extensions.ts';
 import { KENNING_HUMAN_INPUT_EVENT } from '../../extension/src/cli-message.ts';
 import { startFakeLlmServer, type FakeLlmServer } from './fake-llm-server.js';
@@ -188,7 +188,7 @@ describe('kenning human-input marking (server sessions, kenning-pi loaded)', () 
     await pool.sendUserMessage(s.sessionFile, '/standup');
     expect(marks).toEqual([]);
     await pool.sendUserMessage(s.sessionFile, 'now a plain one');
-    expect(marks).toEqual([{ text: 'now a plain one', channel: 'web' }]);
+    expect(marks).toEqual([{ text: 'now a plain one', channel: 'web', id: expect.stringMatching(/^wherever-/) }]);
   }, 60_000);
 
   it('a /reload rebuilds the marker with the agent: web sends are still marked after it', async () => {
@@ -254,6 +254,7 @@ describe('kenning human-input marking (pure parts)', () => {
     expect(HUMAN_INPUT_EVENT).toBe('kenning:human-input');
     expect(KENNING_HUMAN_INPUT_EVENT).toBe(HUMAN_INPUT_EVENT);
     expect(SERVER_HUMAN_INPUT_EVENT).toBe(HUMAN_INPUT_EVENT);
+    expect(SERVER_HUMAN_INPUT_END_EVENT).toBe(HUMAN_INPUT_END_EVENT);
   });
 
   it('every server agent gets the marker extension, right after the conversation-mode one', () => {

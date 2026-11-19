@@ -10,3 +10,5 @@ wherever is now a host for [kenning](https://github.com/wighawag/kenning), the s
 - **Presence in the session list.** Each live session shows its kenning role, state and status line.
 
 wherever never creates kenning's database: everything stays off until kenning-pi (or the kenning CLI) has made it, and `kenning.enabled: false` in config.json turns it off.
+
+Requires kenning 0.1.0 (`npm:kenning-pi@0.1.0` in your pi settings for the sessions to use it).

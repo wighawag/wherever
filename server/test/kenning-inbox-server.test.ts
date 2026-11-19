@@ -43,8 +43,8 @@ afterAll(async () => {
 
 type Update = { type: 'kenning_update'; available: boolean; inbox: any[]; presence: any[] };
 
-async function newSession(c: TestClient): Promise<{ sessionId: string; sessionFile: string }> {
-  c.send({ type: 'session_new', cwd: h.workspace });
+async function newSession(c: TestClient, cwd = h.workspace): Promise<{ sessionId: string; sessionFile: string }> {
+  c.send({ type: 'session_new', cwd });
   const created = await c.waitForType('session_created', 30_000);
   await c.waitFor((m) => m.type === 'session_ready' || m.type === 'session_created', 30_000);
   return { sessionId: created.sessionId as string, sessionFile: created.sessionFile as string };
@@ -108,4 +108,62 @@ describe('kenning inbox and presence on the web', () => {
     web.send({ type: 'kenning_answer', itemId: item.id, text: 'no' });
     expect(await web.waitFor((m) => m.type === 'kenning_answer_result' && m.ok === false)).toMatchObject({ itemId: item.id });
   }, 90_000);
+
+  it('a session_spawn becomes a sidebar session under its owner; deleting the owner cascades as one undoable batch', async () => {
+    const web = await h.connect();
+    await web.waitForType('kenning_update');
+    // Its own folder: a second live session in the first test's folder would open read-only (folder conflict).
+    const ownerDir = path.join(h.workspace, 'orchestrator');
+    fs.mkdirSync(ownerDir, { recursive: true });
+    const owner = await newSession(web, ownerDir);
+    const laneDir = path.join(h.workspace, 'push-lane');
+    fs.mkdirSync(laneDir, { recursive: true });
+    // The fake model serves every session: let the first test's sessions finish
+    // (kenning may still wake one with the delivered answer) before queueing a
+    // one-shot tool call meant for this owner.
+    for (let n = -1, quietSince = Date.now(); Date.now() - quietSince < 1500; await new Promise((r) => setTimeout(r, 100))) {
+      if (h.fake.requests().length !== n) {
+        n = h.fake.requests().length;
+        quietSince = Date.now();
+      }
+    }
+    h.fake.queue({ kind: 'tool-call', toolName: 'session_spawn', input: { folder: laneDir, prompt: 'Build the push lane.', role: 'tree/push' } });
+    web.send({ type: 'message', sessionId: owner.sessionId, message: 'spawn the push lane' });
+
+    type Listed = { path: string; ownerSessionPath?: string; name?: string };
+    const list = async (): Promise<Listed[]> => {
+      const r = await fetch(`http://127.0.0.1:${h.port}/sessions`);
+      const data = (await r.json()) as { folders: Array<{ sessions: Listed[] }> };
+      return data.folders.flatMap((f) => f.sessions);
+    };
+    // The child ran its first turn (the owner's message woke it), so its transcript is listed, under its owner.
+    let child: Listed | undefined;
+    const deadline = Date.now() + 30_000;
+    while (!child && Date.now() < deadline) {
+      child = (await list()).find((s) => s.ownerSessionPath === owner.sessionFile);
+      if (!child) await new Promise((r) => setTimeout(r, 200));
+    }
+    expect(child).toBeTruthy();
+    expect(child!.name).toBe('tree/push');
+    expect(kenning.ownerOf(child!.path)).toBe(owner.sessionFile);
+
+    // Deleting the owner hides it AND its child, as one batch; the transcripts stay.
+    const del = await fetch(`http://127.0.0.1:${h.port}/session/delete`, { method: 'POST', body: JSON.stringify({ sessionFile: owner.sessionFile }) });
+    const body = (await del.json()) as { status: string; cascade?: { batch: string; sessions: string[] } };
+    expect(body.status).toBe('deleted');
+    expect(body.cascade?.sessions.sort()).toEqual([owner.sessionFile, child!.path].sort());
+    const after = (await list()).map((s) => s.path);
+    expect(after).not.toContain(owner.sessionFile);
+    expect(after).not.toContain(child!.path);
+    expect(fs.existsSync(owner.sessionFile) && fs.existsSync(child!.path)).toBe(true);
+    const withUndo = (await web.waitFor((m) => m.type === 'kenning_update' && (m as any).archives?.length === 1, 15_000)) as any;
+    expect(withUndo.archives[0]).toMatchObject({ batch: body.cascade!.batch, root: owner.sessionFile });
+
+    // Undo brings both back.
+    web.send({ type: 'kenning_undo_delete', batch: body.cascade!.batch });
+    expect(await web.waitForType('kenning_undo_result')).toMatchObject({ batch: body.cascade!.batch, ok: true });
+    const restored = (await list()).map((s) => s.path);
+    expect(restored).toContain(owner.sessionFile);
+    expect(restored).toContain(child!.path);
+  }, 120_000);
 });

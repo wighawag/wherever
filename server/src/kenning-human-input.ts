@@ -26,6 +26,15 @@ import { WEB_ORIGIN, type ReplyOrigin } from './reply-routing.js';
  */
 export const HUMAN_INPUT_EVENT = 'kenning:human-input';
 
+/**
+ * kenning's `HUMAN_INPUT_END_EVENT` (kenning D35), copied for the same reason:
+ * emitted once the marked, AWAITED send settled, so kenning drops the mark if
+ * no input consumed it. Server sessions only: the CLI bridge's
+ * `pi.sendUserMessage()` is fire-and-forget, so an end there could drop a mark
+ * that is about to match (it relies on kenning's 5 s expiry instead).
+ */
+export const HUMAN_INPUT_END_EVENT = 'kenning:human-input-end';
+
 export type HumanInputChannel = 'web' | 'telegram';
 
 /** The kenning channel of a routing origin, or null when the send is not a human's. */
@@ -65,8 +74,10 @@ export function willReachInputEvent(session: InputEventProbe, text: string): boo
 export interface HumanInputMarker {
   /** The inline extension that captures the session's bus (one per agent build). */
   inlineExtension: InlineExtension;
-  /** Emit the mark. A no-op until the extension was loaded. */
-  mark(text: string, channel: HumanInputChannel): void;
+  /** Emit the mark, and return its id for `end`. A no-op until the extension was loaded. */
+  mark(text: string, channel: HumanInputChannel): string;
+  /** The marked send settled (resolved or threw): close that mark (kenning D35). */
+  end(text: string, id: string): void;
 }
 
 /**
@@ -76,6 +87,7 @@ export interface HumanInputMarker {
  */
 export function createHumanInputMarker(): HumanInputMarker {
   let events: ExtensionAPI['events'] | null = null;
+  let seq = 0;
   return {
     inlineExtension: {
       name: 'wherever-human-input',
@@ -84,7 +96,12 @@ export function createHumanInputMarker(): HumanInputMarker {
       },
     },
     mark(text, channel) {
-      events?.emit(HUMAN_INPUT_EVENT, { text, channel });
+      const id = `wherever-${process.pid}-${++seq}`;
+      events?.emit(HUMAN_INPUT_EVENT, { text, channel, id });
+      return id;
+    },
+    end(text, id) {
+      events?.emit(HUMAN_INPUT_END_EVENT, { text, id });
     },
   };
 }

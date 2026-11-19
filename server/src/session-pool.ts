@@ -2230,6 +2230,53 @@ export class SessionPool {
     }
   }
 
+  /**
+   * A session kenning asked for (`KenningHost.spawn`, kenning D28): built in
+   * `folder` with a live agent (so kenning-pi starts in it and is woken by the
+   * owner's first message), and NOTHING sent into it. With `fork`, it starts as
+   * a branch of `fork.sessionFile` up to `fork.entryId` (inclusive; the whole
+   * transcript without one), written by pi's own SessionManager into `folder`'s
+   * session dir with `folder` as its cwd (kenning D34). `title` becomes the
+   * session's name, which the sidebar shows.
+   */
+  async spawnSession(opts: {
+    folder: string;
+    title?: string;
+    fork?: { sessionFile: string; entryId?: string };
+  }): Promise<{ tracked: TrackedSession } | { error: string }> {
+    const folder = normalizePath(opts.folder);
+    if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) return { error: `no such folder: ${folder}` };
+    let tracked: TrackedSession;
+    if (opts.fork) {
+      let file: string | undefined;
+      try {
+        const sessionDir = SessionManager.create(folder).getSessionDir();
+        const source = SessionManager.open(opts.fork.sessionFile, sessionDir, folder);
+        const leaf = opts.fork.entryId ?? source.getLeafId();
+        if (opts.fork.entryId && !source.getEntry(opts.fork.entryId)) return { error: `no entry ${opts.fork.entryId} in ${opts.fork.sessionFile}` };
+        file = leaf ? source.createBranchedSession(leaf) : undefined;
+      } catch (err) {
+        return { error: `fork failed: ${(err as Error).message}` };
+      }
+      if (!file) return { error: `fork failed: ${opts.fork.sessionFile} has nothing to branch from` };
+      const r = await this.loadSession(normalizeSessionFile(file), folder);
+      if (r.error) return { error: r.error };
+      tracked = r.tracked;
+    } else {
+      const r = await this.createNewSession(folder, undefined, false, false, undefined, true);
+      if (r.error) return { error: r.error };
+      tracked = r.tracked;
+    }
+    if (opts.title && tracked.type === 'server') {
+      try {
+        tracked.agentSession.setSessionName(opts.title);
+      } catch (err) {
+        console.warn(`[wherever] kenning spawn: could not name ${tracked.sessionFile}: ${(err as Error).message}`);
+      }
+    }
+    return { tracked };
+  }
+
   addClient(sessionFileOrId: string, clientId: string): TrackedSession | null {
     const tracked = this.getSession(sessionFileOrId);
     if (!tracked) return null;
@@ -2657,9 +2704,13 @@ export class SessionPool {
         else routing.queued(ticket);
       };
       tracked.busy = (tracked.busy ?? 0) + 1;
+      // The kenning mark for a human's send (ADR 0023), closed in `finally` once
+      // the awaited prompt() settled (kenning D35): a send another extension
+      // handled, or one refused while compacting, leaves no mark behind.
+      const humanInput = tracked.humanInput;
+      const humanChannel = humanInputChannel(origin);
+      const markId = humanChannel && willReachInputEvent(tracked.agentSession, text) ? humanInput.mark(text, humanChannel) : null;
       try {
-        const humanChannel = humanInputChannel(origin);
-        if (humanChannel && willReachInputEvent(tracked.agentSession, text)) tracked.humanInput.mark(text, humanChannel);
         if (text.startsWith('/')) {
           await tracked.agentSession.prompt(text, {
             expandPromptTemplates: true,
@@ -2685,6 +2736,7 @@ export class SessionPool {
         throw err;
       } finally {
         tracked.busy -= 1;
+        if (markId) humanInput.end(text, markId);
       }
     } else if (tracked.type === 'cli') {
       // The server cannot see the terminal pi's preflight, so the entry stands

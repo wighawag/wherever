@@ -108,7 +108,8 @@ for (let i = 0; i < MESSAGES; i++) {
   await new Promise((r) => setTimeout(r, 300)); // let the woken turn settle
 }
 const delivered = latencies.filter(Number.isFinite);
-console.log(
+if (!delivered.length) console.log(`send -> woken agent_start: 0/${MESSAGES} delivered (no idle session was woken)`);
+else console.log(
   `send -> woken agent_start, ${delivered.length}/${MESSAGES} delivered: ` +
     `min ${pct(delivered, 0).toFixed(0)} ms, median ${pct(delivered, 0.5).toFixed(0)} ms, p90 ${pct(delivered, 0.9).toFixed(0)} ms, max ${Math.max(...delivered).toFixed(0)} ms`,
 );

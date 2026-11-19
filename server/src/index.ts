@@ -57,6 +57,7 @@ import {
 import { runConfigCommand } from './commands/config.js';
 import { getWhereverConfigPath } from './config-dir.js';
 import { KenningService, type KenningNotifyOutcome } from './kenning-service.js';
+import { registerKenningHost, WhereverKenningHost } from './kenning-host.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1445,8 +1446,21 @@ async function main(): Promise<void> {
   // opens kenning's database only once that exists, so nothing is written for
   // a user who does not use kenning. Independent of the assistant: without
   // active channels the inbox is still on the web, it is just never pushed.
+  const kenningEnabled = getWhereverConfig().kenning?.enabled !== false;
+  // kenning's host for spawn and stop (kenning-host.ts, ADR 0024): registered
+  // for the whole process at start, so a session's `session_spawn` becomes a
+  // sidebar session; it reads kenning through the service below.
+  const kenningHost = new WhereverKenningHost({
+    pool: sessionPool,
+    stateDir: getWhereverStateDir(),
+    kenning: () => kenning.api(),
+    onSpawned: () => broadcastSessionsUpdated(),
+  });
+  const unregisterKenningHost = kenningEnabled ? registerKenningHost(kenningHost) : () => {};
   const kenning = new KenningService({
-    enabled: getWhereverConfig().kenning?.enabled !== false,
+    enabled: kenningEnabled,
+    // Wake an evicted child of ours when a message waits for it (D29's rule).
+    onKenningChange: () => kenningHost.wakeEvicted(),
     whereverStateDir: getWhereverStateDir(),
     // The same knob kenning-pi reads (its shared.ts), so one setting speeds up both.
     pollMs: Number(process.env.KENNING_POLL_MS) || undefined,
@@ -1458,6 +1472,24 @@ async function main(): Promise<void> {
     },
   });
   kenning.start();
+  // Transcripts of a cascaded delete go only once kenning says the undo window
+  // passed (D24): checked once kenning is open, then hourly.
+  const purgeKenningDeletes = () => {
+    const n = kenning.purgeExpired((file) => {
+      const tracked = sessionPool.getSession(file);
+      if (tracked) void sessionPool.destroySession(tracked.sessionFile, 'deleted');
+      if (sessionPool.isSessionFile(file) && fs.existsSync(file)) fs.unlinkSync(file);
+      forgetStar(file);
+      kenningHost.forget(file);
+    });
+    if (n) {
+      console.log(`[wherever] kenning: deleted ${n} transcript(s) whose undo window passed`);
+      broadcastSessionsUpdated();
+    }
+  };
+  void kenning.ready().then(purgeKenningDeletes);
+  const kenningPurgeTimer = setInterval(purgeKenningDeletes, 60 * 60 * 1000);
+  kenningPurgeTimer.unref?.();
   if (channelDispatcher) {
     const dispatcher = channelDispatcher;
     kenning.setNotifier(async (n): Promise<KenningNotifyOutcome> => {
@@ -1520,7 +1552,11 @@ async function main(): Promise<void> {
     assistantFolder: assistantController && assistant.status.folder ? canonicalPath(assistant.status.folder) : null,
     timezone: assistantController ? currentTimezone() : null,
   });
-  const cliRequests = createCliRequestRouter({ assistantInfo: currentAssistantInfo, assistantHooks: () => assistantHooks });
+  const cliRequests = createCliRequestRouter({
+    assistantInfo: currentAssistantInfo,
+    assistantHooks: () => assistantHooks,
+    kenningHost: () => (kenningEnabled ? kenningHost : null),
+  });
   // Push the current assistant info to every connected CLI bridge, which updates
   // its cached `assistant_info`. The folder takes effect on restart only, so the
   // one runtime change is the user's timezone: the scheduler's
@@ -1941,7 +1977,23 @@ async function main(): Promise<void> {
       // ?view=readonly returns only the sessions.readOnly folders (the separate
       // read-only page); default returns the main list (ignore + readOnly hidden).
       const view = url.searchParams.get('view') === 'readonly' ? 'readonly' : 'default';
-      const folders = await sessionPool.listSessions(view);
+      const listed = await sessionPool.listSessions(view);
+      // kenning (ADR 0024): each session's owner, so the sidebar shows a spawned
+      // session under the session that spawned it, and sessions a cascaded
+      // delete hid (within its undo window) left out. Memoized lookups.
+      const folders = kenning.available
+        ? listed
+            .map((f) => ({
+              ...f,
+              sessions: f.sessions
+                .filter((s) => !kenning.isArchived(s.path))
+                .map((s) => {
+                  const owner = kenning.ownerOf(s.path);
+                  return owner ? { ...s, ownerSessionPath: owner } : s;
+                }),
+            }))
+            .filter((f) => f.sessions.length > 0 || listed.find((l) => l.path === f.path)?.sessions.length === 0)
+        : listed;
       const active = sessionPool.getActiveSessions();
       sendJSON(res, 200, { folders, activeSessions: active });
       return;
@@ -2573,9 +2625,10 @@ async function main(): Promise<void> {
           return;
         }
 
-        // Get the active session if any, using either the sessionFile path or resolved path
-        const tracked = sessionPool.getSession(sessionFile) || sessionPool.getSession(resolved);
-        if (tracked) {
+        // Close a resident session: its viewers are told, its agent goes.
+        const closeResident = (file: string) => {
+          const tracked = sessionPool.getSession(file);
+          if (!tracked) return;
           const wsMsg: ServerMessage = {
             type: 'session_destroyed',
             sessionId: tracked.sessionId,
@@ -2591,8 +2644,30 @@ async function main(): Promise<void> {
               clearConflictState(c);
             }
           }
-          sessionPool.destroySession(tracked.sessionFile, 'deleted');
+          if (tracked.type === 'server') sessionPool.destroySession(tracked.sessionFile, 'deleted');
+        };
+
+        // kenning (D24, ADR 0024): a session that owns others takes them with it,
+        // as ONE undoable batch: all are hidden and their agents closed, and the
+        // transcripts stay until the undo window passed (purgeKenningDeletes). A
+        // session a cascade already hid needs nothing more. Every other session
+        // is deleted at once, as before.
+        if (kenning.isArchived(resolved)) {
+          sendJSON(res, 200, { status: 'deleted' });
+          return;
         }
+        if (kenning.ownsSessions(resolved)) {
+          const cascade = kenning.deleteCascade(resolved);
+          if (cascade) {
+            for (const file of cascade.sessions) closeResident(file);
+            broadcastSessionsUpdated();
+            sendJSON(res, 200, { status: 'deleted', cascade });
+            return;
+          }
+        }
+
+        closeResident(sessionFile);
+        closeResident(resolved);
 
         if (fs.existsSync(resolved)) {
           fs.unlinkSync(resolved);
@@ -3332,6 +3407,8 @@ This encrypts all network traffic securely and enables safe, private remote acce
     assistantScheduler?.stop();
     await channelDispatcher?.stop();
     kenning.stop();
+    unregisterKenningHost();
+    clearInterval(kenningPurgeTimer);
     await sessionPool.disposeAll();
     assistant.release();
     server.close();
@@ -3747,6 +3824,18 @@ async function handleWSMessage(
   kenning: KenningService | null = null,
 ): Promise<void> {
   switch (msg.type) {
+    case 'kenning_undo_delete': {
+      // Undo a cascaded delete (kenning D24) from the web, within its window.
+      const r = client.isCliBridge
+        ? { ok: false as const, error: 'a CLI bridge cannot undo a delete' }
+        : kenning
+          ? kenning.undoDelete(msg.batch)
+          : { ok: false as const, error: 'kenning is not available on this server' };
+      sendWS(client.ws, r.ok ? { type: 'kenning_undo_result', batch: msg.batch, ok: true } : { type: 'kenning_undo_result', batch: msg.batch, ok: false, error: r.error });
+      if (r.ok) onSessionsUpdated();
+      return;
+    }
+
     case 'kenning_answer': {
       // The human answering a kenning attention item from the web: an
       // authenticated dashboard is a human act (ADR 0003, wherever ADR 0023).

@@ -35,8 +35,9 @@ export default defineConfig({
     // exist so a 2 GB sessions directory costs tens of MB, not gigabytes.
     // kenning (and kenning-pi) import `node:sqlite`, a builtin that exists ONLY
     // with the `node:` prefix, which vite 5 strips when it transforms a module
-    // ("Failed to load url sqlite"). A linked package outside node_modules is
-    // transformed, so let Node load kenning itself instead.
+    // ("Failed to load url sqlite"). Keep kenning's dist external, so Node loads
+    // it even when it is linked from a local checkout (outside node_modules,
+    // which vite would otherwise transform).
     server: { deps: { external: [/[\\/]kenning(-pi)?[\\/]dist[\\/]/] } },
     poolOptions: {
       forks: { execArgv: ['--expose-gc'] },

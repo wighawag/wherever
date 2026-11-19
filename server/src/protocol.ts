@@ -154,6 +154,10 @@ export type ClientMessage =
   // asker (echoing `requestId`, so two answers in flight are told apart);
   // refused from a CLI bridge connection.
   | { type: 'kenning_answer'; itemId: string; text: string; requestId?: string }
+  // Client -> server: undo a delete that cascaded through kenning ownership
+  // (`/session/delete` answered `cascade.batch`), within its 7-day window.
+  // Answered by `kenning_undo_result`; refused from a CLI bridge connection.
+  | { type: 'kenning_undo_delete'; batch: string }
   | { type: 'cli_abort' }
   | { type: 'cli_bash'; command: string; excludeFromContext?: boolean }
   | { type: 'cli_model_change'; model: string }
@@ -373,4 +377,6 @@ export type ServerMessage =
   // Server -> the asker: the result of `kenning_answer`.
   | { type: 'kenning_answer_result'; itemId: string; requestId?: string; ok: true }
   | { type: 'kenning_answer_result'; itemId: string; requestId?: string; ok: false; error: string }
+  | { type: 'kenning_undo_result'; batch: string; ok: true }
+  | { type: 'kenning_undo_result'; batch: string; ok: false; error: string }
   | { type: 'pong'; timestamp: number };

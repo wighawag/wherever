@@ -61,6 +61,12 @@ export interface FolderSessionInfo {
    */
   parentSessionPath?: string;
   /**
+   * The session that spawned this one through kenning (`session_spawn`,
+   * kenning D23), normalized; set by the `/sessions` handler while kenning is
+   * open. Owner and child may live in different folders (a worktree).
+   */
+  ownerSessionPath?: string;
+  /**
    * True when the user starred this session ("come back to this"). Stored
    * server-side in `starred-sessions.json`, see server/src/session-stars.ts.
    */

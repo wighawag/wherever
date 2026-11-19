@@ -34,6 +34,9 @@ export interface SessionInfo {
 	// True when the user starred it ("come back to this"). Server-side, so a
 	// star set on one device shows on every other.
 	starred?: boolean;
+	// The session that spawned this one through kenning (`session_spawn`), when
+	// the server has kenning. Owner and child may be in different folders.
+	ownerSessionPath?: string;
 }
 
 export interface FolderWithSessions {

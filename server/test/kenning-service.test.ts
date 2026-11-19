@@ -73,7 +73,7 @@ describe('KenningService', () => {
     const { svc, updates } = service(d);
     svc.start();
     expect(svc.available).toBe(false);
-    expect(svc.snapshot()).toEqual({ available: false, inbox: [], presence: [] });
+    expect(svc.snapshot()).toEqual({ available: false, inbox: [], presence: [], archives: [] });
     expect(fs.existsSync(d.kenningDir)).toBe(false);
     expect(svc.answer('h_x', 'yes', 'web')).toMatchObject({ ok: false });
 
@@ -231,6 +231,46 @@ describe('KenningService', () => {
       set('KENNING_STATE_DIR', saved.K);
       set('XDG_STATE_HOME', saved.X);
     }
+  });
+
+  it('a cascaded delete hides the owner and its subtree as one batch, undoable; purged only once kenning says the window passed', async () => {
+    const d = dirs();
+    const k = db(d);
+    const owner = SESSION(d.root);
+    const child = path.join(d.root, 'sessions', 'child.jsonl');
+    const grandchild = path.join(d.root, 'sessions', 'grandchild.jsonl');
+    k.recordOwnership({ session: child, owner, folder: '/w/a', via: 'host' });
+    k.recordOwnership({ session: grandchild, owner: child, folder: '/w/b', via: 'host' });
+    let kNow = Date.now();
+    const { svc, updates } = service(d, { kenningNow: () => kNow });
+    svc.start();
+    await svc.ready();
+    expect(svc.ownsSessions(owner)).toBe(true);
+    expect(svc.ownsSessions(grandchild)).toBe(false);
+    expect(svc.ownerOf(grandchild)).toBe(child);
+
+    const a = svc.deleteCascade(owner)!;
+    expect(a.sessions).toEqual([owner, child, grandchild]);
+    expect(svc.isArchived(grandchild)).toBe(true);
+    await until(() => updates.at(-1)?.archives.length === 1);
+    // Within the window nothing is deleted, whatever the host asks.
+    const removed: string[] = [];
+    expect(svc.purgeExpired((f) => removed.push(f))).toBe(0);
+
+    expect(svc.undoDelete(a.batch)).toEqual({ ok: true, sessions: [owner, child, grandchild] });
+    expect(svc.isArchived(child)).toBe(false);
+    await until(() => updates.at(-1)?.archives.length === 0);
+
+    // Deleted again, then 8 days pass (kenning's clock): purged, and the batch forgotten.
+    kNow = Date.now() - 8 * 86_400_000;
+    const b = svc.deleteCascade(owner)!;
+    kNow = Date.now();
+    expect(b.undoUntil).toBeLessThan(Date.now());
+    expect(svc.purgeExpired((f) => removed.push(f))).toBe(3);
+    expect(removed.sort()).toEqual([owner, child, grandchild].sort());
+    expect(svc.snapshot().archives).toEqual([]);
+    // Recorded in wherever's state dir, so a restart still knows the batch until then.
+    expect(fs.existsSync(path.join(d.stateDir, 'kenning-archives.json'))).toBe(true);
   });
 
   it('builds the notification and the session id from pure parts', () => {

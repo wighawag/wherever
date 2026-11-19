@@ -155,8 +155,10 @@ test("a fresh session registers isNew once with its capabilities; a reconnect do
     assert.ok(first.capabilities.includes("cli_request"));
 
     // The assistant_info fetch follows the register.
-    await until(() => received.some((m) => m.type === "cli_request"), 5_000);
-    const reqs = received.filter((m) => m.type === "cli_request");
+    // assistant_info (and kenning_host_info, which has its own test) follow the register.
+    const infoReqs = () => received.filter((m) => m.type === "cli_request" && m.op === "assistant_info");
+    await until(() => infoReqs().length > 0, 5_000);
+    const reqs = infoReqs();
     assert.equal(reqs.length, 1);
     assert.equal(reqs[0].op, "assistant_info");
     assert.equal(typeof reqs[0].id, "string");
@@ -168,7 +170,7 @@ test("a fresh session registers isNew once with its capabilities; a reconnect do
     const second = registers()[1];
     assert.equal(second.isNew, false, "a reconnect repeated isNew");
     assert.ok(second.capabilities.includes("cli_request"));
-    await until(() => received.filter((m) => m.type === "cli_request").length >= 2, 5_000);
+    await until(() => infoReqs().length >= 2, 5_000);
   } finally {
     await emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
   }
