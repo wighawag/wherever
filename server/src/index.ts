@@ -39,6 +39,7 @@ import { DEFAULT_DOWNLOAD_MAX_BYTES } from './attach-file-tool.js';
 import { splitFrame, wantsFrameChunks, FRAME_CHUNK_CHARS } from './frame-chunks.js';
 import { compressCached, isCompressible, negotiateEncoding } from './static-compression.js';
 import { stripHistoryImages, wantsImageRefs, SERVABLE_IMAGE_TYPES } from './history-images.js';
+import { kenningDeliveryOf, stripKenningCards, wantsKenningCards } from './kenning-delivery.js';
 import { readToolResultImage } from './session-transcript.js';
 import { DeltaCoalescer } from './delta-coalescer.js';
 import { UploadStaging, UPLOAD_CAPABILITY, isValidUploadId, parseChunkFrame, CHUNK_FRAME_KIND, type Authorize } from './upload-staging.js';
@@ -56,6 +57,8 @@ import {
 } from './commands/install.js';
 import { runConfigCommand } from './commands/config.js';
 import { getWhereverConfigPath } from './config-dir.js';
+import { KenningService, type KenningNotifyOutcome } from './kenning-service.js';
+import { registerKenningHost, WhereverKenningHost } from './kenning-host.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1085,6 +1088,10 @@ let nextFrameChunkId = 1;
 // Sockets whose client loads large history images by reference (`imageRefs=1`,
 // see history-images.ts) instead of receiving their base64 inline.
 const imageRefSockets = new WeakSet<WebSocket>();
+// Sockets whose client renders kenning's deliveries (`kenning=1`, see
+// kenning-delivery.ts). Every other socket gets history without them and no
+// `kenning_delivery` frame: an older client would show the raw text as a bubble.
+const kenningCardSockets = new WeakSet<WebSocket>();
 // Per-socket coalescing of streamed deltas (delta-coalescer.ts): fewer, larger
 // frames, frame order unchanged. "Backed up" = more than 64 KB still unsent.
 const deltaCoalescers = new WeakMap<WebSocket, DeltaCoalescer<ServerMessage>>();
@@ -1110,8 +1117,13 @@ function sendWS(ws: WebSocket, msg: ServerMessage): void {
 function writeWS(ws: WebSocket, msg: ServerMessage): void {
   if (ws.readyState === WebSocket.OPEN) {
     try {
-      if ((msg.type === 'message_history' || msg.type === 'message_history_prepend') && imageRefSockets.has(ws)) {
-        msg = { ...msg, messages: stripHistoryImages(msg.messages) };
+      if (msg.type === 'message_history' || msg.type === 'message_history_prepend') {
+        // `offset` / `totalCount` keep counting the cards, so a client without
+        // them pages through the same indices and only gets fewer messages.
+        if (!kenningCardSockets.has(ws)) msg = { ...msg, messages: stripKenningCards(msg.messages) };
+        if (imageRefSockets.has(ws)) msg = { ...msg, messages: stripHistoryImages(msg.messages) };
+      } else if (msg.type === 'kenning_delivery' && !kenningCardSockets.has(ws)) {
+        return;
       }
       const json = JSON.stringify(msg);
       if (chunkingSockets.has(ws) && json.length > FRAME_CHUNK_CHARS) {
@@ -1438,6 +1450,68 @@ async function main(): Promise<void> {
       jobForSession: (sessionFile) => scheduler.jobForSession(sessionFile),
     };
   }
+  // wherever as a kenning host (kenning-service.ts): the attention inbox and
+  // presence on every dashboard (`kenning_update`), and blocking items pushed
+  // once through the channels above, a Telegram reply to one answering it. It
+  // opens kenning's database only once that exists, so nothing is written for
+  // a user who does not use kenning. Independent of the assistant: without
+  // active channels the inbox is still on the web, it is just never pushed.
+  const kenningEnabled = getWhereverConfig().kenning?.enabled !== false;
+  // kenning's host for spawn and stop (kenning-host.ts, ADR 0024): registered
+  // for the whole process at start, so a session's `session_spawn` becomes a
+  // sidebar session; it reads kenning through the service below.
+  const kenningHost = new WhereverKenningHost({
+    pool: sessionPool,
+    stateDir: getWhereverStateDir(),
+    kenning: () => kenning.api(),
+    onSpawned: () => broadcastSessionsUpdated(),
+  });
+  const unregisterKenningHost = kenningEnabled ? registerKenningHost(kenningHost) : () => {};
+  const kenning = new KenningService({
+    enabled: kenningEnabled,
+    // Wake an evicted child of ours when a message waits for it (D29's rule).
+    onKenningChange: () => kenningHost.wakeEvicted(),
+    whereverStateDir: getWhereverStateDir(),
+    // The same knob kenning-pi reads (its shared.ts), so one setting speeds up both.
+    pollMs: Number(process.env.KENNING_POLL_MS) || undefined,
+    onUpdate: (snapshot) => {
+      const frame: ServerMessage = { type: 'kenning_update', ...snapshot };
+      for (const c of clients.values()) {
+        if (!c.isCliBridge) sendWS(c.ws, frame);
+      }
+    },
+  });
+  kenning.start();
+  // Transcripts of a cascaded delete go only once kenning says the undo window
+  // passed (D24): checked once kenning is open, then hourly.
+  const purgeKenningDeletes = () => {
+    const n = kenning.purgeExpired((file) => {
+      const tracked = sessionPool.getSession(file);
+      if (tracked) void sessionPool.destroySession(tracked.sessionFile, 'deleted');
+      if (sessionPool.isSessionFile(file) && fs.existsSync(file)) fs.unlinkSync(file);
+      forgetStar(file);
+      kenningHost.forget(file);
+    });
+    if (n) {
+      console.log(`[wherever] kenning: deleted ${n} transcript(s) whose undo window passed`);
+      broadcastSessionsUpdated();
+    }
+  };
+  void kenning.ready().then(purgeKenningDeletes);
+  const kenningPurgeTimer = setInterval(purgeKenningDeletes, 60 * 60 * 1000);
+  kenningPurgeTimer.unref?.();
+  if (channelDispatcher) {
+    const dispatcher = channelDispatcher;
+    kenning.setNotifier(async (n): Promise<KenningNotifyOutcome> => {
+      const out = await dispatcher.notify({ title: n.title, body: n.body, source: n.source, navigate: n.navigate, question: { options: n.options } });
+      const refs = out.deliveries.flatMap((d) => (d.result.ok ? (d.result.refs ?? []) : []));
+      return out.ok ? { delivered: true, refs } : { delivered: false, refs, error: out.error };
+    });
+    dispatcher.setNotificationReplyHandler((r) =>
+      r.channel === 'telegram' ? kenning.answerFromReply(r.ref, r.text, 'telegram') : { handled: false },
+    );
+  }
+
   /** The Web Push part of the assistant status (only while active). */
   const webPushStatus = () => ({
     enabled: !!webPushChannel,
@@ -1488,7 +1562,11 @@ async function main(): Promise<void> {
     assistantFolder: assistantController && assistant.status.folder ? canonicalPath(assistant.status.folder) : null,
     timezone: assistantController ? currentTimezone() : null,
   });
-  const cliRequests = createCliRequestRouter({ assistantInfo: currentAssistantInfo, assistantHooks: () => assistantHooks });
+  const cliRequests = createCliRequestRouter({
+    assistantInfo: currentAssistantInfo,
+    assistantHooks: () => assistantHooks,
+    kenningHost: () => (kenningEnabled ? kenningHost : null),
+  });
   // Push the current assistant info to every connected CLI bridge, which updates
   // its cached `assistant_info`. The folder takes effect on restart only, so the
   // one runtime change is the user's timezone: the scheduler's
@@ -1671,9 +1749,29 @@ async function main(): Promise<void> {
       }
       case 'message_end': {
         const role = (event.message as any)?.role;
+        if (role === 'custom') {
+          // A kenning wake (`sendMessage(..., {triggerTurn: true})`) or what its
+          // `before_agent_start` attached. Not a user message: the routing only
+          // ever takes an entry for role `user` (ADR 0014).
+          const d = kenningDeliveryOf(event.message as any);
+          const t = (event.message as any).timestamp;
+          if (d) msg = { type: 'kenning_delivery', sessionId, content: d.content, timestamp: typeof t === 'number' ? t : Date.now(), kenning: d.kenning };
+          break;
+        }
         if (role !== 'assistant' && role !== 'user') break;
         const content = extractText(event.message as any);
         msg = { type: 'message_end', sessionId, content, role };
+        break;
+      }
+      case 'entry_appended' as any: {
+        // What kenning returned from `agent_before_settle` / `turn_end`: pi
+        // writes those boundary entries without a message_end.
+        const entry = (event as any).entry;
+        const d = entry?.type === 'custom_message' ? kenningDeliveryOf(entry) : null;
+        if (d) {
+          const t = Date.parse(entry.timestamp);
+          msg = { type: 'kenning_delivery', sessionId, content: d.content, timestamp: Number.isFinite(t) ? t : Date.now(), kenning: d.kenning };
+        }
         break;
       }
       case 'queue_update' as any: {
@@ -1909,7 +2007,23 @@ async function main(): Promise<void> {
       // ?view=readonly returns only the sessions.readOnly folders (the separate
       // read-only page); default returns the main list (ignore + readOnly hidden).
       const view = url.searchParams.get('view') === 'readonly' ? 'readonly' : 'default';
-      const folders = await sessionPool.listSessions(view);
+      const listed = await sessionPool.listSessions(view);
+      // kenning (ADR 0024): each session's owner, so the sidebar shows a spawned
+      // session under the session that spawned it, and sessions a cascaded
+      // delete hid (within its undo window) left out. Memoized lookups.
+      const folders = kenning.available
+        ? listed
+            .map((f) => ({
+              ...f,
+              sessions: f.sessions
+                .filter((s) => !kenning.isArchived(s.path))
+                .map((s) => {
+                  const owner = kenning.ownerOf(s.path);
+                  return owner ? { ...s, ownerSessionPath: owner } : s;
+                }),
+            }))
+            .filter((f) => f.sessions.length > 0 || listed.find((l) => l.path === f.path)?.sessions.length === 0)
+        : listed;
       const active = sessionPool.getActiveSessions();
       sendJSON(res, 200, { folders, activeSessions: active });
       return;
@@ -2541,9 +2655,10 @@ async function main(): Promise<void> {
           return;
         }
 
-        // Get the active session if any, using either the sessionFile path or resolved path
-        const tracked = sessionPool.getSession(sessionFile) || sessionPool.getSession(resolved);
-        if (tracked) {
+        // Close a resident session: its viewers are told, its agent goes.
+        const closeResident = (file: string) => {
+          const tracked = sessionPool.getSession(file);
+          if (!tracked) return;
           const wsMsg: ServerMessage = {
             type: 'session_destroyed',
             sessionId: tracked.sessionId,
@@ -2559,8 +2674,30 @@ async function main(): Promise<void> {
               clearConflictState(c);
             }
           }
-          sessionPool.destroySession(tracked.sessionFile, 'deleted');
+          if (tracked.type === 'server') sessionPool.destroySession(tracked.sessionFile, 'deleted');
+        };
+
+        // kenning (D24, ADR 0024): a session that owns others takes them with it,
+        // as ONE undoable batch: all are hidden and their agents closed, and the
+        // transcripts stay until the undo window passed (purgeKenningDeletes). A
+        // session a cascade already hid needs nothing more. Every other session
+        // is deleted at once, as before.
+        if (kenning.isArchived(resolved)) {
+          sendJSON(res, 200, { status: 'deleted' });
+          return;
         }
+        if (kenning.ownsSessions(resolved)) {
+          const cascade = kenning.deleteCascade(resolved);
+          if (cascade) {
+            for (const file of cascade.sessions) closeResident(file);
+            broadcastSessionsUpdated();
+            sendJSON(res, 200, { status: 'deleted', cascade });
+            return;
+          }
+        }
+
+        closeResident(sessionFile);
+        closeResident(resolved);
 
         if (fs.existsSync(resolved)) {
           fs.unlinkSync(resolved);
@@ -3070,6 +3207,7 @@ async function main(): Promise<void> {
       }
       if (wantsFrameChunks(url.searchParams)) chunkingSockets.add(ws);
       if (wantsImageRefs(url.searchParams)) imageRefSockets.add(ws);
+      if (wantsKenningCards(url.searchParams)) kenningCardSockets.add(ws);
     } catch {}
     if (clientKey) {
       evictPreviousConnection(clientKey, clients, sessionPool, broadcastSessionsUpdated);
@@ -3094,6 +3232,9 @@ async function main(): Promise<void> {
     });
 
     sendWS(ws, { type: 'connected', clientId, serverVersion: getVersion(), capabilities: [UPLOAD_CAPABILITY], piVersion: piSdkInfo.version });
+    // The kenning inbox and presence as they are now; live changes follow as
+    // further `kenning_update` frames. A CLI bridge ignores it (unknown frame).
+    sendWS(ws, { type: 'kenning_update', ...kenning.snapshot() });
 
     ws.on('message', async (data, isBinary) => {
       // Binary frames are upload chunks (`upload.v1`), routed BEFORE any
@@ -3124,7 +3265,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated, assistantController, cliRequests, onClientTimezone);
+        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated, assistantController, cliRequests, onClientTimezone, kenning);
       } catch (err) {
         console.error('WS message processing error:', err);
         const errorText = (err as Error).message || 'An error occurred';
@@ -3296,6 +3437,9 @@ This encrypts all network traffic securely and enables safe, private remote acce
     }
     assistantScheduler?.stop();
     await channelDispatcher?.stop();
+    kenning.stop();
+    unregisterKenningHost();
+    clearInterval(kenningPurgeTimer);
     await sessionPool.disposeAll();
     assistant.release();
     server.close();
@@ -3708,8 +3852,38 @@ async function handleWSMessage(
   assistantController: AssistantController | null = null,
   cliRequests: CliRequestRouter | null = null,
   onClientTimezone: (report: WebTimezoneReport) => void = () => {},
+  kenning: KenningService | null = null,
 ): Promise<void> {
   switch (msg.type) {
+    case 'kenning_undo_delete': {
+      // Undo a cascaded delete (kenning D24) from the web, within its window.
+      const r = client.isCliBridge
+        ? { ok: false as const, error: 'a CLI bridge cannot undo a delete' }
+        : kenning
+          ? kenning.undoDelete(msg.batch)
+          : { ok: false as const, error: 'kenning is not available on this server' };
+      sendWS(client.ws, r.ok ? { type: 'kenning_undo_result', batch: msg.batch, ok: true } : { type: 'kenning_undo_result', batch: msg.batch, ok: false, error: r.error });
+      if (r.ok) onSessionsUpdated();
+      return;
+    }
+
+    case 'kenning_answer': {
+      // The human answering a kenning attention item from the web: an
+      // authenticated dashboard is a human act (ADR 0003, wherever ADR 0023).
+      // Never from a CLI bridge connection, which an agent's process holds.
+      const r = client.isCliBridge
+        ? { ok: false as const, error: 'a CLI bridge cannot answer the inbox' }
+        : kenning
+          ? kenning.answer(msg.itemId, msg.text, 'web')
+          : { ok: false as const, error: 'kenning is not available on this server' };
+      sendWS(client.ws, {
+        type: 'kenning_answer_result',
+        itemId: msg.itemId,
+        ...(typeof msg.requestId === 'string' ? { requestId: msg.requestId } : {}),
+        ...r,
+      });
+      return;
+    }
     case 'client_timezone':
       // The web's timezone report when its device moved (see onClientTimezone in main).
       onClientTimezone({ timezone: msg.timezone, first: msg.first });
@@ -4384,6 +4558,14 @@ async function handleWSMessage(
     }
 
     case 'message': {
+      // A user message is a dashboard's (origin `none`, which the pool marks as
+      // the human's for kenning, ADR 0023). A CLI bridge connection is held by
+      // an agent's process: it relays its terminal's input as `cli_event`, never
+      // as `message`, so refuse it rather than let it mark text as human.
+      if (client.isCliBridge) {
+        sendWS(client.ws, { type: 'session_error', sessionId: msg.sessionId, error: 'A CLI bridge connection cannot send user messages.' });
+        return;
+      }
       // The session's working folder does not exist on this machine, so no live
       // agent was built for it and there is nothing to attach to (which would
       // otherwise make this a SILENT drop on the sessionId check below). Refuse

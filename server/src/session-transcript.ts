@@ -50,6 +50,7 @@
 import fs from 'node:fs';
 import type { SessionEntry, SessionMessageEntry } from '@earendil-works/pi-coding-agent';
 import type { HistoryMessage } from './session-types.js';
+import { KENNING_CUSTOM_TYPE, kenningDeliveryOf } from './kenning-delivery.js';
 
 /**
  * Chunk size for the streaming line reader. Deliberately modest: the buffer is
@@ -343,6 +344,19 @@ const TYPE_PROBE = /^\{"type":"([a-zA-Z_]+)"/;
 const TIMESTAMP_PROBE = /"timestamp":"([^"]{1,64})"/;
 const ROLE_PROBE = /"message":\{"role":"([a-zA-Z]+)"/;
 
+// pi writes a `custom_message` entry as `{"type":"custom_message","customType":...`
+// (`appendCustomMessageEntry`), so its owner is in the head too.
+const CUSTOM_TYPE_PROBE = /^\{"type":"custom_message","customType":"((?:[^"\\]|\\.){1,256})"/;
+
+/**
+ * True when a `custom_message` head is certainly NOT kenning's: those carry no
+ * history message (another extension's, possibly large) and are discarded
+ * unread. A head that does not show the pair (unexpected shape) is read.
+ */
+function isOtherCustomMessage(head: string): boolean {
+  return probedOther(CUSTOM_TYPE_PROBE, head, KENNING_CUSTOM_TYPE);
+}
+
 function lineType(head: string): string | null {
   const m = TYPE_PROBE.exec(head);
   return m ? m[1] : null;
@@ -602,13 +616,25 @@ export function extractMessageText(msg: any): string {
  */
 export function mapEntryToHistory(entry: SessionEntry): HistoryMessage[] {
   const out: HistoryMessage[] = [];
+  if (entry.type === 'custom_message') {
+    // kenning's deliveries (kenning-delivery.ts); every other extension's custom
+    // message stays out of the chat, as before. No entryId: never a fork point.
+    const d = kenningDeliveryOf(entry as any);
+    if (d) out.push({ role: 'kenning', content: d.content, timestamp: Date.parse(entry.timestamp), kenning: d.kenning });
+    return out;
+  }
   if (entry.type !== 'message') return out;
 
   const msgEntry = entry as SessionMessageEntry;
   const msg: any = msgEntry.message;
   const ts = Date.parse(msgEntry.timestamp);
 
-  if (msg.role === 'user') {
+  if (msg.role === 'custom') {
+    // The same delivery as a `message` entry, a shape kenning-pi's own reconcile
+    // accepts (pi 1.4.0 itself writes `custom_message`).
+    const d = kenningDeliveryOf(msg);
+    if (d) out.push({ role: 'kenning', content: d.content, timestamp: ts, kenning: d.kenning });
+  } else if (msg.role === 'user') {
     const content = extractMessageText(msg);
     if (content) {
       // Carry the source entry id so the client can "Fork from here"
@@ -819,6 +845,10 @@ async function scanTranscript(
       // would silently drop a message from the history a client is reading.
       if (type === null) return false;
       if (type === 'model_change') return false;
+      // kenning's deliveries are history messages (small: a few formatted
+      // messages); any other extension's custom message is not, and is dropped
+      // from its head like every other non-message line.
+      if (type === 'custom_message') return isOtherCustomMessage(head);
       if (type !== 'message') return true; // contributes no history message
       // Exactly one message, and it is behind the window: count and drop it.
       if (messageRole(head) === 'toolResult' && total < keepFrom) {
@@ -856,7 +886,7 @@ async function scanTranscript(
         }
         return;
       }
-      if (entry.type !== 'message') return;
+      if (entry.type !== 'message' && entry.type !== 'custom_message') return;
       for (const m of mapEntryToHistory(entry as SessionEntry)) {
         if (total >= keepFrom && total < keepUntil) messages.push(m);
         total++;

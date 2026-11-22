@@ -20,7 +20,8 @@ import * as path from "node:path";
 import { Type } from "typebox";
 import { WhereverClient } from "@wherever-dev/client";
 import { createConversationModeSignal } from "./conversation-mode-hint.js";
-import { cliMessageContent } from "./cli-message.js";
+import { cliHumanInputMark, cliMessageContent, KENNING_HUMAN_INPUT_EVENT } from "./cli-message.js";
+import { BridgeKenningHostRegistration } from "./kenning-host.js";
 import { isInsideWhereverServer } from "./server-process-marker.js";
 import {
   AssistantInfoCache,
@@ -481,6 +482,11 @@ export default async function (pi: ExtensionAPI) {
   // extension: the `assistant_*` tool twins activate on it and the CLI timezone
   // line reads it, neither ever waiting on the network.
   const assistantInfo = new AssistantInfoCache();
+  // kenning's host for this terminal pi while connected to a server that can
+  // carry it (./kenning-host.ts, ADR 0024): a `session_spawn` here becomes a
+  // sidebar session on the server. Unregistered on disconnect, so kenning falls
+  // back to its terminal default.
+  const kenningHost = new BridgeKenningHostRegistration((op, args, opts) => requests.request(op, args, opts));
 
   // The `assistant_*` tool twins (./assistant-tool-twins.ts, ADR 0016): always
   // registered, but INACTIVE (`defaultActive: false`), so a terminal pi whose
@@ -791,6 +797,7 @@ export default async function (pi: ExtensionAPI) {
     }
     // Whatever was pending on the old socket can never be answered.
     requests.failAll();
+    kenningHost.disconnected();
 
     if (!ctxVal || !sessionFile) return;
 
@@ -849,6 +856,11 @@ export default async function (pi: ExtensionAPI) {
             // Arm/disarm the conversation-mode hint for the turn this message
             // starts (absent flag = off), then let before_agent_start consume it.
             conversationSignal.arm(msg.conversationMode === true);
+            // A human typed it (web, Telegram): tell kenning on this session's own
+            // bus, right before the send, so the turn counts as the human's words
+            // (ADR 0023). Never for a scheduled job: the server omits the field.
+            const humanMark = cliHumanInputMark(msg);
+            if (humanMark) pi.events.emit(KENNING_HUMAN_INPUT_EVENT, humanMark);
             // Images (a channel's photos) go as image content; none = the plain string.
             pi.sendUserMessage(cliMessageContent(msg), {
               deliverAs: msg.streamingBehavior,
@@ -1111,6 +1123,7 @@ export default async function (pi: ExtensionAPI) {
         // with another config). Fire-and-forget: nothing waits on it, and an old
         // server is cached as "unsupported" after the (unref'd) timeout.
         void assistantInfo.refresh(requests);
+        void kenningHost.connected();
         // Push the current context-window usage right after registering. Usage
         // is otherwise only forwarded on agent_end / model_select, so an idle
         // CLI session (no new turn since the bridge connected) would leave the
@@ -1122,6 +1135,7 @@ export default async function (pi: ExtensionAPI) {
       } else if (!s.connected) {
         if (wasConnected) requests.failAll();
         wasConnected = false;
+        kenningHost.disconnected();
       }
     });
 
@@ -1236,6 +1250,7 @@ export default async function (pi: ExtensionAPI) {
       client = null;
     }
     requests.failAll();
+    kenningHost.disconnected();
 
     if (oldCtx) {
       try {

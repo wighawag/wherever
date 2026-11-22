@@ -67,6 +67,10 @@ export class ReplyRouting {
   private promptOrSteer: Entry[] = [];
   private followUp: Entry[] = [];
   private current: ReplyOrigin | null = null;
+  /** Between `agent_start` and `agent_end`. */
+  private inRun = false;
+  /** A user message_end arrived in the current run. */
+  private userInRun = false;
 
   /** Record a send about to reach pi. */
   record(origin: ReplyOrigin, mode: RoutingMode): RoutingTicket {
@@ -123,7 +127,40 @@ export class ReplyRouting {
       this.takeFirst(this.promptOrSteer, () => true) ??
       this.takeFirst(this.followUp, () => true);
     this.current = entry ? entry.origin : null;
+    this.userInRun = true;
     return this.current;
+  }
+
+  /** `agent_start`: a run begins; no user message in it yet. */
+  runStarted(): void {
+    this.inRun = true;
+    this.userInRun = false;
+  }
+
+  /** `agent_end`. */
+  runEnded(): void {
+    this.inRun = false;
+  }
+
+  /**
+   * kenning delivered messages into the session (kenning-delivery.ts). That is
+   * never a user message, so it never takes an entry; but output it CAUSES
+   * answers the sending session, not the human, so it must not inherit the
+   * destination of the human's last message (a session last spoken to on
+   * Telegram would otherwise answer every kenning wake on Telegram). The
+   * destination becomes null, as for a message with no origin, when:
+   *  - `message`: a delivery as a message_end (a wake, or what
+   *    `before_agent_start` attached) in a run with no user message yet: the
+   *    run is the wake. After a user message in the same run it was attached
+   *    to the human's own prompt, which the run still answers: kept;
+   *  - `entry`: a boundary entry (`entry_appended`) outside a run: pi commits
+   *    `agent_before_settle` entries after `agent_end`, so the human was already
+   *    answered and only the delivery continues the session. Inside a run it
+   *    came from `turn_end` (urgent), mid-answer: kept.
+   * The next user message sets the destination again, as always.
+   */
+  kenningDelivered(as: 'message' | 'entry'): void {
+    if (as === 'message' ? !this.userInRun : !this.inRun) this.current = null;
   }
 
   /** The origin of the user message the session's current output answers. */

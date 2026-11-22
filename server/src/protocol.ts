@@ -1,4 +1,5 @@
-import { HistoryMessage, ContextUsageInfo, ToolImage, SkillCommand } from './session-types.js';
+import type { KenningSnapshot } from './kenning-service.js';
+import { HistoryMessage, ContextUsageInfo, ToolImage, SkillCommand, KenningDeliveryInfo } from './session-types.js';
 export type { ContextUsageInfo, ToolImage, SkillCommand } from './session-types.js';
 // Type-only, so declaring the restore frames here does not pull the registry's
 // node:child_process/node:fs surface into anything that merely parses protocol.
@@ -137,13 +138,26 @@ export type ClientMessage =
   // before_agent_start handler applies it). `images` (omitted when none) are
   // model image inputs for the message (a channel's photos, task
   // `pool-send-images`), passed to `pi.sendUserMessage` as image content.
+  // `humanInput` (omitted unless a human typed it: a web or Telegram send) asks
+  // the extension to emit `kenning:human-input` `{text, channel}` on its session's
+  // `pi.events` right before the send (ADR 0023).
   | {
       type: 'cli_message';
       message: string;
       streamingBehavior?: 'steer' | 'followUp';
       conversationMode?: boolean;
       images?: Array<{ type: 'image'; data: string; mimeType: string }>;
+      humanInput?: { channel: 'web' | 'telegram' };
     }
+  // Client -> server: the human answers a kenning attention item from the web
+  // reply box (wherever ADR 0023). Answered by `kenning_answer_result` to the
+  // asker (echoing `requestId`, so two answers in flight are told apart);
+  // refused from a CLI bridge connection.
+  | { type: 'kenning_answer'; itemId: string; text: string; requestId?: string }
+  // Client -> server: undo a delete that cascaded through kenning ownership
+  // (`/session/delete` answered `cascade.batch`), within its 7-day window.
+  // Answered by `kenning_undo_result`; refused from a CLI bridge connection.
+  | { type: 'kenning_undo_delete'; batch: string }
   | { type: 'cli_abort' }
   | { type: 'cli_bash'; command: string; excludeFromContext?: boolean }
   | { type: 'cli_model_change'; model: string }
@@ -168,6 +182,10 @@ export type ServerMessage =
  | { type: 'thinking_update'; sessionId: string; delta: string }
  | { type: 'message_update'; sessionId: string; delta: string }
   | { type: 'message_end'; sessionId: string; content: string; role?: 'user' | 'assistant' }
+  // Server -> a client that asked (`kenning=1` on the socket URL): kenning
+  // delivered messages into this session (kenning-delivery.ts), the live twin
+  // of a `kenning` history message. Never a user message.
+  | { type: 'kenning_delivery'; sessionId: string; content: string; timestamp: number; kenning: KenningDeliveryInfo }
   // Server -> client: the server accepted an outbound user message and handed it
   // to the agent (as a normal turn OR as a mid-stream steer queued for the next
   // step). This is the DELIVERY acknowledgement: it fires immediately, whereas
@@ -353,4 +371,16 @@ export type ServerMessage =
   // invocation without the leading slash (e.g. "skill:setup"). Empty for CLI
   // bridges (they expand skills on their own side) or when none are discovered.
   | { type: 'skills_list'; sessionId: string; skills: SkillCommand[] }
+  // Server -> every connection on connect (a CLI bridge ignores it), then every
+  // dashboard (not CLI bridges) on every change: kenning's attention inbox and
+  // the live sessions' presence (kenning-service.ts), throttled like `sessions_updated`. `available` false = no
+  // kenning database on this machine (or `kenning.enabled: false`): the web
+  // shows no inbox. Presence and items name sessions by their normalized file,
+  // the listing's `path`.
+  | ({ type: 'kenning_update' } & KenningSnapshot)
+  // Server -> the asker: the result of `kenning_answer`.
+  | { type: 'kenning_answer_result'; itemId: string; requestId?: string; ok: true }
+  | { type: 'kenning_answer_result'; itemId: string; requestId?: string; ok: false; error: string }
+  | { type: 'kenning_undo_result'; batch: string; ok: true }
+  | { type: 'kenning_undo_result'; batch: string; ok: false; error: string }
   | { type: 'pong'; timestamp: number };

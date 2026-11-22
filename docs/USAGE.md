@@ -355,10 +355,11 @@ Establish a connection via `ws://127.0.0.1:31415/ws?token=YOUR_TOKEN`.
 
 Optionally add `&clientKey=YOUR_STABLE_KEY` (max 128 chars): a stable identity for one viewer, reused across reconnects. When a new connection arrives with a key that is already registered, the server sends the older connection a `connection_superseded` message and retires it (detaching it from its session) instead of treating it as an additional viewer. A client that actually receives `connection_superseded` is alive, so it must regenerate its key before reconnecting, otherwise two viewers sharing a key would evict each other indefinitely. Keys longer than 128 characters are ignored (with a server-side warning), leaving that connection without supersede protection. This is what keeps a reconnect after a silent drop (phone sleep, network switch) from being mistaken for a second viewer, which would otherwise open "new session in this folder" read-only behind a folder-conflict banner, for a conflict with nobody. Use one key per independent viewer (the web app uses one per browser tab).
 
-Two more opt-in parameters exist for slow links (a client that omits them gets exactly the old behaviour). `@wherever-dev/client` always sends `frames=chunk.v1` and handles it itself; it sends `imageRefs=1` only when constructed with `imageRefs: true`, as the web app is:
+Three more opt-in parameters exist (a client that omits them gets exactly the old behaviour). The first two are for slow links (a client that omits them gets exactly the old behaviour). `@wherever-dev/client` always sends `frames=chunk.v1` and handles it itself; it sends `imageRefs=1` only when constructed with `imageRefs: true`, as the web app is:
 
 * `&frames=chunk.v1`: the server splits any frame longer than 32 KiB (UTF-16 code units) into several TEXT frames, each `\u0001<id> <seq> <count>\n<data>`. U+0001 never starts a JSON document, which is how a chunk is told apart from an ordinary frame. `seq` is 0-based; concatenating the `data` of chunks `0..count-1` gives back the original JSON frame. The chunks of one message are sent back to back, so frame order is unchanged. Why: a browser delivers a WebSocket message only once all of it arrived, so a multi-MB frame over a slow link looked like a silent (dead) socket to the client's liveness watchdog.
 * `&imageRefs=1`: in `message_history` and `message_history_prepend`, a tool image whose base64 is larger than 16 KiB (raster types only, and only on a result with a `toolCallId`) is sent WITHOUT `data`, as `{ "mimeType": "image/png", "bytes": 2250000, "toolCallId": "...", "entryId": "...", "index": 1 }`. Fetch it from `GET /session/tool-image`. Live `tool_end` images stay inline.
+* `&kenning=1`: receive what [kenning](https://github.com/wighawag/kenning) delivered into a session. `message_history` and `message_history_prepend` then include messages with `role: "kenning"`, whose `content` is kenning's formatted text (what the model read) and whose `kenning` field is `{ "ids": [...], "from": [...], "origins": [...] }` (one entry per delivered message: kenning message id, sender label, origin `agent` / `human` / `human-relayed`). They carry no `entryId` and are never user messages. Live, the same arrives as a `kenning_delivery` frame (see below). Without the parameter neither is sent, and `offset` / `totalCount` still count those messages, so paging uses the same indices. `@wherever-dev/client` sends it only when constructed with `kenningCards: true`, as the web app is.
 
 The server also negotiates `permessage-deflate` (frames of 1 KiB and more are compressed), and serves the web app's text assets with `br` or `gzip` when the request accepts them.
 
@@ -519,6 +520,15 @@ Streamed deltas (`message_update`, `thinking_update`, `tool_update`) are COALESC
   "type": "thinking_update",
   "sessionId": "abc123xyz",
   "delta": "Analyzing directory structure..."
+}
+
+// kenning delivered messages into this session (only with `kenning=1`)
+{
+  "type": "kenning_delivery",
+  "sessionId": "abc123xyz",
+  "content": "[kenning] 1 message for you:\n--- m_1 · from lead · origin: agent · tell\n...",
+  "timestamp": 1716490010000,
+  "kenning": { "ids": ["m_1"], "from": ["lead"], "origins": ["agent"] }
 }
 
 // Message generation finalized

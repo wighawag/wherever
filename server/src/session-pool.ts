@@ -253,6 +253,14 @@ export interface WhereverConfig {
    */
   assistantScheduleGraceMinutes?: number;
   /**
+   * wherever as a kenning host (kenning-service.ts): the attention inbox and
+   * session presence on the web, blocking items pushed through the assistant's
+   * channels. `enabled` defaults to true, and even then nothing happens until
+   * kenning's own database exists (kenning-pi or the kenning CLI creates it).
+   * Read at start.
+   */
+  kenning?: { enabled?: boolean };
+  /**
    * The assistant's Web Push channel (web-push.ts, ADR 0017). Only used while the
    * assistant is ACTIVE. `enabled` defaults to true (a device still has to turn
    * push on in the settings before anything is sent); `subject` is the VAPID
@@ -1009,6 +1017,8 @@ import type { InlineExtension, ToolDefinition } from '@earendil-works/pi-coding-
 const EXTENSION_DISCOVERY_WAIT_MS = 10_000;
 import { matchRemoteRepoRule } from './remote-candidates.js';
 import { ReplyRouting, WEB_ORIGIN, type ReplyOrigin, type RoutingSnapshot } from './reply-routing.js';
+import { KENNING_CUSTOM_TYPE } from './kenning-delivery.js';
+import { createHumanInputMarker, humanInputChannel, willReachInputEvent, type HumanInputMarker } from './kenning-human-input.js';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { Model, Api, ImageContent } from '@earendil-works/pi-ai';
 import type { SessionMessageEntry, SessionEntry } from '@earendil-works/pi-coding-agent';
@@ -1067,6 +1077,9 @@ export interface ServerTrackedSession {
   // before_agent_start hook, which appends the spoken-conversation hint to that
   // turn's system prompt. See conversation-mode-hint.ts.
   conversationSignal: ConversationModeSignal;
+  // This session's way onto its own `pi.events` bus, to mark a human's send for
+  // kenning (`kenning:human-input`, ADR 0023). Rebuilt with the agent.
+  humanInput: HumanInputMarker;
   // True while `reloadSession` is rebuilding this session's agent. During that
   // window `agentSession` is the OLD, shutting-down agent: sends are refused, and
   // no other teardown path touches it (the reload owns it; see reloadSession).
@@ -1118,6 +1131,8 @@ export type TrackedSession = ServerTrackedSession | CliTrackedSession;
 export function composeServerAgentParts(opts: {
   cwd: string;
   conversationExtension: InlineExtension;
+  /** The human-input marker's extension (kenning, ADR 0023); right after the conversation one. */
+  humanInputExtension?: InlineExtension;
   extraExtensionFactories: readonly InlineExtension[];
   assistant: AssistantSessionHooks | undefined;
   caller: () => { sessionId: string | null; cwd: string; sessionFile?: string | null };
@@ -1127,6 +1142,7 @@ export function composeServerAgentParts(opts: {
     extensionFactories: [
       ...serverBuiltinExtensions,
       opts.conversationExtension,
+      ...(opts.humanInputExtension ? [opts.humanInputExtension] : []),
       ...assistant.extensionFactories,
       ...opts.extraExtensionFactories,
     ],
@@ -1749,7 +1765,7 @@ export class SessionPool {
           }
         }
 
-        const { agentSession, conversationSignal } = await this.buildServerAgent({
+        const { agentSession, conversationSignal, humanInput } = await this.buildServerAgent({
           cwd: normalizedCwd,
           sessionManager,
           model,
@@ -1783,6 +1799,7 @@ export class SessionPool {
           lastActivity: Date.now(),
           inFlightToolCount: 0,
           conversationSignal,
+          humanInput,
         };
 
         this.sessions.set(resolvedFile, tracked);
@@ -1985,7 +2002,7 @@ export class SessionPool {
           }
         }
 
-        const { agentSession, conversationSignal } = await this.buildServerAgent({
+        const { agentSession, conversationSignal, humanInput } = await this.buildServerAgent({
           cwd: resolvedCwd,
           sessionManager,
           model,
@@ -2011,6 +2028,7 @@ export class SessionPool {
           lastActivity: Date.now(),
           inFlightToolCount: 0,
           conversationSignal,
+          humanInput,
         };
 
         this.sessions.set(sessionFile, tracked);
@@ -2076,10 +2094,24 @@ export class SessionPool {
    * CLI sessions, whose queues the server cannot see, are emptied.
    */
   private routeEvent(tracked: TrackedSession, event: AgentSessionEvent): void {
+    // Run boundaries are tracked from the first run on, even before any send
+    // recorded an origin: a kenning delivery is judged by where in a run it falls.
+    if (event.type === 'agent_start') {
+      this.routingFor(tracked.sessionFile).runStarted();
+      return;
+    }
     const r = this.routing.get(tracked.sessionFile);
     if (!r) return;
-    if (event.type === 'message_end' && (event as any).message?.role === 'user') {
+    const message = (event as any).message;
+    if (event.type === 'message_end' && message?.role === 'user') {
       r.takeForUserMessage();
+    } else if (event.type === 'message_end' && message?.role === 'custom' && message.customType === KENNING_CUSTOM_TYPE) {
+      r.kenningDelivered('message');
+    } else if ((event.type as string) === 'entry_appended') {
+      const entry = (event as any).entry;
+      if (entry?.type === 'custom_message' && entry.customType === KENNING_CUSTOM_TYPE) r.kenningDelivered('entry');
+    } else if (event.type === 'agent_end') {
+      r.runEnded();
     } else if (event.type === 'agent_settled') {
       if (tracked.type === 'server') {
         r.trimToPiQueues(
@@ -2211,6 +2243,53 @@ export class SessionPool {
     } catch (err) {
       return { error: (err as Error).message };
     }
+  }
+
+  /**
+   * A session kenning asked for (`KenningHost.spawn`, kenning D28): built in
+   * `folder` with a live agent (so kenning-pi starts in it and is woken by the
+   * owner's first message), and NOTHING sent into it. With `fork`, it starts as
+   * a branch of `fork.sessionFile` up to `fork.entryId` (inclusive; the whole
+   * transcript without one), written by pi's own SessionManager into `folder`'s
+   * session dir with `folder` as its cwd (kenning D34). `title` becomes the
+   * session's name, which the sidebar shows.
+   */
+  async spawnSession(opts: {
+    folder: string;
+    title?: string;
+    fork?: { sessionFile: string; entryId?: string };
+  }): Promise<{ tracked: TrackedSession } | { error: string }> {
+    const folder = normalizePath(opts.folder);
+    if (!fs.existsSync(folder) || !fs.statSync(folder).isDirectory()) return { error: `no such folder: ${folder}` };
+    let tracked: TrackedSession;
+    if (opts.fork) {
+      let file: string | undefined;
+      try {
+        const sessionDir = SessionManager.create(folder).getSessionDir();
+        const source = SessionManager.open(opts.fork.sessionFile, sessionDir, folder);
+        const leaf = opts.fork.entryId ?? source.getLeafId();
+        if (opts.fork.entryId && !source.getEntry(opts.fork.entryId)) return { error: `no entry ${opts.fork.entryId} in ${opts.fork.sessionFile}` };
+        file = leaf ? source.createBranchedSession(leaf) : undefined;
+      } catch (err) {
+        return { error: `fork failed: ${(err as Error).message}` };
+      }
+      if (!file) return { error: `fork failed: ${opts.fork.sessionFile} has nothing to branch from` };
+      const r = await this.loadSession(normalizeSessionFile(file), folder);
+      if (r.error) return { error: r.error };
+      tracked = r.tracked;
+    } else {
+      const r = await this.createNewSession(folder, undefined, false, false, undefined, true);
+      if (r.error) return { error: r.error };
+      tracked = r.tracked;
+    }
+    if (opts.title && tracked.type === 'server') {
+      try {
+        tracked.agentSession.setSessionName(opts.title);
+      } catch (err) {
+        console.warn(`[wherever] kenning spawn: could not name ${tracked.sessionFile}: ${(err as Error).message}`);
+      }
+    }
+    return { tracked };
   }
 
   addClient(sessionFileOrId: string, clientId: string): TrackedSession | null {
@@ -2620,8 +2699,14 @@ export class SessionPool {
       // expansions are start-of-message anchored, and any trailing text after
       // "/skill:<name> " is preserved and appended after the skill block. Plain
       // text goes through prompt() exactly as sendUserMessage() would send it
-      // (no expansion, extension "input"-event source); calling prompt() directly
-      // is what lets the pool observe `preflightResult` for reply routing.
+      // (no expansion); calling prompt() directly is what lets the pool observe
+      // `preflightResult` for reply routing.
+      // The `input` event's source is `extension` for BOTH: `interactive` means
+      // typed in pi's TUI, and kenning records an `interactive` input as the
+      // human's own words, which a scheduled `/`-prompt is not (ADR 0023). It is
+      // also what a CLI-bridge session reports for the same web text, which
+      // arrives there through `pi.sendUserMessage`. A human's send is marked on
+      // the session's bus right before it instead (kenning-human-input.ts).
       // Counted as busy (synchronously, before the first await) so a /reload
       // cannot dispose the agent under a send that pi has not started streaming.
       const routing = this.routingFor(tracked.sessionFile);
@@ -2634,13 +2719,19 @@ export class SessionPool {
         else routing.queued(ticket);
       };
       tracked.busy = (tracked.busy ?? 0) + 1;
+      // The kenning mark for a human's send (ADR 0023), closed in `finally` once
+      // the awaited prompt() settled (kenning D35): a send another extension
+      // handled, or one refused while compacting, leaves no mark behind.
+      const humanInput = tracked.humanInput;
+      const humanChannel = humanInputChannel(origin);
+      const markId = humanChannel && willReachInputEvent(tracked.agentSession, text) ? humanInput.mark(text, humanChannel) : null;
       try {
         if (text.startsWith('/')) {
           await tracked.agentSession.prompt(text, {
             expandPromptTemplates: true,
             images: imageInputs,
             streamingBehavior,
-            source: 'interactive',
+            source: 'extension',
             preflightResult,
           });
         } else {
@@ -2660,6 +2751,7 @@ export class SessionPool {
         throw err;
       } finally {
         tracked.busy -= 1;
+        if (markId) humanInput.end(text, markId);
       }
     } else if (tracked.type === 'cli') {
       // The server cannot see the terminal pi's preflight, so the entry stands
@@ -2668,12 +2760,17 @@ export class SessionPool {
       const ticket = routing.record(origin, streamingBehavior === 'followUp' ? 'followUp' : 'promptOrSteer');
       // Relay the signal to the bridged pi (omitted when off, so the payload is
       // unchanged for a non-conversation message and older extensions are fine).
+      // `humanInput` asks the extension to mark the send for kenning on its own
+      // bus (ADR 0023); omitted for anything not a human's, and ignored by an
+      // older extension, which then marks nothing (the safe side).
+      const humanChannel = humanInputChannel(origin);
       try {
         tracked.cliWs.send(JSON.stringify({
           type: 'cli_message',
           message: text,
           streamingBehavior,
           ...(conversationMode ? { conversationMode: true } : {}),
+          ...(humanChannel ? { humanInput: { channel: humanChannel } } : {}),
           ...(imageInputs ? { images: imageInputs } : {}),
         }));
         routing.relayed(ticket);
@@ -3319,16 +3416,20 @@ export class SessionPool {
     thinkingLevel?: CreateAgentSessionOptions['thinkingLevel'];
     sessionStartEvent?: CreateAgentSessionOptions['sessionStartEvent'];
     label: string;
-  }): Promise<{ agentSession: AgentSession; conversationSignal: ConversationModeSignal }> {
+  }): Promise<{ agentSession: AgentSession; conversationSignal: ConversationModeSignal; humanInput: HumanInputMarker }> {
     const settingsManager = SettingsManager.create(opts.cwd, this.agentDir);
     // The conversation-mode signal is an INLINE pi extension (the SDK-supported
     // way to get a before_agent_start hook on a server-created session, the
     // counterpart of the pi.on(...) the CLI-bridge extension registers). It is
     // per session, so the armed flag can never cross sessions.
     const conversationSignal = createConversationModeSignal();
+    // Likewise per session: the bus a human-input mark goes on is this
+    // session's own (kenning-human-input.ts).
+    const humanInput = createHumanInputMarker();
     const parts = composeServerAgentParts({
       cwd: opts.cwd,
       conversationExtension: conversationSignal.inlineExtension,
+      humanInputExtension: humanInput.inlineExtension,
       extraExtensionFactories: this.extraExtensionFactories,
       assistant: this.assistantHooks,
       caller: () => ({
@@ -3384,7 +3485,7 @@ export class SessionPool {
     // createAgentSession only loads them, bindExtensions emits session_start +
     // resources_discover (see extension-lifecycle.ts for the chosen bindings).
     await this.bindOrDispose(agentSession, opts.label);
-    return { agentSession, conversationSignal };
+    return { agentSession, conversationSignal, humanInput };
   }
 
   /** True while `reloadSession` is rebuilding this session's agent. */
@@ -3460,7 +3561,7 @@ export class SessionPool {
       // Otherwise the fresh loader below reuses pi's cached factories: the old code.
       await clearPiExtensionCache();
 
-      let built: { agentSession: AgentSession; conversationSignal: ConversationModeSignal };
+      let built: { agentSession: AgentSession; conversationSignal: ConversationModeSignal; humanInput: HumanInputMarker };
       try {
         built = await this.buildServerAgent({
           cwd: tracked.cwd,
@@ -3491,6 +3592,7 @@ export class SessionPool {
 
       tracked.agentSession = built.agentSession;
       tracked.conversationSignal = built.conversationSignal;
+      tracked.humanInput = built.humanInput;
       tracked.model = built.agentSession.model ? `${built.agentSession.model.provider}:${built.agentSession.model.id}` : '';
       tracked.inFlightToolCount = 0;
       tracked.isIdle = true;

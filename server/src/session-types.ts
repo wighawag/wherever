@@ -61,6 +61,12 @@ export interface FolderSessionInfo {
    */
   parentSessionPath?: string;
   /**
+   * The session that spawned this one through kenning (`session_spawn`,
+   * kenning D23), normalized; set by the `/sessions` handler while kenning is
+   * open. Owner and child may live in different folders (a worktree).
+   */
+  ownerSessionPath?: string;
+  /**
    * True when the user starred this session ("come back to this"). Stored
    * server-side in `starred-sessions.json`, see server/src/session-stars.ts.
    */
@@ -121,8 +127,24 @@ export interface HistoryToolImage {
   index?: number;
 }
 
+/**
+ * kenning-pi's `details` on a delivery (its `session.ts` `payload()`), one
+ * entry per delivered message, in order: kenning message ids, sender labels,
+ * and origins (`agent`, `human`, `human-relayed`). The message KIND (`spawn`,
+ * `ask`, ...) is not there; it is in the formatted text's header lines.
+ */
+export interface KenningDeliveryInfo {
+  ids: string[];
+  from: string[];
+  origins: string[];
+}
+
 export interface HistoryMessage {
-  role: 'user' | 'assistant' | 'thinking' | 'tool_call' | 'tool_result';
+  /**
+   * `kenning`: messages kenning delivered into the session (kenning-delivery.ts),
+   * sent only to a client that asked (`kenning=1`). Never a user message.
+   */
+  role: 'user' | 'assistant' | 'thinking' | 'tool_call' | 'tool_result' | 'kenning';
   content: string;
   timestamp: number;
   toolName?: string;
@@ -152,6 +174,8 @@ export interface HistoryMessage {
    * output. Set only on the bash tool_call; agent tool calls leave it unset.
    */
   forceCommand?: boolean;
+  /** Set on a `kenning` message: who sent what, with which origin. */
+  kenning?: KenningDeliveryInfo;
 }
 
 export interface ModelInfo {

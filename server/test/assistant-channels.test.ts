@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -93,6 +93,31 @@ class FakeEvents implements ChannelPoolPort {
 
 const note: ChannelNotification = { title: 'Done', body: 'CI is green', source: 'app', navigate: 'sess-1' };
 const tick = () => new Promise((r) => setTimeout(r, 0));
+
+describe('replies to a notification (the kenning inbox)', () => {
+  it('reach the handler with the channel\'s own name; without one, or when it throws, they are ordinary messages', async () => {
+    const tg = new FakeChannel('telegram');
+    const d = new ChannelDispatcher({ controller: { send: async () => {} }, pool: new FakeEvents(), channels: [tg] });
+    await d.start();
+    const reply = { channel: 'spoofed', ref: 'telegram:1:2', text: 'yes' };
+    expect(await tg.ctx!.onNotificationReply!(reply)).toEqual({ handled: false });
+
+    const seen: unknown[] = [];
+    d.setNotificationReplyHandler((r) => {
+      seen.push(r);
+      return { handled: true, reply: 'ok' };
+    });
+    expect(await tg.ctx!.onNotificationReply!(reply)).toEqual({ handled: true, reply: 'ok' });
+    expect(seen).toEqual([{ channel: 'telegram', ref: 'telegram:1:2', text: 'yes' }]);
+
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    d.setNotificationReplyHandler(() => {
+      throw new Error('boom');
+    });
+    expect(await tg.ctx!.onNotificationReply!(reply)).toEqual({ handled: false });
+    errors.mockRestore();
+  });
+});
 
 describe('notify', () => {
   it('goes to EVERY started channel that can notify, at once, and is ok when one delivered', async () => {

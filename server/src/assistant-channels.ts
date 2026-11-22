@@ -71,7 +71,27 @@ export interface ChannelContext {
   resetSession(): Promise<ChannelCommandResult>;
   /** Abort the current assistant session's running turn (a channel's `stop`). Never throws. */
   abortTurn(): Promise<{ aborted: boolean }>;
+  /**
+   * A reply to a message this channel sent for a notification (a Telegram reply
+   * to a kenning question: `ref` is one of the `refs` its `notify` returned).
+   * `handled: true` = it answered something (send `reply` back); `handled:
+   * false` = treat the message as an ordinary one. Never throws.
+   */
+  onNotificationReply?(reply: ChannelNotificationReply): Promise<ChannelNotificationReplyResult>;
 }
+
+/** A user's reply to a notification message (kenning's attention inbox, wherever ADR 0023). */
+export interface ChannelNotificationReply {
+  channel: string;
+  /** `<channel>:<channel-side id>` of the message replied to, as `notify` returned it in `refs`. */
+  ref: string;
+  text: string;
+}
+
+export type ChannelNotificationReplyResult = { handled: false } | { handled: true; reply: string };
+
+/** Who answers notification replies (the kenning inbox; none = every reply is an ordinary message). */
+export type NotificationReplyHandler = (reply: ChannelNotificationReply) => ChannelNotificationReplyResult | Promise<ChannelNotificationReplyResult>;
 
 /**
  * One `assistant_notify`, channel-agnostic. `navigate` is the SESSION ID a tap
@@ -90,6 +110,14 @@ export interface ChannelNotification {
    * that cannot (Web Push) ignores them.
    */
   files?: ChannelFile[];
+  /**
+   * The notification asks the user something, and a reply to it answers
+   * (`onNotificationReply`, a kenning question). `options` are its fixed
+   * answers: a channel that can offers them as one-tap choices (Telegram
+   * buttons), delivered as a reply with the option's text. A channel without
+   * replies (Web Push) ignores it.
+   */
+  question?: { options: string[] };
 }
 
 /** How one attached file went out on a channel (`status` is the channel's own word: `document`, `missing`, ...). */
@@ -100,8 +128,12 @@ export interface ChannelFileOutcome {
   error?: string;
 }
 
-/** `files`: set by a channel that carries files, one entry per `ChannelNotification.files` entry. */
-export type ChannelNotifyResult = { ok: true; detail?: string; files?: ChannelFileOutcome[] } | { ok: false; error: string };
+/**
+ * `files`: set by a channel that carries files, one entry per `ChannelNotification.files` entry.
+ * `refs`: `<channel>:<id>` of each message sent, set by a channel whose user can
+ * REPLY to it (Telegram), so a reply can be matched (`onNotificationReply`).
+ */
+export type ChannelNotifyResult = { ok: true; detail?: string; files?: ChannelFileOutcome[]; refs?: string[] } | { ok: false; error: string };
 
 /** A pool event whose current destination is this channel (a reply to its message). */
 export interface ChannelReply {
@@ -329,6 +361,7 @@ export class ChannelDispatcher {
   private readonly channels: AssistantChannel[];
   private started = new Set<AssistantChannel>();
   private unsubscribe: (() => void) | null = null;
+  private notificationReplies: NotificationReplyHandler | null = null;
 
   constructor(opts: ChannelDispatcherOptions) {
     const names = new Set<string>();
@@ -355,6 +388,7 @@ export class ChannelDispatcher {
           onUserMessage: (m, hooks) => this.onUserMessage(channel, m, hooks),
           resetSession: () => this.resetSession(channel),
           abortTurn: () => this.abortTurn(channel),
+          onNotificationReply: (r) => this.onNotificationReply(channel, r),
         });
         this.started.add(channel);
       } catch (err) {
@@ -377,6 +411,22 @@ export class ChannelDispatcher {
         }
       }),
     );
+  }
+
+  /** Who answers a reply to a notification (the kenning inbox, set in index.ts). */
+  setNotificationReplyHandler(handler: NotificationReplyHandler | null): void {
+    this.notificationReplies = handler;
+  }
+
+  private async onNotificationReply(channel: AssistantChannel, r: ChannelNotificationReply): Promise<ChannelNotificationReplyResult> {
+    const handler = this.notificationReplies;
+    if (!handler || !this.started.has(channel)) return { handled: false };
+    try {
+      return await handler({ ...r, channel: channel.name });
+    } catch (err) {
+      console.error(`[wherever] assistant channel "${channel.name}": a notification reply failed: ${errMessage(err)}`);
+      return { handled: false };
+    }
   }
 
   /** The started channels that can notify. */

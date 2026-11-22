@@ -2,6 +2,7 @@ import { writable, get, type Writable } from "sveltore";
 import {
   type ChatMessage,
   type HydrationSnapshot,
+  type KenningDelivery,
   type RestoreInfo,
   type RestoreJobInfo,
   type UploadByteSource,
@@ -56,6 +57,11 @@ export interface WhereverClientConfig {
   // `GET /session/tool-image` (see ToolImage). Off by default, so a consumer
   // that renders `img.data` keeps getting it; the web app turns it on.
   imageRefs?: boolean;
+  // Receive kenning's deliveries into a session (`kenning=1`): `kenning`
+  // messages in history and the live `kenning_delivery` frame, mapped to
+  // ChatMessage role 'kenning'. Off by default, so a consumer that does not
+  // render that role never sees one; the web app turns it on.
+  kenningCards?: boolean;
 }
 
 // Per-instance fallback identity: stable for the lifetime of this client object,
@@ -553,6 +559,7 @@ export class WhereverClient {
     // rather than as base64 re-sent on every load and reconnect. Opt-in: the
     // caller must then render images that have no `data`.
     if (this.config.imageRefs) params.push('imageRefs=1');
+    if (this.config.kenningCards) params.push('kenning=1');
     const wsUrl = `${protocol}://${host}:${this.config.port}/ws?${params.join('&')}`;
 
     const WebSocketImpl = this.config.WebSocketCtor || (typeof globalThis !== 'undefined' ? (globalThis as any).WebSocket : null);
@@ -1394,6 +1401,30 @@ export class WhereverClient {
           };
         });
         break;
+
+      case 'kenning_delivery': {
+        // Messages kenning delivered into this session, live. Not a user message
+        // (no delivery confirmation, no dedupe against the composer). Keyed by
+        // kenning's message ids, so a frame racing a history reload never shows
+        // twice.
+        const kenning = this.kenningDetails(msg.kenning);
+        if (!kenning || typeof msg.content !== 'string') break;
+        this.stateStore.update((s: WhereverState) => {
+          const first = kenning.ids[0];
+          if (first && s.messages.some((m) => m.role === 'kenning' && m.kenning?.ids.includes(first))) return s;
+          const card: ChatMessage = {
+            id: this.generateId(),
+            role: 'kenning',
+            content: msg.content,
+            timestamp: typeof msg.timestamp === 'number' ? msg.timestamp : Date.now(),
+            isStreaming: false,
+            sessionId: msg.sessionId,
+            kenning,
+          };
+          return {...s, messages: [...s.messages, card]};
+        });
+        break;
+      }
 
       case 'message_ack':
         // The server accepted this outbound user message (a normal turn, or a
@@ -2379,6 +2410,13 @@ export class WhereverClient {
     return /^(command|operation)?\s*aborted$/i.test(last);
   }
 
+  /** The server's kenning `details`, read defensively (another version may lack a field). */
+  private kenningDetails(raw: any): KenningDelivery | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
+    return {ids: strings(raw.ids), from: strings(raw.from), origins: strings(raw.origins)};
+  }
+
   /**
    * Map a server `HistoryMessage[]` window into UI `ChatMessage[]`. When
    * `applyStreamingTail` is true, the last assistant/thinking message and any
@@ -2531,6 +2569,7 @@ export class WhereverClient {
           // Carry the source entry id (set on user messages by the server) so the
           // UI can offer "Fork from here" on each user message.
           ...(typeof m.entryId === 'string' && m.entryId ? {entryId: m.entryId} : {}),
+          ...(m.role === 'kenning' ? {kenning: this.kenningDetails(m.kenning) ?? {ids: [], from: [], origins: []}} : {}),
         });
       }
     }

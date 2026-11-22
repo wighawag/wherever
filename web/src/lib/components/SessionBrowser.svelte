@@ -12,11 +12,16 @@
 		autocompletePath,
 		setCurrentSession,
 		setSessionStarred,
+		kenningStore,
 		type ModelInfo,
 		type FolderWithSessions,
 	} from '$lib/session-store';
+	import {ownedChildren, presenceByFile, presenceLine} from '$lib/core/kenning';
+	import {undoKenningDelete} from '$lib/wherever';
 	// Fork-hierarchy flattening + recency ordering (unit-tested in core).
 	import {buildForkTree} from '$lib/core/fork-tree.js';
+	// kenning presence (role, state, status line) by session file, the listing's `path`.
+	let presence = $derived(presenceByFile($kenningStore.presence));
 
 	// When true, this browser shows the read-only sessions page: it sources from
 	// the read-only folder list, hides the create form, and hides all delete
@@ -68,6 +73,30 @@
 	let confirmingDeleteFolder = $state<string | null>(null);
 	let searchQuery = $state('');
 	let filteredFolders = $state<FolderWithSessions[]>([]);
+	// kenning ownership (`session_spawn`): every listed session by path, and the
+	// sessions each owner spawned (they may be in other folders, e.g. a worktree).
+	let allListed = $derived(folders.flatMap((f) => f.sessions));
+	let byPath = $derived(new Map(allListed.map((s) => [s.path, s])));
+	let owned = $derived(ownedChildren(allListed));
+	let undoing = $state<Record<string, boolean>>({});
+	// Labels of every session this sidebar has listed, kept after a cascaded
+	// delete hides them, so the undo banner can still name what it took.
+	const seenLabels = new Map<string, string>();
+	$effect(() => {
+		for (const s of allListed) {
+			const label = s.name || truncate(s.firstMessage);
+			if (label) seenLabels.set(s.path, label);
+		}
+	});
+	function sessionLabel(path: string): string {
+		const s = byPath.get(path);
+		return (
+			s?.name ||
+			truncate(s?.firstMessage ?? '') ||
+			seenLabels.get(path) ||
+			'a session'
+		);
+	}
 
 	// Auto-fetch sessions on connect and periodically
 	$effect(() => {
@@ -437,6 +466,33 @@
 </script>
 
 <div class="flex h-full flex-col">
+	{#if !readOnly && $kenningStore.archives.length}
+		<!-- kenning (D24): a delete that took the sessions a session owns, undoable for 7 days. -->
+		<div class="space-y-1 border-b border-brand-border/50 p-2">
+			{#each $kenningStore.archives as a (a.batch)}
+				<div class="flex items-center gap-2 text-[10px] text-brand-text-muted">
+					<span class="min-w-0 flex-1 truncate" title={a.sessions.join('\n')}
+						>Deleted {sessionLabel(a.root)}{a.sessions.length > 1
+							? ` and ${a.sessions.length - 1} owned session${a.sessions.length === 2 ? '' : 's'}`
+							: ''}</span
+					>
+					<button
+						type="button"
+						disabled={undoing[a.batch]}
+						onclick={async () => {
+							undoing[a.batch] = true;
+							await undoKenningDelete(a.batch);
+							undoing[a.batch] = false;
+						}}
+						class="rounded border border-brand-border bg-brand-surface-2 px-1.5 py-0.5 text-brand-text hover:bg-brand-surface-3 disabled:opacity-50"
+						title="Bring them back (possible until {new Date(
+							a.undoUntil,
+						).toLocaleDateString()})">Undo</button
+					>
+				</div>
+			{/each}
+		</div>
+	{/if}
 	<div class="border-b border-brand-border/50 p-2">
 		<div class="flex gap-1.5">
 			<input
@@ -838,6 +894,26 @@
 												{formatRelative(session.modified)} · {session.messageCount}
 												msgs
 											</div>
+											{#if session.ownerSessionPath}
+												<div
+													class="truncate text-[10px] text-brand-text-muted"
+													title="Spawned by {session.ownerSessionPath}"
+												>
+													↳ spawned by {sessionLabel(session.ownerSessionPath)}
+												</div>
+											{/if}
+											{#if presenceLine(presence.get(session.path))}
+												{@const p = presence.get(session.path)}
+												<div
+													class="truncate text-[10px] {p?.state ===
+													'waiting-for-human'
+														? 'text-amber-400'
+														: 'text-brand-blue'}"
+													title={presenceLine(p)}
+												>
+													{presenceLine(p)}
+												</div>
+											{/if}
 										</div>
 										{#if session.clientCount > 0}
 											<span
@@ -910,6 +986,32 @@
 										</div>
 									{/if}
 								</div>
+								{#if owned.get(session.path)?.length}
+									<!-- kenning: the sessions this one spawned, wherever they live. -->
+									<div
+										class="mb-1 ml-6 flex flex-wrap gap-1"
+										style={depth > 0
+											? `margin-left: ${depth * 0.85 + 1.5}rem`
+											: ''}
+									>
+										{#each owned.get(session.path) ?? [] as child (child.path)}
+											<a
+												href="#{encodeURIComponent(child.id)}"
+												onclick={(e) => {
+													if (e.button === 0 && !e.ctrlKey && !e.metaKey) {
+														e.preventDefault();
+														handleSessionClick(child.path);
+													}
+												}}
+												class="max-w-[12rem] truncate rounded bg-brand-surface-3/60 px-1.5 py-0.5 text-[10px] text-brand-text no-underline hover:bg-brand-surface-3"
+												title="Spawned by this session: {child.path}"
+												>↳ {child.name ||
+													truncate(child.firstMessage) ||
+													'session'}</a
+											>
+										{/each}
+									</div>
+								{/if}
 							{/each}
 						</div>
 					{/if}

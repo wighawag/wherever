@@ -15,9 +15,22 @@ export interface ToolImage {
 	index?: number;
 }
 
+/**
+ * Messages kenning delivered into a session (the server's
+ * `KenningDeliveryInfo`), one entry per message, in order: kenning ids, sender
+ * labels, origins (`agent`, `human`, `human-relayed`).
+ */
+export interface KenningDelivery {
+	ids: string[];
+	from: string[];
+	origins: string[];
+}
+
 export interface ChatMessage {
 	id: string;
-	role: 'user' | 'assistant' | 'thinking' | 'tool';
+	// `kenning`: a delivery from other sessions (only with `kenningCards`). It is
+	// never a user message: not forkable, not editable, no delivery state.
+	role: 'user' | 'assistant' | 'thinking' | 'tool' | 'kenning';
 	content: string;
 	timestamp: number;
 	isStreaming?: boolean;
@@ -84,6 +97,9 @@ export interface ChatMessage {
 	// last user message is not enough: with several messages queued they are
 	// delivered oldest-first, so the echoed one is usually not the last bubble.
 	restoredFromQueue?: boolean;
+	// Set on role 'kenning': who sent what, with which origin. `content` is
+	// kenning's formatted text, as the model read it.
+	kenning?: KenningDelivery;
 }
 
 export interface SessionNotice {

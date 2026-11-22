@@ -33,6 +33,12 @@ export default defineConfig({
     // and those assertions would be measuring uncollected garbage rather than
     // what the reader RETAINS, which is the property that matters: the readers
     // exist so a 2 GB sessions directory costs tens of MB, not gigabytes.
+    // kenning (and kenning-pi) import `node:sqlite`, a builtin that exists ONLY
+    // with the `node:` prefix, which vite 5 strips when it transforms a module
+    // ("Failed to load url sqlite"). Keep kenning's dist external, so Node loads
+    // it even when it is linked from a local checkout (outside node_modules,
+    // which vite would otherwise transform).
+    server: { deps: { external: [/[\\/]kenning(-pi)?[\\/]dist[\\/]/] } },
     poolOptions: {
       forks: { execArgv: ['--expose-gc'] },
       threads: { execArgv: ['--expose-gc'] },

@@ -51,6 +51,7 @@
 		checkRemoteRepo,
 	} from '$lib/session-store';
 	import {onMount} from 'svelte';
+	import KenningCard from './KenningCard.svelte';
 	import {url} from '$lib/core/utils/web/path';
 	import {
 		renderAssistant,
@@ -1044,9 +1045,11 @@
 												}`
 										: msg.role === 'assistant'
 											? 'border-l-2 border-brand-purple bg-brand-purple/10 text-brand-text'
-											: msg.content === '' && msg.isStreaming
-												? 'bg-brand-surface-3 text-brand-text-muted italic'
-												: 'bg-brand-surface-2 text-brand-text'}"
+											: msg.role === 'kenning'
+												? 'border-l-2 border-amber-400/60 bg-brand-surface-2 text-brand-text'
+												: msg.content === '' && msg.isStreaming
+													? 'bg-brand-surface-3 text-brand-text-muted italic'
+													: 'bg-brand-surface-2 text-brand-text'}"
 					>
 						{#if msg.role === 'thinking'}
 							{#if msg.content === 'FALLBACK_THINKING_LOADER'}
@@ -1776,6 +1779,8 @@
 									{/if}
 								</div>
 							{/if}
+						{:else if msg.role === 'kenning'}
+							<KenningCard {msg} />
 						{:else}
 							{@const parsedUserMsg = parseUserMessage(msg.content)}
 							{#if parsedUserMsg.skill}

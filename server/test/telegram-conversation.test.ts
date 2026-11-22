@@ -49,9 +49,16 @@ class FakeController {
   resets = 0;
   aborts = 0;
   resetError: string | null = null;
+  /** Answers a reply to a notification (the kenning inbox's role); unset = never handled. */
+  notificationReply: ((r: { channel: string; ref: string; text: string }) => { handled: false } | { handled: true; reply: string }) | null = null;
+  replies: Array<{ channel: string; ref: string; text: string }> = [];
   private ends: Array<() => void> = [];
   ctx(): ChannelContext {
     return {
+      onNotificationReply: async (r) => {
+        this.replies.push(r);
+        return this.notificationReply ? this.notificationReply(r) : { handled: false };
+      },
       onUserMessage: (m: ChannelUserMessage, hooks?: ChannelInboundHooks) => {
         this.received.push({ text: m.text, channel: m.channel });
         const steered = this.busy;
@@ -234,13 +241,76 @@ describe('Telegram conversation: outbound', () => {
     const { api, channel } = setup({ publicUrl: 'https://box.example/' });
     await until(() => api.of('getUpdates').length > 0);
     const r = await channel.notify({ title: 'CI', body: 'tests are red', source: 'app', navigate: 'sess-1' });
-    expect(r).toEqual({ ok: true, detail: 'sent' });
+    // `refs` name the sent message, so a reply to it can be matched (kenning).
+    expect(r).toEqual({ ok: true, detail: 'sent', refs: [`telegram:${USER}:1`] });
     expect(sentTexts(api)).toEqual(['🔔 app: CI\n\ntests are red\n\nhttps://box.example/#sess-1']);
 
     const { api: api2, channel: plain } = setup();
     await until(() => api2.of('getUpdates').length > 0);
     await plain.notify({ title: 'Hi', body: '', source: 'assistant', navigate: 's' });
     expect(sentTexts(api2)).toEqual(['🔔 assistant: Hi']);
+  });
+
+  it('a text reply to a notification goes to its handler (a kenning answer), not to the assistant', async () => {
+    const { api, channel, controller } = setup();
+    await until(() => api.of('getUpdates').length > 0);
+    const r = await channel.notify({ title: 'Question for you', body: 'Publish?', source: 'lane', navigate: 's' });
+    const ref = r.ok ? r.refs?.[0] : undefined;
+    expect(ref).toBe(`telegram:${USER}:1`);
+    controller.notificationReply = (x) => (x.ref === ref ? { handled: true, reply: '✅ Answered: Publish?' } : { handled: false });
+
+    api.message(USER, 'yes, publish', { replyTo: 1 });
+    await until(() => sentTexts(api).includes('✅ Answered: Publish?'));
+    expect(controller.replies).toEqual([{ channel: 'telegram', ref: `telegram:${USER}:1`, text: 'yes, publish' }]);
+    expect(controller.received).toEqual([]);
+
+    // A reply to a message nobody handles is an ordinary message for the assistant.
+    api.message(USER, 'about that earlier reply', { replyTo: 77 });
+    await until(() => controller.received.length === 1);
+    expect(controller.received[0].text).toBe('about that earlier reply');
+  });
+
+  it('a question says how to answer here and offers its options as buttons; a tap answers with the option', async () => {
+    const { api, channel, controller } = setup();
+    await until(() => api.of('getUpdates').length > 0);
+    // Polling asks for button taps too.
+    expect(api.of('getUpdates')[0].params.allowed_updates).toEqual(['message', 'callback_query']);
+    const r = await channel.notify({ title: 'Question for you', body: 'Publish 0.3.0?', source: 'release', navigate: 's', question: { options: ['yes', 'no'] } });
+    const ref = r.ok ? r.refs?.[0] : undefined;
+    const sent = api.of('sendMessage')[0].params;
+    expect(sent.text).toBe('🔔 release: Question for you\n\nPublish 0.3.0?\n\nTo answer here: tap a button below, or swipe this message to reply with your own answer.');
+    expect(sent.reply_markup).toEqual({ inline_keyboard: [[{ text: 'yes', callback_data: 'answer:0' }, { text: 'no', callback_data: 'answer:1' }]] });
+    let open = true;
+    controller.notificationReply = (x) => (x.ref === ref && open ? ((open = false), { handled: true, reply: '✅ Answered: Publish 0.3.0?' }) : { handled: false });
+
+    // Someone else's tap (a forwarded message, a group) is ignored, unanswered.
+    api.tap(999, 1, 0);
+    api.tap(USER, 1, 0);
+    await until(() => sentTexts(api).includes('✅ Answered: Publish 0.3.0?'));
+    expect(controller.replies).toEqual([{ channel: 'telegram', ref: `telegram:${USER}:1`, text: 'yes' }]);
+    expect(controller.received).toEqual([]);
+    expect(api.of('answerCallbackQuery').map((c) => c.params.text)).toEqual(['Answered: yes']);
+    // The buttons are gone, so a second tap cannot look like it did something.
+    expect(api.of('editMessageReplyMarkup').map((c) => c.params)).toEqual([{ chat_id: USER, message_id: 1, reply_markup: { inline_keyboard: [] } }]);
+  });
+
+  it('a question without options has no buttons; a tap on a closed question says so', async () => {
+    const { api, channel, controller } = setup();
+    await until(() => api.of('getUpdates').length > 0);
+    await channel.notify({ title: 'Question for you', body: 'Which docs?', source: 'docs', navigate: 's', question: { options: [] } });
+    const sent = api.of('sendMessage')[0].params;
+    expect(sent.reply_markup).toBeUndefined();
+    expect(sent.text).toMatch(/To answer here: swipe this message \(or long-press, Reply\) and write your answer\.$/);
+
+    // Long options go one per row.
+    await channel.notify({ title: 'Q', body: 'b', source: 's', navigate: 'n', question: { options: ['ship it to npm today', 'wait'] } });
+    expect(api.of('sendMessage')[1].params.reply_markup.inline_keyboard).toEqual([[{ text: 'ship it to npm today', callback_data: 'answer:0' }], [{ text: 'wait', callback_data: 'answer:1' }]]);
+    controller.notificationReply = () => ({ handled: false });
+    api.tap(USER, 2, 1);
+    await until(() => api.of('answerCallbackQuery').length === 1);
+    expect(api.of('answerCallbackQuery')[0].params.text).toBe('This question is no longer open.');
+    expect(controller.replies).toEqual([{ channel: 'telegram', ref: `telegram:${USER}:2`, text: 'wait' }]);
+    await until(() => api.of('editMessageReplyMarkup').length === 1);
   });
 
   it('notify while unpaired is a failed delivery (nothing sent)', async () => {

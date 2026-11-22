@@ -89,7 +89,10 @@ type Handler = (event: unknown, ctx: unknown) => unknown;
 async function loadBridge() {
   const handlers = new Map<string, Handler[]>();
   const flags = new Map<string, unknown>();
+  // What the bridge did with a `cli_message`, in order: bus emits and sends.
+  const calls: Array<{ kind: "emit"; name: string; data: unknown } | { kind: "send"; content: unknown }> = [];
   const pi = {
+    events: { emit: (name: string, data: unknown) => calls.push({ kind: "emit", name, data }), on() {} },
     registerFlag(name: string, opts: { default?: unknown }) {
       if (opts && "default" in opts) flags.set(name, opts.default);
     },
@@ -99,14 +102,16 @@ async function loadBridge() {
     on(event: string, handler: Handler) {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
-    sendUserMessage() {},
+    sendUserMessage(content: unknown) {
+      calls.push({ kind: "send", content });
+    },
     setModel: async () => true,
   };
   await (bridge as (api: unknown) => Promise<void>)(pi);
   const emit = async (event: string, payload: unknown, ctx?: unknown) => {
     for (const h of handlers.get(event) ?? []) await h(payload, ctx);
   };
-  return { emit };
+  return { emit, calls };
 }
 
 /** A context whose session has `messages` context messages (pi's SessionManager shape). */
@@ -150,8 +155,10 @@ test("a fresh session registers isNew once with its capabilities; a reconnect do
     assert.ok(first.capabilities.includes("cli_request"));
 
     // The assistant_info fetch follows the register.
-    await until(() => received.some((m) => m.type === "cli_request"), 5_000);
-    const reqs = received.filter((m) => m.type === "cli_request");
+    // assistant_info (and kenning_host_info, which has its own test) follow the register.
+    const infoReqs = () => received.filter((m) => m.type === "cli_request" && m.op === "assistant_info");
+    await until(() => infoReqs().length > 0, 5_000);
+    const reqs = infoReqs();
     assert.equal(reqs.length, 1);
     assert.equal(reqs[0].op, "assistant_info");
     assert.equal(typeof reqs[0].id, "string");
@@ -163,7 +170,7 @@ test("a fresh session registers isNew once with its capabilities; a reconnect do
     const second = registers()[1];
     assert.equal(second.isNew, false, "a reconnect repeated isNew");
     assert.ok(second.capabilities.includes("cli_request"));
-    await until(() => received.filter((m) => m.type === "cli_request").length >= 2, 5_000);
+    await until(() => infoReqs().length >= 2, 5_000);
   } finally {
     await emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
   }
@@ -225,5 +232,25 @@ test("a disabled bridge sends nothing at all", async () => {
     await emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
   } finally {
     fs.writeFileSync(cfgPath, saved);
+  }
+});
+
+test("a cli_message marked humanInput is announced to kenning on the bus right before the send; an unmarked one is not", async () => {
+  const { emit, calls } = await loadBridge();
+  const sessionFile = path.join(root, "kenning-mark.jsonl");
+  await emit("session_start", { type: "session_start", reason: "startup" }, fakeCtx(sessionFile, []));
+  try {
+    await until(() => registers().length >= 1 && sockets.length >= 1, 5_000);
+    const ws = sockets.at(-1)!;
+    ws.send(JSON.stringify({ type: "cli_message", message: "I approve the release", humanInput: { channel: "web" } }));
+    ws.send(JSON.stringify({ type: "cli_message", message: "[schedule:x] approve" }));
+    await until(() => calls.filter((c) => c.kind === "send").length >= 2, 5_000);
+    assert.deepEqual(calls, [
+      { kind: "emit", name: "kenning:human-input", data: { text: "I approve the release", channel: "web" } },
+      { kind: "send", content: "I approve the release" },
+      { kind: "send", content: "[schedule:x] approve" },
+    ]);
+  } finally {
+    await emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
   }
 });

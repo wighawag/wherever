@@ -113,6 +113,22 @@ export type TelegramFetch = (
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
+  /** A tap on an inline button (a kenning question's option). */
+  callback_query?: TelegramCallbackQuery;
+}
+
+/** An inline keyboard as the Bot API carries it (sent in `reply_markup`, echoed back on a tap). */
+export interface TelegramInlineKeyboard {
+  inline_keyboard: Array<Array<{ text: string; callback_data?: string }>>;
+}
+
+/** The slice of a Bot API `CallbackQuery` this channel reads. */
+export interface TelegramCallbackQuery {
+  id: string;
+  from: { id: number; is_bot?: boolean };
+  /** The message the tapped button is on, with its keyboard (Telegram sends it back). */
+  message?: { message_id: number; chat: { id: number; type: string }; reply_markup?: TelegramInlineKeyboard };
+  data?: string;
 }
 
 /** The slice of a Bot API `Message` this channel reads. */
@@ -125,7 +141,14 @@ export interface TelegramMessage {
   media_group_id?: string;
   photo?: Array<{ file_id: string; file_size?: number; width?: number; height?: number }>;
   document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
+  /** The message this one replies to (a reply to a kenning question answers it). */
+  reply_to_message?: { message_id: number };
   [k: string]: unknown;
+}
+
+/** A sent message's ref, as `notify` returns it in `refs` and a reply names it. */
+export function telegramMessageRef(chatId: number | string, messageId: number): string {
+  return `${TELEGRAM_CHANNEL}:${chatId}:${messageId}`;
 }
 
 /** How long an album's messages are gathered before it is handled (pi-telegram's 1200 ms). */
@@ -186,9 +209,41 @@ export const NOTHING_RUNNING_REPLY = 'Nothing is running.';
 export function formatTelegramNotification(n: ChannelNotification, publicUrl?: string): string {
   let text = `🔔 ${n.source}: ${n.title}`;
   if (n.body && n.body.trim()) text += `\n\n${n.body.trim()}`;
+  // Only a Telegram REPLY to this message answers (a plain message goes to the
+  // assistant, which cannot know what it answers), so say how, here.
+  if (n.question) {
+    text += n.question.options.length
+      ? '\n\nTo answer here: tap a button below, or swipe this message to reply with your own answer.'
+      : '\n\nTo answer here: swipe this message (or long-press, Reply) and write your answer.';
+  }
   const link = sessionLink(publicUrl, n.navigate);
   if (link) text += `\n\n${link}`;
   return text;
+}
+
+/** `callback_data` of a question's option button: its index among the buttons. */
+const ANSWER_DATA = /^answer:(\d{1,3})$/;
+
+/**
+ * A question's options as inline buttons. One row while they are few and short
+ * (yes / no), else one per row so a long option stays readable. The data is
+ * the option's INDEX (`callback_data` is capped at 64 bytes; an option is not),
+ * and its text is read back from the keyboard Telegram returns with the tap.
+ */
+export function answerKeyboard(options: string[]): TelegramInlineKeyboard | null {
+  if (options.length === 0) return null;
+  const buttons = options.map((text, i) => ({ text, callback_data: `answer:${i}` }));
+  const oneRow = options.length <= 3 && options.every((o) => o.length <= 16);
+  return { inline_keyboard: oneRow ? [buttons] : buttons.map((b) => [b]) };
+}
+
+/** The option a tap chose: the tapped button's text, or null for anything else. */
+export function tappedAnswer(q: TelegramCallbackQuery): string | null {
+  const m = ANSWER_DATA.exec(q.data ?? '');
+  if (!m) return null;
+  const buttons = (q.message?.reply_markup?.inline_keyboard ?? []).flat();
+  const b = buttons[Number(m[1])];
+  return b && b.callback_data === q.data && typeof b.text === 'string' && b.text ? b.text : null;
 }
 
 /** `<publicUrl>/#<sessionId>`, or null without a usable http(s) public URL. */
@@ -394,15 +449,22 @@ export class TelegramChannel implements AssistantChannel {
     const chatId = this.started ? this.pairedChatId() : null;
     if (!chatId) return { ok: false, error: this.started ? 'Telegram is not paired yet' : 'the Telegram channel is not running' };
     let first: number | undefined;
+    // Every part's id: a reply to any of them can be matched (onNotificationReply).
+    const refs: string[] = [];
+    // A question's options ride on the LAST part, right under its end.
+    const keyboard = n.question ? answerKeyboard(n.question.options) : null;
     try {
-      for (const part of splitTelegramText(formatTelegramNotification(n, this.publicUrl))) {
-        const sent = await this.call<{ message_id?: number }>('sendMessage', { chat_id: chatId, text: part });
+      const parts = splitTelegramText(formatTelegramNotification(n, this.publicUrl));
+      for (const [i, part] of parts.entries()) {
+        const markup = keyboard && i === parts.length - 1 ? { reply_markup: keyboard } : {};
+        const sent = await this.call<{ message_id?: number }>('sendMessage', { chat_id: chatId, text: part, ...markup });
         if (first === undefined && typeof sent?.message_id === 'number') first = sent.message_id;
+        if (typeof sent?.message_id === 'number') refs.push(telegramMessageRef(chatId, sent.message_id));
       }
     } catch (err) {
       return { ok: false, error: this.redact(errMessage(err)) };
     }
-    if (!n.files?.length) return { ok: true, detail: 'sent' };
+    if (!n.files?.length) return { ok: true, detail: 'sent', refs };
     const files: ChannelFileOutcome[] = [];
     for (const f of n.files) {
       const name = f.name || path.basename(f.path);
@@ -413,7 +475,7 @@ export class TelegramChannel implements AssistantChannel {
         files.push({ path: f.path, name, status: 'failed', error: this.redact(errMessage(err)) });
       }
     }
-    return { ok: true, detail: 'sent', files };
+    return { ok: true, detail: 'sent', files, refs };
   }
 
   /** An error message without the bot token (a URL in a network error carries it). */
@@ -492,7 +554,7 @@ export class TelegramChannel implements AssistantChannel {
       try {
         updates = await this.call<TelegramUpdate[]>(
           'getUpdates',
-          { ...(this.offset !== undefined ? { offset: this.offset } : {}), timeout: this.pollTimeout, allowed_updates: ['message'] },
+          { ...(this.offset !== undefined ? { offset: this.offset } : {}), timeout: this.pollTimeout, allowed_updates: ['message', 'callback_query'] },
           signal,
         );
       } catch (err) {
@@ -540,6 +602,11 @@ export class TelegramChannel implements AssistantChannel {
   }
 
   private async handle(u: TelegramUpdate): Promise<void> {
+    if (u.callback_query) {
+      const q = u.callback_query;
+      await this.serial(() => this.onTap(q));
+      return;
+    }
     const m = u.message;
     if (!m || !m.from || m.from.is_bot) return;
     const text = typeof m.text === 'string' ? m.text : typeof m.caption === 'string' ? m.caption : undefined;
@@ -585,6 +652,44 @@ export class TelegramChannel implements AssistantChannel {
         return;
       }
     }
+  }
+
+  /**
+   * A tap on a question's option button: the same answer as a reply with that
+   * option's text (`onNotificationReply`). Only the paired user, in the private
+   * chat, counts; anyone else's tap is ignored unanswered, like their messages.
+   * Telegram shows a spinner until `answerCallbackQuery`, so every tap of the
+   * paired user gets one; the buttons are removed once the question is answered
+   * or closed, so a second tap cannot look like it did something.
+   */
+  private async onTap(q: TelegramCallbackQuery): Promise<void> {
+    const eff = effectivePairing(this.pairing);
+    const msg = q.message;
+    if (eff.kind !== 'paired' || q.from?.is_bot || String(q.from?.id) !== eff.userId || !msg || msg.chat.type !== 'private') {
+      this.log.log(`[wherever] telegram: ignored a button tap from user ${q.from?.id} (not the paired user)`);
+      return;
+    }
+    const toast = async (text?: string) => {
+      try {
+        await this.call('answerCallbackQuery', { callback_query_id: q.id, ...(text ? { text } : {}) });
+      } catch (err) {
+        this.log.warn(`[wherever] telegram: answerCallbackQuery failed: ${this.redact(errMessage(err))}`);
+      }
+    };
+    const answer = tappedAnswer(q);
+    const ctx = this.ctx;
+    if (!answer || !ctx?.onNotificationReply) {
+      await toast();
+      return;
+    }
+    const r = await ctx.onNotificationReply({ channel: TELEGRAM_CHANNEL, ref: telegramMessageRef(msg.chat.id, msg.message_id), text: answer });
+    await toast(r.handled ? `Answered: ${answer}` : 'This question is no longer open.');
+    try {
+      await this.call('editMessageReplyMarkup', { chat_id: msg.chat.id, message_id: msg.message_id, reply_markup: { inline_keyboard: [] } });
+    } catch (err) {
+      this.log.warn(`[wherever] telegram: removing the answer buttons failed: ${this.redact(errMessage(err))}`);
+    }
+    if (r.handled) await this.reply(msg.chat.id, r.reply);
   }
 
   /** Run `fn` after every inbound message before it has been handled. */
@@ -633,6 +738,18 @@ export class TelegramChannel implements AssistantChannel {
     const wanted = messages.flatMap((m) => inboundFilesOf(m));
     const unsupported = messages.some((m) => hasUnsupportedMedia(m));
     const trimmed = text.trim();
+    // A text reply to a message this channel sent for a notification (a kenning
+    // question): the answer, from the paired user, i.e. a human act (wherever
+    // ADR 0023). Checked first: replying is explicit. A reply to anything else
+    // is an ordinary message.
+    const repliedTo = first.reply_to_message?.message_id;
+    if (messages.length === 1 && wanted.length === 0 && !unsupported && trimmed && typeof repliedTo === 'number' && ctx.onNotificationReply) {
+      const r = await ctx.onNotificationReply({ channel: TELEGRAM_CHANNEL, ref: telegramMessageRef(chatId, repliedTo), text: trimmed });
+      if (r.handled) {
+        await this.reply(chatId, r.reply);
+        return;
+      }
+    }
     const cmd = parseCommand(trimmed);
     // Commands are a TEXT message's; a caption is text for the assistant.
     if (wanted.length === 0 && !unsupported) {

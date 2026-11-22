@@ -284,7 +284,7 @@ describe('Telegram files: outbound (assistant_notify attachments)', () => {
   it('with no attachments: exactly the one message as before', async () => {
     const { api, channel } = await setup();
     const r = await channel.notify(note);
-    expect(r).toEqual({ ok: true, detail: 'sent' });
+    expect(r).toEqual({ ok: true, detail: 'sent', refs: [expect.stringMatching(/^telegram:\d+:\d+$/)] });
     expect(api.calls.filter((c) => c.method.startsWith('send')).map((c) => [c.method, c.params])).toEqual([
       ['sendMessage', { chat_id: String(USER), text: '🔔 assistant: Report ready\n\nsee the file' }],
     ]);
