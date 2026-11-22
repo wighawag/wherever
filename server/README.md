@@ -1,16 +1,17 @@
 # wherever-dev
 
-The standalone server of [Wherever](https://wherever.dev): drive several [pi coding agent](https://pi.dev) sessions from a web dashboard on your phone, tablet or any browser, and keep a terminal `pi` in sync with them.
+[Wherever](https://wherever.dev) is a self-hosted workspace for AI coding agents. Install it on the machine where your code lives, open it from your phone, tablet or laptop, and drive every agent session from there. Beside your project sessions it can run a personal assistant that remembers, works on a schedule and reaches you through push notifications and Telegram, and it lets your sessions work together and bring their questions to a single inbox.
 
-The server runs pi sessions in-process through the pi SDK and serves the web dashboard, so you do not need the `pi` CLI to use it. Install [`@wherever-dev/pi`](https://www.npmjs.com/package/@wherever-dev/pi) into pi as well if you also want terminal sessions mirrored to the dashboard (bridge mode).
+This package is the whole thing: the server runs the agent sessions itself and serves the web dashboard.
 
 ## Features
 
-- Many concurrent sessions across your project folders, created, resumed and forked from the browser.
-- A mobile-first dashboard (installable as a PWA): streaming replies, tool calls, model switching, `!` / `!!` shell commands, file and image uploads, downloads of files the agent attaches.
-- Voice dictation and optional spoken replies.
-- Native MCP: the servers in `~/.pi/agent/mcp.json` are available in web sessions, as in a terminal pi.
-- Live hand-over with a terminal `pi` (through `@wherever-dev/pi`).
+- **The assistant** (opt-in): a long-lived agent with a folder for memory, recurring and one-shot jobs that follow your timezone, background jobs, push notifications, and a private Telegram bot you can chat and swap files with.
+- **Sessions that work together** with [shipmates](https://github.com/wighawag/shipmates): presence in the sidebar, messages between sessions with their provenance, one "Needs you" inbox you can answer from the dashboard or Telegram, and sessions that spawn helper sessions.
+- **Every session from any device**: many concurrent sessions across your folders, a mobile-first installable dashboard that keeps working on weak connections, conversation mode (dictation and spoken replies), `!` shell commands, resumable file uploads and downloads.
+- **Search everything** you ever said in any session, saved drafts, starred sessions.
+- **Projects and machines**: git and remote repository setup on folder creation, restoring missing folders on a new machine, a distinct look per server, read-only views of autonomous agent fleets.
+- **Your agent stack**: built on [pi](https://pi.dev), with your extensions, skills, models and MCP servers; a terminal `pi` can be mirrored live to the dashboard with [`@wherever-dev/pi`](https://www.npmjs.com/package/@wherever-dev/pi).
 - Runs as a background service (systemd or launchd) with token auth and HTTPS.
 
 ## Install
@@ -32,7 +33,7 @@ wherever service-status
 wherever uninstall
 ```
 
-`wherever install` also adds `@wherever-dev/pi` to `~/.pi/agent/settings.json` (skip with `--no-pi-config`).
+`wherever install` also adds the terminal bridge extension `@wherever-dev/pi` to `~/.pi/agent/settings.json`, so a terminal `pi`, if you use one, is mirrored to the dashboard (skip with `--no-pi-config`).
 
 ## Common options
 
@@ -49,7 +50,7 @@ Prefer `WHEREVER_TOKEN` or `WHEREVER_TOKEN_FILE` over `--token` on a shared mach
 
 ## Configuration
 
-`~/.wherever/config.json` (override the directory with `WHEREVER_CONFIG_DIR`) holds the rest: preset folders, automatic remote repository creation, uploads, downloads, speech-to-text, the dashboard's per-machine appearance, and `piSdk`, which lets web sessions run on the pi you use in a terminal instead of the bundled SDK.
+`~/.wherever/config.json` (override the directory with `WHEREVER_CONFIG_DIR`; `wherever config init` writes a starter file) holds the rest: `assistantFolder` to turn on the assistant, its Telegram and push channels, preset folders, automatic remote repository creation, uploads, downloads, speech-to-text, the dashboard's per-machine appearance, and `piSdk`, which picks the agent runtime the sessions run on.
 
 ## Documentation
 

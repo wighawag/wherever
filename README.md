@@ -1,86 +1,68 @@
 # Wherever
 
-A modern, multi-session remote control platform for the [pi coding agent](https://pi.dev) consisting of a **Standalone Server** (`wherever-dev`), a **Web Frontend**, and a **CLI Bridge Extension** (`@wherever-dev/pi`).
+**Create & maintain apps from wherever.**
 
-It allows you to manage multiple pi sessions concurrently across your workspace directories from a gorgeous web dashboard while keeping your terminal CLI fully synced in real-time.
+Wherever is a self-hosted workspace for AI coding agents. Install it on the machine where your code lives, open it from your phone, tablet or laptop, and drive every agent session from there. Beside your project sessions it can run a personal **assistant** that remembers, works on a schedule and reaches you through push notifications and Telegram, and it lets your sessions **work together** and bring their questions to a single inbox.
 
-```
-┌────────────────────────────────────────────────────────┐
-│                   Wherever Server                      │
-│                                                        │
-│  ┌──────────────┐         WebSocket        ┌────────┐  │
-│  │ Web Frontend │◄────────────────────────►│  CLI   │  │
-│  │  (Svelte 5)  │◄────────────┐            │ Bridge │  │
-│  └──────────────┘             │            └────────┘  │
-│                               ▼                        │
-│                     ┌──────────────────┐               │
-│                     │  Agent Sessions  │               │
-│                     │ (Standalone/SDK) │               │
-│                     └──────────────────┘               │
-└────────────────────────────────────────────────────────┘
-```
+It is one package (`wherever-dev`) with nothing else to install: the agent runs inside the server. Website: [wherever.dev](https://wherever.dev).
 
 ---
 
-## Key Features Breakdown
+## Features
 
-### 🔄 Collaborative CLI Mirroring & Reconnection
+### 🤖 The assistant: an agent that stays on
 
-- **Bidirectional Sync:** The terminal CLI process and Svelte web dashboard mirror each other's inputs, agent reasoning/thinking steps, tool execution starts, tool outputs, and results in real-time.
-- **Auto-Recovery:** Built-in background reconnection with exponential backoff guarantees that the CLI bridge and Standalone Server automatically pair up whenever either process starts or restarts.
+Opt-in (set [`assistantFolder`](#configuration-properties)). One long-lived assistant with a real shell, real memory and a schedule.
 
-### 🔌 Seamless Headless / Bridge Handover
+- **A folder for memory, a session you can reset.** The assistant lives in a folder you choose, seeded with its own `AGENTS.md`. It writes what it learns there, so you can reset its conversation (Reset in the top bar, or `/new`) without it forgetting who you are.
+- **Schedules that follow you.** Agents can add recurring (cron) or one-shot jobs: a morning briefing, "check this in thirty minutes". Times follow your current timezone, so a reminder moves with you when you travel; a job can also be pinned to a place. Jobs live in `schedule.json` in the assistant folder, so you can read and edit them by hand. Runs missed while the server was down are caught up within a grace window.
+- **Long work in the background.** A job can run *inline* (in the assistant conversation, when it is idle) or *isolated* (at once, in its own fresh session, in parallel).
+- **It reaches you, and only you.** `assistant_notify` sends a push notification to every device you subscribed in the settings, and to a private Telegram bot paired with a one-time code shown in the dashboard. Scheduled work is silent unless it decides to tell you.
+- **Talk to it from Telegram.** Messages, photos, albums and documents go to the assistant (images reach the model as images), and files it attaches come back. A message sent while it is working steers the current reply; `stop`, `/new` and `/reset` do what they say. Shell commands (`!`) are refused from Telegram.
+- **Every session can hand off to it.** Any session, in the browser or in a terminal, gets the `assistant_schedule_*`, `assistant_set_timezone` and `assistant_notify` tools.
 
-- **Continuous Flow:** Close your terminal CLI, and the Standalone Server automatically transitions the active session to a server-side headless session running on the Pi SDK.
-- **Zero Disruption:** Re-open your terminal CLI, and control is instantly handed back to your CLI—with zero data loss, zero database lock conflicts, and perfect continuity.
-- **Bridge Mode Interruption Limitation:** When running in Bridge Mode, the active `pi` CLI process in your terminal maintains exclusive control of the executing agent's loop ("brain operation"). If you quit or close the `pi` CLI (e.g. via `Ctrl+C` or closing your terminal window), any active conversation, run, or tool execution will be immediately interrupted, even if you are interacting with it from the web dashboard. This is a design limitation of the `pi` CLI architecture.
+### 🧭 Shipmates: sessions that work together
 
-### 🎙️ WAV Dictation & Speech-to-Text (Voice Control)
+When [shipmates](https://github.com/wighawag/shipmates) is installed, your sessions know about each other, and wherever is its host: it puts the whole crew in front of you and brings you their questions, so you stop being the copy-paste relay between them.
 
-- **Direct PCM Web Audio Capture:** Bypasses heavy `MediaRecorder` browser encoding, streaming raw audio chunks directly to an in-memory buffer for instant, zero-latency WAV creation.
-- **Audible Chime Cue:** Emits a synthesized starting beep so you know exactly when the microphone is listening and when to speak.
-- **Dual Gesture Control:** Supports both standard click-to-start/stop recording or hold-to-talk (walkie-talkie style) controls.
-- **Color-Coded Feedback:** Features distinct pulsing red indicators for active recording and solid orange/yellow indicators during cloud processing & downsampling.
-- **Dual Transcription Engines:** Transcribe locally using the browser’s Web Speech API, or route to highly accurate server-side cloud speech-to-text engines (configured to Zhipu GLM-ASR-2512 or any OpenAI-compatible Whisper endpoint).
+- **Presence.** Each live session shows its role, its state (running, waiting for you, waiting on another session) and a one-line status under its row in the sidebar.
+- **Messages with provenance.** Sessions tell and ask each other things. Every delivery appears in the chat as a card with its sender and whether the words came from an agent, from you, or were relayed from you.
+- **One "🙋 Needs you" inbox.** Questions any session raises land in one panel, with a count on the tab title and on the installed app's icon. Answer from the dashboard. With the assistant on, every question is also pushed to your devices and to Telegram, where you can tap an option button or reply to the message; a question answered elsewhere is marked as closed there.
+- **Sessions that spawn sessions.** An agent can start helper sessions. They appear in the sidebar under their owner, and deleting an owner takes its whole subtree with it, with Undo for 7 days.
 
-### 💻 Direct Bash Execution (`!` and `!!`)
+### 📱 Your sessions, from any device
 
-- **Terminal Power:** Execute bash commands directly from the Svelte web frontend by prefixing them with `!` or `!!` (e.g., `!ls`, `!!git status`), matching the pi CLI's interactive behavior. A `!sudo ...` command pops a one-shot, masked password prompt (the password is used once to run the command and is never stored or logged); a fresh password is required every time.
-- **Real-Time Streaming:** Streams tool execution stdout/stderr chunks back to the dashboard in real-time, capturing output and exit codes directly into the session history.
+- **Many sessions at once** across your project folders, created, resumed and forked from the browser, grouped by folder in a collapsible sidebar, with an indicator on the ones an agent is working in.
+- **Terminal and browser in sync.** A session you started in a terminal is mirrored live to the dashboard (prompts, thinking, tool calls, output), both ways. Close the terminal and the server carries the session on headless; open it again and control goes back to the terminal with nothing lost. (See [Mirror a terminal session](#6-mirror-a-terminal-session-optional).)
+- **Installable PWA, built for phones.** Collapsible composer, input queueing while the agent works (a message sent mid-reply steers it), layout locks against mobile keyboard glitches.
+- **Made for weak connections.** Reopening the app shows the conversation at once from an on-device cache. Big frames are chunked and compressed, large tool images load lazily, streamed output is batched, and a dropped socket is detected and replaced quickly.
+- **Conversation mode.** Dictate (hold-to-talk or click, with the browser's speech engine or a cloud one such as Whisper-compatible endpoints), auto-send when you stop speaking, have replies spoken back, and let the mic reopen after each answer. It is set per conversation.
+- **Waiting-for-you chime** when the agent finishes, per session.
 
-### 📁 Multi-Modal File & Image Uploads
+### 🛠️ Working in a session
 
-- **Rich Context Support:** Upload documents, screenshots, and diagrams for multi-modal agent processing, automatically appending absolute paths to your active message box.
-- **Secure Hybrid Transport:** Upload via Base64 over WebSockets (immune to mobile browser self-signed SSL certificate blocks or CORS limitations) or standard HTTP multipart POST.
-- **Custom Storage Backends:** Highly configurable file target backends, allowing you to save files to `/tmp`, store them directly within the session's workspace (`cwd`) under a custom subdirectory (e.g. `.wherever/uploads`), or save them to a custom absolute directory on the server.
+- **Shell from the browser.** Prefix a message with `!` or `!!` to run a command directly, with streamed output. `!sudo ...` asks for the password once in a masked prompt and never stores or logs it.
+- **Files both ways.** Attach screenshots and documents with real progress; uploads are resumable over the WebSocket and survive a dropped connection. Files the agent attaches (`attach_file`) get a download button on any device.
+- **Search everything.** Full-text search over every conversation you ever had, in every folder, jumping straight to the moment something was said (backed by the [memonaut](https://github.com/wighawag/memonaut) index).
+- **Saved drafts and stars.** Save a message instead of sending it and load it later from another device; star the sessions you need to come back to.
+- **Folder overlap warning.** Opening a session in a folder where another session is active attaches you read-only with a warning; **Continue anyway** lets both work side by side.
 
-### 🔍 Smart Path Autocomplete & Verification
+### 🗂️ Projects and machines
 
-- **Path Suggestions:** Autocompletes folder path inputs on session creation from preset lists (`commonFolders`) and real-time directory lookups.
-- **Folder Validation:** Instantly queries path status to verify if the directory exists and check if it is already initialized as a Git repository.
+- **Git and remotes on creation.** Path autocomplete from your `commonFolders`, `git init` for new folders, and, by your rules, a new GitHub / Codeberg / Gitea / Forgejo repository wired as `origin`. If that repository already exists, you are offered to clone it instead.
+- **Restore on a new machine.** Folders that do not exist on this machine are marked in the session browser, and a session whose folder is missing offers to clone it back (with candidate remotes suggested) or create it, with live progress.
+- **One look per machine.** Give each server its own label, accent colour, top bar and backdrop pattern, so you always know which machine you are driving.
+- **Watch agent fleets.** Sessions in folders you mark `readOnly` move to a separate read-only page: follow autonomous runners without risking a stray message into one.
 
-### 🐙 Automatic Git & Remote Repo Setup
+### 🔌 Your agent stack
 
-- **Automatic Init:** Automatically runs `git init` on newly created folders that are not already under git source control.
-- **CLI Remote Provisioning:** When a folder matches configured regular expression rules, the server automatically executes the provider's CLI (such as `gh` for GitHub, or `tea`/`cb` for Gitea/Codeberg/Forgejo) to provision a new public or private repository on the host, setting up your `origin` remote automatically.
+- **Built on [pi](https://pi.dev).** Sessions run on the pi SDK bundled with wherever, or, with [`piSdk`](#configuration-properties), on the pi you already have installed. Your extensions, skills, prompt templates, models (`models.json` is reloaded live) and MCP servers work in web sessions as they do in a terminal; `/reload` rebuilds a session to pick up changes.
 
-### 🗂️ Polished Folder Browser & Sidebar
+### 🔒 Deploy your way
 
-- **Folder Grouping:** Displays active and archived sessions grouped neatly by folder.
-- **Collapsible Trees:** Folders are compressed by default to keep the sidebar extremely clean.
-- **Inline Deletion:** Support for direct session deletion with an inline double-confirmation step, syncing deletions across all connected clients.
-- **Unified Search:** Search and filter active or archived sessions by title, first message, or workspace folder names.
-
-### 🛑 Folder Overlap Warning
-
-- **Non-blocking warning banner:** If you open (or start) a session in a folder where **another** session is already active, you are **not** blocked by a dialog. You attach as a **read-only observer** and a dismissible-style **warning banner** appears at the top.
-- **Continue anyway:** Click **Continue anyway** to enable the composer and work alongside the other session (it is **not** interrupted or taken over — both run concurrently, so changes may conflict). After continuing, the banner stays as a passive warning and disappears automatically once no other session is active in that folder.
-
-### 📱 Mobile-Optimized UX & Layout Locks
-
-- **Visual Viewport Constraining:** Lock page overscroll bouncing specifically tuned for mobile browsers (Firefox/Safari) to prevent visual breakages during keyboard popups and text inputs.
-- **Collapsible Text Input:** Expand or collapse the chat input area on demand for maximum readability and space efficiency on small screens. Click to automatically focus and expand.
-- **Input Queueing:** If you type and send a message while the agent is currently streaming or processing a tool, the input is queued and automatically submitted the instant the agent finishes.
+- A background service on Linux (systemd) or macOS (launchd), or a [declarative NixOS setup](docs/deployment-nixos.md).
+- Token auth with the token kept out of the command line (`WHEREVER_TOKEN`, `WHEREVER_TOKEN_FILE`), HTTPS out of the box, trusted certificates over Tailscale or Tunnet, unix socket serving.
+- A single link (`https://host:31415/#token=...`) logs a phone in, and the token is cleared from the address bar.
 
 ---
 
@@ -88,31 +70,17 @@ It allows you to manage multiple pi sessions concurrently across your workspace 
 
 There are two ways to install and run Wherever: **Quick Install via NPM** (recommended for users), or **Local Development Setup** (for active contributors).
 
-> 💡 **Note on Pi Installation:** You do **not** need the `pi` CLI installed globally to use Wherever in **Headless Mode** (running agent sessions entirely from the web frontend). The standalone server (`wherever-dev`) runs the Pi agent in-process using the Pi SDK. You only need the `pi` CLI if you want to use **Bridge Mode** to sync a terminal CLI session in real-time.
-
 ### Method A: Quick Install (via NPM) 🚀
 
-This is the easiest and most robust way to run Wherever. No cloning or local compiling required!
+No cloning or local compiling required. Requires Node.js 22.19 or later.
 
-#### 1. Install the Standalone Server Globally
-
-Install the Wherever Standalone Server command-line tool globally:
+#### 1. Install the Server
 
 ```bash
 npm install -g wherever-dev
 ```
 
-#### 2. Install the CLI Extension into Pi (Optional — Only for Terminal Bridge Mode)
-
-If you want to sync a terminal CLI session in real-time, install the remote connection bridge extension using Pi's package manager:
-
-```bash
-pi install npm:@wherever-dev/pi
-```
-
-#### 3. Start the Server
-
-Start the standalone multi-session server:
+#### 2. Start the Server
 
 ```bash
 wherever start
@@ -121,21 +89,11 @@ wherever start
 The server will boot up and automatically generate self-signed SSL certificates for a secure `https`/`wss` local environment. Open `https://localhost:31415` in your browser. (The first time, proceed past your browser's SSL warning).
 _(Note: Automatic certificate generation requires `openssl` to be installed on your host system. If `openssl` is missing, the server will gracefully fall back to HTTP/WS)._
 
-_The self-signed certificate is fine for everyday use, but browsers will not treat it as a secure context, which prevents installing the dashboard as a standalone PWA from a remote device. To enable a proper standalone PWA install, see [Trusted HTTPS for Tailscale](#trusted-https-for-tailscale-recommended-for-pwa-install) or [Trusted HTTPS for Tunnet](#trusted-https-for-tunnet)._
+_The self-signed certificate is fine for everyday use, but browsers will not treat it as a secure context, which prevents installing the dashboard as a standalone PWA (and receiving push notifications) from a remote device. To enable a proper standalone PWA install, see [Trusted HTTPS for Tailscale](#trusted-https-for-tailscale-recommended-for-pwa-install) or [Trusted HTTPS for Tunnet](#trusted-https-for-tunnet)._
 
-#### 4. Run Pi (Optional — Only for Terminal Bridge Mode)
+To reach it from your phone, see [Remote Access & Security](#remote-access--security-tailscale-headscale--outside-access).
 
-To connect your local terminal CLI to the Standalone Server, run `pi` as normal in any project folder:
-
-```bash
-pi
-```
-
-Pi will automatically detect and load the `@wherever-dev/pi` extension, establish a real-time connection to your standalone server, and mirror your workspace to the Web Dashboard!
-
-Note though that when pi cli run, it takes control of the brain operation and quiting (via ctrl+c, /quit, etc...) will interupt the conversation even on every devices
-
-#### 5. Run as a Background Service (Optional)
+#### 3. Run as a Background Service (Optional)
 
 Instead of keeping a terminal open, you can install Wherever as a background service that starts automatically and restarts on failure:
 
@@ -143,7 +101,7 @@ Instead of keeping a terminal open, you can install Wherever as a background ser
 wherever install
 ```
 
-This installs and starts a per-user service (a **systemd** user unit on Linux, or a **launchd** LaunchAgent on macOS). It also adds the `@wherever-dev/pi` extension to `~/.pi/agent/settings.json` for you (unless it is already configured), so a running `pi` CLI bridges into the server automatically.
+This installs and starts a per-user service (a **systemd** user unit on Linux, or a **launchd** LaunchAgent on macOS). It also adds the terminal bridge extension (`@wherever-dev/pi`) to `~/.pi/agent/settings.json` for you (unless it is already configured, or you pass `--no-pi-config`), so a terminal `pi`, if you use one, is [mirrored](#6-mirror-a-terminal-session-optional) automatically.
 
 Server flags are baked into the service, so you can pass them through at install time:
 
@@ -199,7 +157,7 @@ One caveat worth knowing: systemd **silently ignores** these directives unless t
 
 launchd (macOS) has no equivalent per-service memory cap, so there is nothing to bake in there.
 
-#### Updating to a new version
+##### Updating to a new version
 
 The service runs a fixed path to the installed `wherever-dev` package, so updating the package files on disk does **not** restart the already-running process: it keeps the old code in memory until it is restarted. After you install a new version, do one of the following:
 
@@ -256,6 +214,55 @@ The service runs a fixed path to the installed `wherever-dev` package, so updati
 
 > Note: the server is started with the explicit `wherever start` verb. A bare `wherever` prints the command help. All server flags below apply to `wherever start`.
 
+#### 4. Turn on the Assistant (Optional)
+
+Point wherever at a folder for the assistant in `~/.wherever/config.json` (create a starter file with `wherever config init`) and restart the server:
+
+```json
+{
+  "assistantFolder": "~/assistant"
+}
+```
+
+The folder is created and seeded on start (an `AGENTS.md` for the assistant, one for its background jobs, a `.gitignore`); nothing you or the assistant edit there is ever overwritten. An **Assistant** entry appears in the sidebar.
+
+- **Push notifications:** open Settings on each device and turn on "Assistant notifications" (this needs a [trusted HTTPS origin](#trusted-https-for-tailscale-recommended-for-pwa-install) on remote devices). "Send test notification" checks it end to end.
+- **Telegram:** create a bot with [@BotFather](https://t.me/BotFather), give the server its token through `WHEREVER_TELEGRAM_TOKEN` (or `WHEREVER_TELEGRAM_TOKEN_FILE`), and enable the channel:
+
+  ```json
+  {
+    "assistantFolder": "~/assistant",
+    "assistantTelegram": {"enabled": true},
+    "publicUrl": "https://your-machine.your-tailnet.ts.net:31415"
+  }
+  ```
+
+  Then send the bot `/pair <code>` with the code shown under "Assistant on Telegram" in the dashboard settings. Until it is paired the bot ignores everyone, and afterwards it answers only you. `publicUrl` is optional: it lets notifications on Telegram link back to the session.
+
+Only one server may own an assistant folder: a second server pointed at the same folder refuses to start its assistant and says why in its log.
+
+#### 5. Add Shipmates (Optional)
+
+Install the [shipmates](https://github.com/wighawag/shipmates) extension:
+
+```bash
+pi install npm:@shipmates/pi
+```
+
+wherever notices it on its own (nothing to configure) and shows presence, the "🙋 Needs you" inbox and spawned sessions. Set `"shipmates": {"enabled": false}` in `config.json` to turn that off.
+
+#### 6. Mirror a Terminal Session (Optional)
+
+You do not need anything in a terminal to use Wherever: the server runs agent sessions itself. If you also work in the [pi](https://pi.dev) CLI and want those terminal sessions mirrored to the dashboard, add the bridge extension (`wherever install` from step 3 already does this for you):
+
+```bash
+pi install npm:@wherever-dev/pi
+```
+
+Then run `pi` as normal in any project folder. It connects to the server and the session appears in the dashboard, live in both directions.
+
+> **While a terminal `pi` is attached, it owns the agent loop.** Quitting it (`Ctrl+C`, `/quit`, closing the window) interrupts the running turn, even if you were driving it from the dashboard. Once it is gone, the server takes the session over headless.
+
 ---
 
 ### Method B: Local Development Setup (From Source) 🛠️
@@ -302,9 +309,9 @@ Build the frontend, copy it to the server's public asset path, and compile both 
 pnpm build
 ```
 
-#### 3. Install the Extension via Symlink
+#### 3. Link the Terminal Bridge Extension (Optional)
 
-Symlink your local compiled development extension directly into Pi's extensions directory:
+Only needed to mirror terminal `pi` sessions: symlink your local build of the bridge extension into pi's extensions directory:
 
 ```bash
 mkdir -p ~/.pi/agent/extensions
@@ -319,9 +326,9 @@ pnpm run server:dev
 
 Open `https://localhost:31415` in your browser.
 
-#### 5. Run Pi (Optional — Only for Terminal Bridge Mode)
+#### 5. Run a Terminal Session (Optional)
 
-If you want to sync your terminal CLI with the standalone server, run `pi` in any directory. It will load the symlinked local extension and connect automatically!
+Run `pi` in any directory: it loads the symlinked local extension and connects to your dev server.
 
 _(Optional) **Frontend HMR:** If you are actively working on Svelte dashboard components and want Hot Module Replacement, run the Vite dev server:_
 
@@ -331,11 +338,33 @@ pnpm --filter ./web dev
 
 ---
 
+## How It Works
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                       Wherever Server                        │
+│                                                              │
+│  ┌──────────────┐        WebSocket         ┌──────────────┐  │
+│  │ Web Dashboard│◄────────────────────────►│   Terminal   │  │
+│  │  (Svelte 5)  │◄────────────┐            │    bridge    │  │
+│  └──────────────┘             │            └──────────────┘  │
+│                               ▼                              │
+│  ┌──────────┐        ┌──────────────────┐       ┌─────────┐  │
+│  │ Telegram │◄──────►│  Agent sessions  │◄─────►│Shipmates│  │
+│  │ Web Push │        │  + the assistant │       └─────────┘  │
+│  └──────────┘        └──────────────────┘                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+The server runs agent sessions in-process on the [pi](https://pi.dev) SDK and serves the dashboard. Sessions are ordinary pi sessions on disk (`~/.pi/agent/sessions`), so a session started in the dashboard can be continued in a terminal and the other way round.
+
 ## Directory Structure
 
-- **`server/`** — Node.js Standalone HTTP/WebSocket Server managing independent in-process SDK sessions.
-- **`web/`** — Modern Svelte 5 Web Dashboard for remote chatting, folder browsing, and model configuration.
-- **`extension/`** — CLI Bridge Extension that runs inside the local `pi` terminal process and acts as a sync client.
+- **`server/`**: the standalone HTTP/WebSocket server (`wherever-dev`), which runs the agent sessions, the assistant, its scheduler and channels.
+- **`web/`**: the Svelte 5 web dashboard, served by the server.
+- **`client/`**: `@wherever-dev/client`, the protocol client the dashboard is built on.
+- **`extension/`**: `@wherever-dev/pi`, the terminal bridge extension that mirrors a terminal `pi` session to the server.
+- **`site/`**: the [wherever.dev](https://wherever.dev) website.
 
 ---
 
@@ -399,9 +428,9 @@ A blank `#token=` is ignored rather than stored, so a malformed link cannot log 
 
 **Percent-encode the token in the link.** The fragment is read as form-encoded key/value pairs (`#token=X&foo=1` works, and so do other fragment keys), which means a literal `+` in the token would arrive as a space: write it `%2B`. The same is true of the `?token=` form, which the server already decodes the same way. The capitalisation of the key itself does not matter (`#TOKEN=` is accepted), so a retyped link still works rather than being mistaken for something else.
 
-### CLI Bridge Settings
+### Terminal Bridge Settings
 
-Whenever you run `pi`, you can override bridge defaults:
+Only relevant when you [mirror a terminal session](#6-mirror-a-terminal-session-optional). Whenever you run `pi`, you can override the bridge defaults (or set them under `remote` in `config.json`):
 
 - `--remote-host` (Default: `127.0.0.1`)
 - `--remote-port` (Default: `31415`)
@@ -416,7 +445,7 @@ Whenever you run `pi`, you can override bridge defaults:
 
 ## Configuration File (`~/.wherever/config.json`)
 
-Wherever supports user configuration to customize defaults for session creation, enable automatic Git remote repository setup, and visually identify each server instance.
+Wherever supports user configuration to turn on the assistant and its channels, customize defaults for session creation, enable automatic Git remote repository setup, and visually identify each server instance.
 
 The configuration file is located at `~/.wherever/config.json` on the server machine (or in `WHEREVER_CONFIG_DIR`, see [Directories](#directories-config-read-vs-state-written)).
 
@@ -435,7 +464,7 @@ At start the server logs which file it reads and whether it was found, e.g. `[wh
   When creating a session in a non-existent folder, this defines if the **"Initialize Git repository"** option is checked by default in the web UI.
 
 - **`appearance`** (object, optional):
-  Per-instance visual identity for the web dashboard, meant to distinguish machines that mirror the same pi sessions (e.g. folders cloned between machines over git): give each machine's server its own `label` and `accent` so you can tell at a glance which instance you are driving.
+  Per-instance visual identity for the web dashboard, meant to distinguish machines that mirror the same sessions (e.g. folders cloned between machines over git): give each machine's server its own `label` and `accent` so you can tell at a glance which instance you are driving.
   - `label` (string or `false`, optional, Default: the machine hostname): Instance name shown next to the logo in the sidebar and appended to the browser tab title. The hostname default already differentiates machines with zero configuration. Set to `""` or `false` to show no label at all (the exact pre-`appearance` look).
   - `accent` (string, optional): Accent color overriding the dashboard's accent tokens (any CSS color, e.g. `"#8b5cf6"`). Re-tints links, buttons, gradients, active-session highlights, and the mobile/PWA `theme-color` chrome.
   - `colors` (object, optional): Advanced, applied on top of `accent`: override individual brand tokens with any CSS color. Keys: `brandDark`, `brandSurface`, `brandSurface2`, `brandSurface3`, `brandBorder`, `brandText`, `brandTextMuted`, `brandCyan`, `brandBlue`, `brandPurple` (see `web/src/app.css` for the compiled-in defaults).
@@ -480,6 +509,23 @@ At start the server logs which file it reads and whether it was found, e.g. `[wh
   - `maxSessions` (number, Default: unset = no limit): Keep at most the N most recently modified session files in the list, with the same before-any-read behaviour as `maxAgeDays`. Use either or both.
 
   On a sessions directory that has been accumulating for months (the author's is 2.0 GB / ~3,800 transcripts), these two are the difference between every cold listing pass touching the whole archive and it touching only what you still use. The server prints a one-line hint at startup when it lists more than 1,000 sessions with neither limit set.
+
+- **`assistantFolder`** (string, Default: unset = the assistant is off):
+  The home and memory of the [assistant](#-the-assistant-an-agent-that-stays-on). Tilde is expanded. On start the server creates the folder, takes a lock on it (`.assistant.lock`: a second server pointed at the same folder logs why and leaves its assistant off) and seeds `AGENTS.md`, `jobs/AGENTS.md` and `.gitignore` once, never overwriting them. Its jobs are in `<assistantFolder>/schedule.json`; isolated jobs run in `<assistantFolder>/jobs/`. Read at start: restart the server after changing it.
+
+- **`assistantScheduleGraceMinutes`** (number, Default: `60`):
+  When the server was down at a job's run time, the latest missed run still fires once on start if it is at most this old; older runs are skipped.
+
+- **`assistantWebPush`** (object, optional):
+  The assistant's push notification channel (only while the assistant is on). A device still has to turn notifications on in the dashboard settings.
+  - `enabled` (boolean, Default: `true`)
+  - `subject` (string, optional): the VAPID contact, `mailto:...` or an https URL. Defaults to the origin of `publicUrl`, else `https://wherever.dev`.
+
+- **`publicUrl`** (string, optional):
+  The URL you reach this server at (e.g. behind a reverse proxy or on your tailnet), used for the session links the assistant's channels send out.
+
+- **`shipmates`** (object, optional):
+  - `enabled` (boolean, Default: `true`): show [shipmates](#-shipmates-sessions-that-work-together) presence, inbox and spawned sessions. Even when enabled nothing happens until shipmates' own database exists (created by `@shipmates/pi` or the shipmates CLI); wherever never creates it.
 
 - **`assistantTelegram`** (object, optional):
   The assistant's Telegram channel (only while `assistantFolder` is set and this server holds the assistant folder lock). See `CONTEXT.md` for the full behaviour.
@@ -632,8 +678,8 @@ To allow access from devices on your local home network (Wi-Fi):
    ```bash
    wherever start --host 0.0.0.0 --token your-secure-token
    ```
-2. Find your Pi's local network IP (e.g., `192.168.1.50`) and open `https://192.168.1.50:31415` in your client's browser.
-3. If running the CLI `pi` command from another computer on the same local network, point it to the Pi:
+2. Find the server machine's local network IP (e.g., `192.168.1.50`) and open `https://192.168.1.50:31415` in your client's browser.
+3. If you [mirror a terminal session](#6-mirror-a-terminal-session-optional) from another computer on the same local network, point its `pi` at the server:
    ```bash
    pi --remote-host 192.168.1.50 --remote-token your-secure-token
    ```
@@ -643,7 +689,7 @@ To allow access from devices on your local home network (Wi-Fi):
 For an ad-hoc secure connection without exposing any port:
 
 ```bash
-ssh -L 31415:localhost:31415 user@your-pi-ip
+ssh -L 31415:localhost:31415 user@your-server-ip
 ```
 
 Once connected, you can open `https://localhost:31415` locally on your client computer.
