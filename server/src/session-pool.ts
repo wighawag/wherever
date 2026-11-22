@@ -1181,6 +1181,12 @@ export class SessionPool {
   private modelRuntime?: ModelRuntime;
   private modelRegistry?: ModelRegistry;
   private modelsReady: Promise<ModelRegistry>;
+  /**
+   * models.json as last loaded (see `modelsFileSignature`), and the reload in
+   * flight, if any, so concurrent callers share one.
+   */
+  private modelsSignature?: string;
+  private modelsReload?: Promise<void>;
   private agentDir: string;
   private idleTimeoutMs: number;
 
@@ -1305,15 +1311,19 @@ export class SessionPool {
     this.extraExtensionFactories = options.extraExtensionFactories ?? [];
     this.extensionShutdownTimeoutMs = options.extensionShutdownTimeoutMs ?? EXTENSION_SHUTDOWN_TIMEOUT_MS;
     this.extensionBindWarnAfterMs = options.extensionBindWarnAfterMs ?? EXTENSION_BIND_WARN_AFTER_MS;
-    this.agentDir = getAgentDir();
-    this.modelsReady = ModelRuntime.create({
-      authPath: path.join(this.agentDir, 'auth.json'),
-      modelsPath: path.join(this.agentDir, 'models.json'),
-    }).then((runtime) => {
+    const agentDir = getAgentDir();
+    this.agentDir = agentDir;
+    this.modelsReady = (async () => {
+      // Taken BEFORE the load, so an edit landing during it reads as a change.
+      this.modelsSignature = await this.modelsFileSignature();
+      const runtime = await ModelRuntime.create({
+        authPath: path.join(agentDir, 'auth.json'),
+        modelsPath: this.modelsPath(),
+      });
       this.modelRuntime = runtime;
       this.modelRegistry = new ModelRegistry(runtime);
       return this.modelRegistry;
-    });
+    })();
     // Observed here so a failure is never an unhandled rejection; every caller
     // of ensureModels() still sees it.
     this.modelsReady.catch((err) => {
@@ -1322,9 +1332,77 @@ export class SessionPool {
     this.idleTimeoutMs = idleTimeoutMs;
   }
 
-  /** The shared model registry, once pi's model runtime has loaded. */
-  private ensureModels(): Promise<ModelRegistry> {
-    return this.modelsReady;
+  /**
+   * The shared model registry, once pi's model runtime has loaded, with
+   * models.json re-read first if it changed since.
+   *
+   * pi's ModelRuntime reads models.json at creation and again only in
+   * `refresh()`, which nothing here called, so a model added to the file
+   * reached a terminal pi (whose `/model` reloads it) but not the web picker
+   * until the server restarted, which ends every in-process session. Every
+   * model path (the picker, the default lookup, a session's model) comes
+   * through here, so checking here covers them all; the check is one stat.
+   */
+  private async ensureModels(): Promise<ModelRegistry> {
+    const registry = await this.modelsReady;
+    await this.reloadModelsIfChanged();
+    return registry;
+  }
+
+  private modelsPath(): string {
+    return path.join(this.agentDir, 'models.json');
+  }
+
+  /**
+   * What identifies the file's current content without reading it. `stat`
+   * follows a symlink, so pointing the link at another file (a different
+   * inode) is a change too; size and mtime catch an edit in place.
+   */
+  private async modelsFileSignature(): Promise<string> {
+    try {
+      const s = await fs.promises.stat(this.modelsPath());
+      return `${s.dev}:${s.ino}:${s.size}:${s.mtimeMs}`;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      return code === 'ENOENT' ? 'missing' : `error:${code}`;
+    }
+  }
+
+  private reloadModelsIfChanged(): Promise<void> {
+    this.modelsReload ??= this.reloadModels().finally(() => {
+      this.modelsReload = undefined;
+    });
+    return this.modelsReload;
+  }
+
+  private async reloadModels(): Promise<void> {
+    const signature = await this.modelsFileSignature();
+    if (signature === this.modelsSignature || !this.modelRuntime) return;
+    try {
+      // A BROKEN EDIT MUST NOT EMPTY THE PICKER: pi's refresh() of a file
+      // that fails to parse or validate keeps none of its providers. So the
+      // file is probed first, with pi's own loader (comments allowed, the same
+      // schema), in a throwaway runtime that refreshes nothing; a config error
+      // keeps the models already loaded. Recorded as seen either way, so a
+      // broken file is reported once, and the next edit is tried again.
+      const probe = await ModelRuntime.create({
+        authPath: path.join(this.agentDir, 'auth.json'),
+        modelsPath: this.modelsPath(),
+        refreshOnCreate: false,
+      });
+      const error = probe.getError();
+      if (error && /models\.json/.test(error)) {
+        this.modelsSignature = signature;
+        console.error(`[wherever] models.json changed but did not load, keeping the previous models: ${error}`);
+        return;
+      }
+      await this.modelRuntime.refresh({ allowNetwork: false });
+      this.modelsSignature = signature;
+      console.log('[wherever] models.json changed: models reloaded');
+    } catch (err) {
+      this.modelsSignature = signature;
+      console.error(`[wherever] could not reload models.json: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   async initialize(): Promise<void> {
