@@ -102,7 +102,7 @@ describe('kenning inbox and presence on the web', () => {
       if (seen.includes('the human answered')) break;
       await new Promise((r) => setTimeout(r, 50));
     }
-    expect(seen).toMatch(/the human answered h_\w+ \(origin human, on web\)/);
+    expect(seen).toMatch(/the human answered h_[\w-]+ \(origin human, on web\)/);
 
     // Answering again is refused (the item is closed).
     web.send({ type: 'kenning_answer', itemId: item.id, text: 'no' });
@@ -166,4 +166,51 @@ describe('kenning inbox and presence on the web', () => {
     expect(restored).toContain(owner.sessionFile);
     expect(restored).toContain(child!.path);
   }, 120_000);
+
+  it("an answer from the web inbox wakes a session that declared it waits for the human (kenning D37)", async () => {
+    // The second manual run: a non-blocking human_ask, then session_register
+    // waiting-for-human as kenning's guidelines say; the web answer stayed
+    // pending until the human also typed into the session (kenning 0.1.0).
+    const web = await h.connect();
+    await web.waitForType('kenning_update');
+    const dir = path.join(h.workspace, 'waits-for-human');
+    fs.mkdirSync(dir, { recursive: true });
+    const s = await newSession(web, dir);
+    for (let n = -1, quietSince = Date.now(); Date.now() - quietSince < 1500; await new Promise((r) => setTimeout(r, 100))) {
+      if (h.fake.requests().length !== n) {
+        n = h.fake.requests().length;
+        quietSince = Date.now();
+      }
+    }
+    h.fake.queue({
+      kind: 'tool-calls',
+      calls: [
+        { toolName: 'human_ask', input: { question: 'Which branch should the docs go to?' } },
+        { toolName: 'session_register', input: { state: 'waiting-for-human', status: 'waiting for the branch' } },
+      ],
+    });
+    web.send({ type: 'message', sessionId: s.sessionId, message: 'ask me where the docs go' });
+    const asked = (await web.waitFor(
+      (m) =>
+        m.type === 'kenning_update' &&
+        (m as any).inbox.some((i: any) => i.question === 'Which branch should the docs go to?') &&
+        (m as any).presence.some((p: any) => p.sessionFile === s.sessionFile && p.state === 'waiting-for-human'),
+      20_000,
+    )) as unknown as Update;
+    const item = asked.inbox.find((i) => i.question === 'Which branch should the docs go to?')!;
+    expect(item.blocking).toBe(false);
+    const before = h.fake.requests().length;
+
+    web.send({ type: 'kenning_answer', itemId: item.id, text: 'main', requestId: 'r-main' });
+    expect(await web.waitFor((m) => m.type === 'kenning_answer_result' && (m as any).requestId === 'r-main')).toMatchObject({ ok: true });
+
+    // No one types into the session: the answer alone starts its next turn.
+    const deadline = Date.now() + 15_000;
+    let woke = false;
+    while (!woke && Date.now() < deadline) {
+      woke = h.fake.requests().slice(before).some((r: any) => JSON.stringify(r.messages ?? []).includes('answers inbox item'));
+      if (!woke) await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(woke).toBe(true);
+  }, 90_000);
 });

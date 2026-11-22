@@ -100,7 +100,7 @@ describe('a blocking kenning question on Telegram', () => {
     let seen = '';
     await until(() => {
       seen = JSON.stringify(h.fake.requests().map((r: any) => r.messages ?? []));
-      return /the human answered h_\w+ \(origin human, on telegram\)/.test(seen);
+      return /the human answered h_[\w-]+ \(origin human, on telegram\)/.test(seen);
     }, 20_000, 'the tool result');
   }, 120_000);
 });

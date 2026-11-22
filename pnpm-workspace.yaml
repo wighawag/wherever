@@ -20,5 +20,5 @@ allowBuilds:
   svelte-preprocess: false
 
 minimumReleaseAgeExclude:
-  - kenning-pi@0.1.0
-  - kenning@0.1.0
+  - kenning-pi@0.1.1
+  - kenning@0.1.1
