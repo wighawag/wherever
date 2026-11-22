@@ -270,6 +270,49 @@ describe('Telegram conversation: outbound', () => {
     expect(controller.received[0].text).toBe('about that earlier reply');
   });
 
+  it('a question says how to answer here and offers its options as buttons; a tap answers with the option', async () => {
+    const { api, channel, controller } = setup();
+    await until(() => api.of('getUpdates').length > 0);
+    // Polling asks for button taps too.
+    expect(api.of('getUpdates')[0].params.allowed_updates).toEqual(['message', 'callback_query']);
+    const r = await channel.notify({ title: 'Question for you', body: 'Publish 0.3.0?', source: 'release', navigate: 's', question: { options: ['yes', 'no'] } });
+    const ref = r.ok ? r.refs?.[0] : undefined;
+    const sent = api.of('sendMessage')[0].params;
+    expect(sent.text).toBe('🔔 release: Question for you\n\nPublish 0.3.0?\n\nTo answer here: tap a button below, or swipe this message to reply with your own answer.');
+    expect(sent.reply_markup).toEqual({ inline_keyboard: [[{ text: 'yes', callback_data: 'answer:0' }, { text: 'no', callback_data: 'answer:1' }]] });
+    let open = true;
+    controller.notificationReply = (x) => (x.ref === ref && open ? ((open = false), { handled: true, reply: '✅ Answered: Publish 0.3.0?' }) : { handled: false });
+
+    // Someone else's tap (a forwarded message, a group) is ignored, unanswered.
+    api.tap(999, 1, 0);
+    api.tap(USER, 1, 0);
+    await until(() => sentTexts(api).includes('✅ Answered: Publish 0.3.0?'));
+    expect(controller.replies).toEqual([{ channel: 'telegram', ref: `telegram:${USER}:1`, text: 'yes' }]);
+    expect(controller.received).toEqual([]);
+    expect(api.of('answerCallbackQuery').map((c) => c.params.text)).toEqual(['Answered: yes']);
+    // The buttons are gone, so a second tap cannot look like it did something.
+    expect(api.of('editMessageReplyMarkup').map((c) => c.params)).toEqual([{ chat_id: USER, message_id: 1, reply_markup: { inline_keyboard: [] } }]);
+  });
+
+  it('a question without options has no buttons; a tap on a closed question says so', async () => {
+    const { api, channel, controller } = setup();
+    await until(() => api.of('getUpdates').length > 0);
+    await channel.notify({ title: 'Question for you', body: 'Which docs?', source: 'docs', navigate: 's', question: { options: [] } });
+    const sent = api.of('sendMessage')[0].params;
+    expect(sent.reply_markup).toBeUndefined();
+    expect(sent.text).toMatch(/To answer here: swipe this message \(or long-press, Reply\) and write your answer\.$/);
+
+    // Long options go one per row.
+    await channel.notify({ title: 'Q', body: 'b', source: 's', navigate: 'n', question: { options: ['ship it to npm today', 'wait'] } });
+    expect(api.of('sendMessage')[1].params.reply_markup.inline_keyboard).toEqual([[{ text: 'ship it to npm today', callback_data: 'answer:0' }], [{ text: 'wait', callback_data: 'answer:1' }]]);
+    controller.notificationReply = () => ({ handled: false });
+    api.tap(USER, 2, 1);
+    await until(() => api.of('answerCallbackQuery').length === 1);
+    expect(api.of('answerCallbackQuery')[0].params.text).toBe('This question is no longer open.');
+    expect(controller.replies).toEqual([{ channel: 'telegram', ref: `telegram:${USER}:2`, text: 'wait' }]);
+    await until(() => api.of('editMessageReplyMarkup').length === 1);
+  });
+
   it('notify while unpaired is a failed delivery (nothing sent)', async () => {
     const { api, channel } = setup({}, false);
     await until(() => api.of('getUpdates').length > 0);

@@ -110,6 +110,14 @@ export interface ChannelNotification {
    * that cannot (Web Push) ignores them.
    */
   files?: ChannelFile[];
+  /**
+   * The notification asks the user something, and a reply to it answers
+   * (`onNotificationReply`, a kenning question). `options` are its fixed
+   * answers: a channel that can offers them as one-tap choices (Telegram
+   * buttons), delivered as a reply with the option's text. A channel without
+   * replies (Web Push) ignores it.
+   */
+  question?: { options: string[] };
 }
 
 /** How one attached file went out on a channel (`status` is the channel's own word: `document`, `missing`, ...). */

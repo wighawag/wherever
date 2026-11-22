@@ -77,6 +77,8 @@ export const KENNING_ARCHIVES_FILE = 'kenning-archives.json';
 /** A blocking item to push through the channels (`ChannelNotification` shape). */
 export interface KenningNotification {
   itemId: string;
+  /** The item's fixed answers (none = free text): Telegram shows them as buttons. */
+  options: string[];
   title: string;
   body: string;
   source: string;
@@ -148,9 +150,12 @@ export function presenceView(p: Presence): KenningPresenceView {
 export function kenningNotification(item: AttentionItem, presence: Presence | null): KenningNotification {
   const lines = [item.question];
   if (item.options?.length) lines.push(`Options: ${item.options.join(' / ')}`);
-  lines.push('Answer in the wherever inbox, or reply to this message on Telegram.');
+  // Every channel's wording: how to answer ON a channel (Telegram: buttons,
+  // swipe to reply) is that channel's to say, since only it knows.
+  lines.push('Answer in the wherever inbox.');
   return {
     itemId: item.id,
+    options: item.options ?? [],
     title: 'Question for you',
     body: lines.join('\n'),
     source: sessionLabel(item.session, presence),

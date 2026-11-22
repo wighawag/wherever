@@ -1503,7 +1503,7 @@ async function main(): Promise<void> {
   if (channelDispatcher) {
     const dispatcher = channelDispatcher;
     kenning.setNotifier(async (n): Promise<KenningNotifyOutcome> => {
-      const out = await dispatcher.notify({ title: n.title, body: n.body, source: n.source, navigate: n.navigate });
+      const out = await dispatcher.notify({ title: n.title, body: n.body, source: n.source, navigate: n.navigate, question: { options: n.options } });
       const refs = out.deliveries.flatMap((d) => (d.result.ok ? (d.result.refs ?? []) : []));
       return out.ok ? { delivered: true, refs } : { delivered: false, refs, error: out.error };
     });

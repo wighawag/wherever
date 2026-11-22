@@ -162,7 +162,7 @@ describe('KenningService', () => {
     first.svc.setNotifier(notifier);
     await until(() => fs.existsSync(path.join(d.stateDir, KENNING_NOTIFIED_FILE)));
     expect(pushed).toEqual([
-      { itemId: blocking.id, title: 'Question for you', body: expect.stringContaining('Approve the MIT license?'), source: 'lane', navigate: 'sid-1' },
+      { itemId: blocking.id, options: [], title: 'Question for you', body: expect.stringContaining('Approve the MIT license?'), source: 'lane', navigate: 'sid-1' },
     ]);
     // More changes do not push it again.
     k.update(file, { status: 'waiting' });
@@ -280,6 +280,6 @@ describe('KenningService', () => {
       { id: 'h_1', session: '/s/other.jsonl', question: 'Which?', options: ['a', 'b'], blocking: true, onBehalfOf: [], state: 'open', answer: null, answerChannel: null, createdAt: 0 },
       null,
     );
-    expect(n).toEqual({ itemId: 'h_1', title: 'Question for you', body: 'Which?\nOptions: a / b\nAnswer in the wherever inbox, or reply to this message on Telegram.', source: 'other', navigate: '' });
+    expect(n).toEqual({ itemId: 'h_1', options: ['a', 'b'], title: 'Question for you', body: 'Which?\nOptions: a / b\nAnswer in the wherever inbox.', source: 'other', navigate: '' });
   });
 });

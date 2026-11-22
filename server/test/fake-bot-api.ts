@@ -42,6 +42,8 @@ export class FakeBotApi {
   private nextFileId = 1;
   /** File downloads served (`/file/bot<token>/<path>`), by file path. */
   readonly downloads: string[] = [];
+  /** Inline keyboards of the messages the bot sent, by message id (cleared by editMessageReplyMarkup). */
+  private keyboards = new Map<number, any>();
 
   constructor(private readonly holdMs = 150) {}
 
@@ -56,6 +58,32 @@ export class FakeBotApi {
         chat: { id: opts.chatId ?? fromId, type: opts.chatType ?? 'private' },
         text,
         ...(opts.replyTo !== undefined ? { reply_to_message: { message_id: opts.replyTo } } : {}),
+      },
+    });
+    for (const w of this.waiters.splice(0)) w();
+    return update_id;
+  }
+
+  /** Ids of the bot's messages that still carry an inline keyboard, oldest first. */
+  withKeyboard(): number[] {
+    return [...this.keyboards.keys()];
+  }
+
+  /**
+   * Queue a tap on button `index` of the bot's message `messageId`, as Telegram
+   * sends it: a `callback_query` carrying that message and its CURRENT keyboard.
+   */
+  tap(fromId: number, messageId: number, index: number, opts: { chatId?: number; chatType?: string } = {}): number {
+    const update_id = this.nextId++;
+    const keyboard = this.keyboards.get(messageId);
+    const button = keyboard?.inline_keyboard?.flat()[index];
+    this.pending.push({
+      update_id,
+      callback_query: {
+        id: `cq-${update_id}`,
+        from: { id: fromId },
+        message: { message_id: messageId, chat: { id: opts.chatId ?? fromId, type: opts.chatType ?? 'private' }, ...(keyboard ? { reply_markup: keyboard } : {}) },
+        data: button?.callback_data ?? `answer:${index}`,
       },
     });
     for (const w of this.waiters.splice(0)) w();
@@ -201,7 +229,9 @@ export class FakeBotApi {
         return { status: 400, body: { ok: false, error_code: 400, description: 'Bad Request: message text is empty' } };
       }
       this.drafts.set(String(params.chat_id), null);
-      return ok({ message_id: this.nextSentId++, chat: { id: params.chat_id }, text: params.text });
+      const message_id = this.nextSentId++;
+      if (params.reply_markup) this.keyboards.set(message_id, params.reply_markup);
+      return ok({ message_id, chat: { id: params.chat_id }, text: params.text });
     }
     if (method === 'sendMessageDraft') {
       this.drafts.set(String(params.chat_id), { draftId: Number(params.draft_id), text: typeof params.text === 'string' ? params.text : '' });
@@ -210,6 +240,13 @@ export class FakeBotApi {
     if (method === 'sendPhoto' || method === 'sendDocument') this.drafts.set(String(params.chat_id), null);
     if (method === 'editMessageText') return ok({ message_id: params.message_id, chat: { id: params.chat_id }, text: params.text });
     if (method === 'sendMessageDraft' || method === 'setMessageReaction') return ok(true);
+    if (method === 'answerCallbackQuery') return ok(true);
+    if (method === 'editMessageReplyMarkup') {
+      const kb = params.reply_markup;
+      if (kb?.inline_keyboard?.length) this.keyboards.set(Number(params.message_id), kb);
+      else this.keyboards.delete(Number(params.message_id));
+      return ok(true);
+    }
     if (method === 'sendPhoto' || method === 'sendDocument') return ok({ message_id: this.nextSentId++, chat: { id: Number(params.chat_id) } });
     if (method === 'getFile') {
       const f = this.files.get(String(params.file_id));
