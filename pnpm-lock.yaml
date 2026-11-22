@@ -80,8 +80,8 @@ importers:
         specifier: ^7.7.0
         version: 7.8.0
       shipmates:
-        specifier: ^0.2.0
-        version: 0.2.0
+        specifier: ^0.3.0
+        version: 0.3.0
       typebox:
         specifier: ^1.1.38
         version: 1.1.38
@@ -90,8 +90,8 @@ importers:
         version: 8.20.1
     devDependencies:
       '@shipmates/pi':
-        specifier: ^0.3.0
-        version: 0.3.0(@earendil-works/pi-coding-agent@1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/signature-v4@5.7.4)(supports-color@5.5.0)(ws@8.20.1)(zod@4.4.3))(typebox@1.1.38)
+        specifier: ^0.4.0
+        version: 0.4.0(@earendil-works/pi-coding-agent@1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/signature-v4@5.7.4)(supports-color@5.5.0)(ws@8.20.1)(zod@4.4.3))(typebox@1.1.38)
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.19
@@ -1400,8 +1400,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@shipmates/pi@0.3.0':
-    resolution: {integrity: sha512-gJi2HGnEpW4Nu6O/jHx7YiTinRWz8FJ2hyb8UXklJEd9nw+LLt4Lxos0cTIE8KTpFheg/0jeRkxjLOW71moUiQ==}
+  '@shipmates/pi@0.4.0':
+    resolution: {integrity: sha512-MB1uuJ9lhNifqwgjtl6oClHLtZVTHi3cLCbENWlAHSxkqZlVPFSivTkO0RfrqE1tmcVubR8cFO9sqZi5NTXT3w==}
     engines: {node: '>=22.5.0'}
     peerDependencies:
       '@earendil-works/pi-coding-agent': '*'
@@ -3640,8 +3640,8 @@ packages:
     resolution: {integrity: sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==}
     engines: {node: '>=8'}
 
-  shipmates@0.2.0:
-    resolution: {integrity: sha512-Uzd6QB9FfQTY+wdKywxi6ilbn3eeFO93u+iBMsivrYeSxOx6S6sVjEG41jbiowM7xpY+mrTsN/xbQACXwJ5ncA==}
+  shipmates@0.3.0:
+    resolution: {integrity: sha512-iudo8ylklSq/joPiqFyctcGaTbY10eLQxJBKLzQPmogrVb/uK/UQ1p9oOq6NrHMWS5zx7OWDBTYU+MAkT0BJPg==}
     engines: {node: '>=22.5.0'}
     hasBin: true
 
@@ -5196,10 +5196,10 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.60.4':
     optional: true
 
-  '@shipmates/pi@0.3.0(@earendil-works/pi-coding-agent@1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/signature-v4@5.7.4)(supports-color@5.5.0)(ws@8.20.1)(zod@4.4.3))(typebox@1.1.38)':
+  '@shipmates/pi@0.4.0(@earendil-works/pi-coding-agent@1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/signature-v4@5.7.4)(supports-color@5.5.0)(ws@8.20.1)(zod@4.4.3))(typebox@1.1.38)':
     dependencies:
       '@earendil-works/pi-coding-agent': 1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/signature-v4@5.7.4)(supports-color@5.5.0)(ws@8.20.1)(zod@4.4.3)
-      shipmates: 0.2.0
+      shipmates: 0.3.0
       typebox: 1.1.38
 
   '@silvia-odwyer/photon-node@0.3.4': {}
@@ -7446,7 +7446,7 @@ snapshots:
 
   shebang-regex@3.0.0: {}
 
-  shipmates@0.2.0: {}
+  shipmates@0.3.0: {}
 
   side-channel-list@1.0.1:
     dependencies:

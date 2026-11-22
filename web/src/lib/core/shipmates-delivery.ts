@@ -40,6 +40,12 @@ export interface ShipmatesCard {
 	origins: string[];
 	/** The owner whose `spawn` message is this session's first prompt, else null. */
 	spawnFrom: string | null;
+	/**
+	 * Every message is a `notice`: shipmates telling the session something
+	 * happened (its role was taken over; the human's reply in it closed its
+	 * inbox items, D39), not another session talking to it.
+	 */
+	notice: boolean;
 }
 
 function headerKind(line: string): string | null {
@@ -107,6 +113,7 @@ export function describeShipmatesDelivery(
 		senders: distinct(details.from),
 		origins: distinct(details.origins),
 		spawnFrom: spawn ? spawn.from || null : null,
+		notice: items.length > 0 && items.every((it) => it.kind === 'notice'),
 	};
 }
 

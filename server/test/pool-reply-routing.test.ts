@@ -171,6 +171,28 @@ describe('pool reply routing (server sessions)', () => {
     expect(seen.filter((x) => x.role === 'assistant').map((x) => x.dest)).toEqual(['telegram']);
   }, 60_000);
 
+  it('a steer an input handler consumes mid-run (`handled`, what a waiting human_ask does, shipmates D39) is done: no ticket left, not busy, the turn keeps its destination', async () => {
+    fake.setNext({ kind: 'slow-reply', text: 'a slowly streamed reply', charDelayMs: 25 });
+    const pool = newPool();
+    const s = await newServerSession(pool);
+    const { seen, settled } = record(pool, s.sessionFile);
+
+    const first = pool.sendUserMessage(s.sessionFile, 'q1', undefined, false, 'telegram');
+    await until(() => seen.some((x) => x.role === 'user'));
+    expect(s.busy).toBe(1);
+    const before = pool.getRoutingSnapshot(s.sessionFile);
+    // Resolves at once (pi returns right after the input handlers), and counts as delivered.
+    await pool.sendUserMessage(s.sessionFile, 'swallow-me', 'steer', false, 'schedule:j3');
+    expect(s.busy).toBe(1);
+    expect(pool.getRoutingSnapshot(s.sessionFile)).toEqual(before);
+    await first;
+    await until(() => settled() > 0);
+    expect(s.busy).toBe(0);
+    expect(users(seen)).toEqual([['q1', 'telegram']]);
+    expect(seen.filter((x) => x.role === 'assistant').map((x) => x.dest)).toEqual(['telegram']);
+    expect(pool.getRoutingSnapshot(s.sessionFile)).toEqual({ promptOrSteer: [], followUp: [] });
+  }, 60_000);
+
   it('a send that throws, or to a non-resident session, records nothing', async () => {
     const pool = newPool();
     const s = await newServerSession(pool);

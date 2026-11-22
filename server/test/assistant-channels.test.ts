@@ -185,6 +185,34 @@ describe('notify', () => {
     expect((r as { error: string }).error).toBe('the notification reached no device (webpush: no device; telegram: network down)');
   });
 
+  it('closeNotification hands each ref to the channel it names; false while one cannot (not started, failed, threw)', async () => {
+    const calls: Array<[string, string[], string]> = [];
+    const closing = (name: string, result: boolean | 'throw', failStart = false) => {
+      const c = new FakeChannel(name, { failStart });
+      (c as AssistantChannel).closeNotification = async (refs, note) => {
+        calls.push([name, refs, note]);
+        if (result === 'throw') throw new Error('network down');
+        return result;
+      };
+      return c;
+    };
+    const ok = new ChannelDispatcher({
+      controller: { send: async () => {} },
+      pool: new FakeEvents(),
+      channels: [closing('telegram', true), new FakeChannel('webpush')],
+    });
+    await ok.start();
+    expect(await ok.closeNotification(['telegram:42:1', 'webpush:x', 'telegram:42:2', 'other:1'], '✅ done')).toBe(true);
+    expect(calls).toEqual([['telegram', ['telegram:42:1', 'telegram:42:2'], '✅ done']]);
+    expect(await ok.closeNotification([], 'x')).toBe(true);
+
+    for (const [result, failStart] of [[false, false], ['throw', false], [true, true]] as const) {
+      const d = new ChannelDispatcher({ controller: { send: async () => {} }, pool: new FakeEvents(), channels: [closing('telegram', result, failStart)] });
+      await d.start();
+      expect(await d.closeNotification(['telegram:42:1'], 'x')).toBe(false);
+    }
+  });
+
   it('refuses two channels with one name', () => {
     expect(() => new ChannelDispatcher({ controller: { send: async () => {} }, pool: new FakeEvents(), channels: [new FakeChannel('x'), new FakeChannel('x')] })).toThrow();
   });

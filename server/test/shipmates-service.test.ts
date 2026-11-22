@@ -143,13 +143,13 @@ describe('ShipmatesService', () => {
     expect(svc.answer(item.id, 'again', 'web')).toMatchObject({ ok: false });
   });
 
-  it('pushes each BLOCKING item once, across restarts, and a reply to its message answers it', async () => {
+  it('pushes EVERY open item once, across restarts, and a reply to its message answers it', async () => {
     const d = dirs();
     const k = db(d);
     const file = SESSION(d.root);
     k.register({ sessionFile: file, sessionId: 'sid-1', cwd: '/home/u/lane' });
     const blocking = k.humanAsk({ from: file, question: 'Approve the MIT license?', blocking: true });
-    k.humanAsk({ from: file, question: 'Not urgent: which name do you prefer?' });
+    const later = k.humanAsk({ from: file, question: 'Not urgent: which name do you prefer?' });
 
     const pushed: ShipmatesNotification[] = [];
     const notifier = async (n: ShipmatesNotification) => {
@@ -160,14 +160,27 @@ describe('ShipmatesService', () => {
     first.svc.start();
     await first.svc.ready();
     first.svc.setNotifier(notifier);
-    await until(() => fs.existsSync(path.join(d.stateDir, SHIPMATES_NOTIFIED_FILE)));
+    const recorded = () => {
+      try {
+        return Object.keys(JSON.parse(fs.readFileSync(path.join(d.stateDir, SHIPMATES_NOTIFIED_FILE), 'utf8')).items).length;
+      } catch {
+        return 0;
+      }
+    };
+    await until(() => recorded() === 2);
+    // Blocking first (shipmates' inbox order); the non-blocking one too (shipmates D39).
     expect(pushed).toEqual([
       { itemId: blocking.id, options: [], title: 'Question for you', body: expect.stringContaining('Approve the MIT license?'), source: 'lane', navigate: 'sid-1' },
+      { itemId: later.id, options: [], title: 'Question for you', body: expect.stringContaining('which name do you prefer?'), source: 'lane', navigate: 'sid-1' },
     ]);
-    // More changes do not push it again.
+    expect(pushed[0].body).toContain('This blocks lane until you answer.');
+    expect(pushed[0].body).not.toContain('when you can');
+    expect(pushed[1].body).toContain('answer when you can');
+    expect(pushed[1].body).not.toContain('blocks');
+    // More changes do not push them again.
     k.update(file, { status: 'waiting' });
     await new Promise((r) => setTimeout(r, 100));
-    expect(pushed).toHaveLength(1);
+    expect(pushed).toHaveLength(2);
     first.svc.stop();
 
     // A restart remembers it (the record is in wherever's state dir).
@@ -176,12 +189,229 @@ describe('ShipmatesService', () => {
     await second.svc.ready();
     second.svc.setNotifier(notifier);
     await new Promise((r) => setTimeout(r, 100));
-    expect(pushed).toHaveLength(1);
+    expect(pushed).toHaveLength(2);
 
     expect(second.svc.answerFromReply('telegram:42:999', 'yes', 'telegram')).toEqual({ handled: false });
-    expect(second.svc.answerFromReply('telegram:42:101', 'yes, MIT', 'telegram')).toEqual({ handled: true, reply: '✅ Answered: Approve the MIT license?' });
+    expect(second.svc.answerFromReply('telegram:42:101', 'yes, MIT', 'telegram')).toEqual({ handled: true, reply: '✅ Answered: Approve the MIT license?', answered: true });
     expect(k.item(blocking.id)).toMatchObject({ state: 'answered', answer: 'yes, MIT', answerChannel: 'telegram' });
-    expect(second.svc.answerFromReply('telegram:42:101', 'no', 'telegram')).toEqual({ handled: true, reply: 'That question was already answered (or withdrawn).' });
+    expect(second.svc.answerFromReply('telegram:42:101', 'no', 'telegram')).toEqual({ handled: true, reply: 'Already answered in Telegram.', answered: false });
+    expect(k.item(blocking.id)).toMatchObject({ answer: 'yes, MIT' });
+  });
+
+  it('a blocking item names the session it blocks by its role; a non-blocking one says "when you can"', async () => {
+    const d = dirs();
+    const k = db(d);
+    const file = SESSION(d.root);
+    k.register({ sessionFile: file, cwd: '/home/u/lane' });
+    k.claimRole(file, 'tree/push');
+    const blocking = k.humanAsk({ from: file, question: 'Force-push?', options: ['yes', 'no'], blocking: true });
+    const later = k.humanAsk({ from: file, question: 'Rename later?' });
+    const pushed: ShipmatesNotification[] = [];
+    const { svc } = service(d);
+    svc.start();
+    await svc.ready();
+    svc.setNotifier(async (n) => (pushed.push(n), { delivered: true, refs: [] }));
+    await until(() => pushed.length === 2);
+    const byId = new Map(pushed.map((n) => [n.itemId, n]));
+    expect(byId.get(blocking.id)!.body).toBe('Force-push?\nOptions: yes / no\nThis blocks tree/push until you answer.\nAnswer in the wherever inbox.');
+    expect(byId.get(blocking.id)!.source).toBe('tree/push');
+    expect(byId.get(later.id)!.body).toBe('Rename later?\nNo session is waiting on it: answer when you can.\nAnswer in the wherever inbox.');
+  });
+
+  it('an item closed through another channel gets its pushed messages marked, once, across restarts', async () => {
+    const d = dirs();
+    const k = db(d);
+    const file = SESSION(d.root);
+    k.register({ sessionFile: file, cwd: '/home/u/lane' });
+    const inSession = k.humanAsk({ from: file, question: 'Ship it?', blocking: true });
+    const onWeb = k.humanAsk({ from: file, question: 'Which tag?' });
+    const withdrawn = k.humanAsk({ from: file, question: 'Still needed?' });
+    const onTelegram = k.humanAsk({ from: file, question: 'Pinned?' });
+    let n = 0;
+    const refsOf = new Map<string, string[]>();
+    const notifier = async (x: ShipmatesNotification) => {
+      const refs = [`telegram:42:${++n}`];
+      refsOf.set(x.itemId, refs);
+      return { delivered: true, refs };
+    };
+    const closed: Array<{ refs: string[]; note: string }> = [];
+    let closerOk = true;
+    const closer = async (refs: string[], note: string) => {
+      closed.push({ refs, note });
+      return closerOk;
+    };
+    const first = service(d, { notifyRetryMs: 50 });
+    first.svc.start();
+    await first.svc.ready();
+    first.svc.setNotifier(notifier);
+    first.svc.setCloser(closer);
+    await until(() => refsOf.size === 4);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(closed).toEqual([]);
+
+    // The human replied in the asking session (@shipmates/pi: channel `session`).
+    k.answerOpenItemsOf(file, 'yes, ship', { channel: 'session', deliver: false, except: [onWeb.id, withdrawn.id, onTelegram.id] });
+    await until(() => closed.length === 1);
+    expect(closed[0]).toEqual({ refs: refsOf.get(inSession.id), note: '✅ Answered in the session: yes, ship' });
+
+    // A failed mark is tried again; then it holds.
+    closerOk = false;
+    expect(first.svc.answer(onWeb.id, 'v2', 'web')).toEqual({ ok: true });
+    await until(() => closed.length === 1 + 1);
+    closerOk = true;
+    await new Promise((r) => setTimeout(r, 100)); // past the retry throttle
+    k.update(file, { status: 'poke' });
+    await until(() => closed.length === 3);
+    expect(closed.slice(1).map((c) => c.note)).toEqual(['✅ Answered in the wherever inbox: v2', '✅ Answered in the wherever inbox: v2']);
+
+    k.withdrawItem(file, withdrawn.id);
+    await until(() => closed.length === 4);
+    expect(closed[3]).toEqual({ refs: refsOf.get(withdrawn.id), note: '↩️ Withdrawn: the session no longer needs an answer.' });
+
+    // Answered ON Telegram: that channel already said so, nothing to mark.
+    first.svc.answerFromReply(refsOf.get(onTelegram.id)![0], 'no', 'telegram');
+    k.update(file, { status: 'poke again' });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(closed).toHaveLength(4);
+    first.svc.stop();
+
+    // A restart marks nothing again.
+    const second = service(d);
+    second.svc.start();
+    await second.svc.ready();
+    second.svc.setNotifier(notifier);
+    second.svc.setCloser(closer);
+    k.update(file, { status: 'after restart' });
+    await new Promise((r) => setTimeout(r, 150));
+    expect(closed).toHaveLength(4);
+
+    // A Telegram reply to a closed item: "already answered", and nothing changes.
+    const before = k.item(inSession.id);
+    expect(second.svc.answerFromReply(refsOf.get(inSession.id)![0], 'no!', 'telegram')).toEqual({ handled: true, reply: 'Already answered in the session.', answered: false });
+    expect(second.svc.answerFromReply(refsOf.get(withdrawn.id)![0], 'no!', 'telegram')).toEqual({ handled: true, reply: 'This question was withdrawn.', answered: false });
+    expect(k.item(inSession.id)).toEqual(before);
+    expect(k.pendingFor(file).filter((m) => m.text === 'no!')).toEqual([]);
+  });
+
+  it('a close still waiting for a retry survives a restart (the cursor never passes it)', async () => {
+    const d = dirs();
+    const k = db(d);
+    const file = SESSION(d.root);
+    k.register({ sessionFile: file, cwd: '/home/u/lane' });
+    const a = k.humanAsk({ from: file, question: 'A?' });
+    const b = k.humanAsk({ from: file, question: 'B?' });
+    let n = 0;
+    const notifier = async () => ({ delivered: true, refs: [`telegram:42:${++n}`] });
+    const first = service(d, { notifyRetryMs: 60_000 });
+    first.svc.start();
+    await first.svc.ready();
+    first.svc.setNotifier(notifier);
+    let fails = 0;
+    first.svc.setCloser(async () => (fails++, false)); // Telegram is down
+    await until(() => n === 2);
+    k.answerOpenItemsOf(file, 'done', { channel: 'session', deliver: false, except: [b.id] });
+    await until(() => fails === 1);
+    // A later write (a new item pushed and recorded) persists the cursor: it must not pass `a`.
+    await new Promise((r) => setTimeout(r, 6000)); // past the 5 s overlap
+    k.humanAsk({ from: file, question: 'C?' });
+    await until(() => n === 3);
+    await new Promise((r) => setTimeout(r, 50));
+    first.svc.stop();
+
+    const notes: string[] = [];
+    const second = service(d);
+    second.svc.start();
+    await second.svc.ready();
+    second.svc.setNotifier(notifier);
+    second.svc.setCloser(async (_refs, note) => (notes.push(note), true));
+    await until(() => notes.length === 1);
+    expect(notes).toEqual(['✅ Answered in the session: done']);
+    expect(k.item(a.id)?.state).toBe('answered');
+  }, 20_000);
+
+  it('a record of an item still open is never pruned (it would be pushed again)', async () => {
+    const d = dirs();
+    const k = db(d);
+    const file = SESSION(d.root);
+    k.register({ sessionFile: file, cwd: '/home/u/lane' });
+    k.humanAsk({ from: file, question: 'Can wait for weeks?' });
+    const done = k.humanAsk({ from: file, question: 'Done long ago?' });
+    let pushes = 0;
+    const notifier = async () => ({ delivered: true, refs: [`telegram:42:${++pushes}`] });
+    const first = service(d);
+    first.svc.start();
+    await first.svc.ready();
+    first.svc.setNotifier(notifier);
+    await until(() => pushes === 2);
+    k.answerItem(done.id, 'yes', { channel: 'web' });
+    first.svc.stop();
+
+    // 31 days later (wherever's clock): a write prunes the finished item's record only.
+    const later = service(d, { now: () => Date.now() + 31 * 86_400_000 });
+    later.svc.start();
+    await later.svc.ready();
+    later.svc.setNotifier(notifier);
+    later.svc.setCloser(async () => true);
+    k.humanAsk({ from: file, question: 'A new one' });
+    await until(() => pushes === 3);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(pushes).toBe(3);
+    const items = JSON.parse(fs.readFileSync(path.join(d.stateDir, SHIPMATES_NOTIFIED_FILE), 'utf8')).items;
+    expect(Object.keys(items)).toHaveLength(2);
+    expect(items[done.id]).toBeUndefined();
+  });
+
+  it('the first start with D39 does not push a backlog of old non-blocking items, nor annotate old closes', async () => {
+    const d = dirs();
+    const k = db(d);
+    const file = SESSION(d.root);
+    k.register({ sessionFile: file, cwd: '/home/u/lane' });
+    const old = openShipmates({ stateDir: d.shipmatesDir, now: () => Date.now() - 2 * 3_600_000 });
+    cleanups.push(() => old.close());
+    const stale = old.humanAsk({ from: file, question: 'Old and not urgent?' });
+    const staleBlocking = old.humanAsk({ from: file, question: 'Old but blocking?', blocking: true });
+    const oldClosed = old.humanAsk({ from: file, question: 'Answered before the upgrade?', blocking: true });
+    const fresh = k.humanAsk({ from: file, question: 'Just asked?' });
+    // A notified file as wherever wrote it before D39: no closedCursor.
+    fs.mkdirSync(d.stateDir, { recursive: true });
+    fs.writeFileSync(path.join(d.stateDir, SHIPMATES_NOTIFIED_FILE), JSON.stringify({ items: { [oldClosed.id]: { at: Date.now() - 3_600_000, refs: ['telegram:42:7'] } } }));
+    old.answerItem(oldClosed.id, 'yes', { channel: 'web' });
+
+    const pushed: string[] = [];
+    const notes: string[] = [];
+    const { svc } = service(d);
+    svc.start();
+    await svc.ready();
+    svc.setNotifier(async (n) => (pushed.push(n.itemId), { delivered: true, refs: [] }));
+    svc.setCloser(async (_r, note) => (notes.push(note), true));
+    await until(() => pushed.length === 2);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(pushed.sort()).toEqual([staleBlocking.id, fresh.id].sort());
+    expect(notes).toEqual([]);
+    // Still in the inbox, just not pushed.
+    expect(svc.snapshot().inbox.map((i) => i.id)).toContain(stale.id);
+  });
+
+  it('a Telegram reply that loses the race to another channel gets "already answered", not an error', async () => {
+    const d = dirs();
+    const k = db(d);
+    const file = SESSION(d.root);
+    k.register({ sessionFile: file, cwd: '/home/u/lane' });
+    const item = k.humanAsk({ from: file, question: 'Race?', blocking: true });
+    const { svc } = service(d);
+    svc.start();
+    await svc.ready();
+    svc.setNotifier(async () => ({ delivered: true, refs: ['telegram:42:1'] }));
+    await until(() => fs.existsSync(path.join(d.stateDir, SHIPMATES_NOTIFIED_FILE)));
+    // The web answers between the state check and the write: shipmates' write then throws `answered`.
+    const api = svc.api()!;
+    const real = api.answerItem.bind(api);
+    (api as any).answerItem = (id: string, text: string, opts: any) => {
+      real(id, 'from the web', { channel: 'web' });
+      return real(id, text, opts);
+    };
+    expect(svc.answerFromReply('telegram:42:1', 'from telegram', 'telegram')).toEqual({ handled: true, reply: 'Already answered in the wherever inbox.', answered: false });
+    expect(k.item(item.id)).toMatchObject({ answer: 'from the web', answerChannel: 'web' });
   });
 
   it('an item no channel delivered is not spent: retried (throttled) until one delivers, then recorded', async () => {
@@ -277,9 +507,9 @@ describe('ShipmatesService', () => {
     expect(sessionIdOf('/s/2026-11-18T10-00-00-000Z_0b7c5e7a-1111-4222-8333-944455556666.jsonl', null)).toBe('0b7c5e7a-1111-4222-8333-944455556666');
     expect(sessionIdOf('/s/other.jsonl', null)).toBeNull();
     const n = shipmatesNotification(
-      { id: 'h_1', session: '/s/other.jsonl', question: 'Which?', options: ['a', 'b'], blocking: true, onBehalfOf: [], state: 'open', answer: null, answerChannel: null, createdAt: 0 },
+      { id: 'h_1', session: '/s/other.jsonl', question: 'Which?', options: ['a', 'b'], blocking: true, onBehalfOf: [], state: 'open', answer: null, answerChannel: null, createdAt: 0, finishedAt: null },
       null,
     );
-    expect(n).toEqual({ itemId: 'h_1', options: ['a', 'b'], title: 'Question for you', body: 'Which?\nOptions: a / b\nAnswer in the wherever inbox.', source: 'other', navigate: '' });
+    expect(n).toEqual({ itemId: 'h_1', options: ['a', 'b'], title: 'Question for you', body: 'Which?\nOptions: a / b\nThis blocks other until you answer.\nAnswer in the wherever inbox.', source: 'other', navigate: '' });
   });
 });

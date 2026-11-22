@@ -15,9 +15,11 @@ import type { AttentionItem, Shipmates, Presence } from 'shipmates';
  *   watcher, then throttled like `sessions_updated`);
  * - an authenticated web or Telegram answer is a HUMAN act, so it goes through
  *   `answerItem(id, text, {channel})`;
- * - a BLOCKING item is pushed once through the assistant's channels (Web Push,
- *   Telegram), linking to the asking session; a Telegram reply to that message
- *   answers it.
+ * - EVERY open item is pushed once through the assistant's channels (Web Push,
+ *   Telegram), saying whether it blocks a session, linking to the asking
+ *   session; a Telegram reply to that message answers it, and once the item
+ *   closes through another channel the Telegram message is marked so it no
+ *   longer looks open (shipmates D39).
  *
  * It never creates shipmates' database: it opens it once it EXISTS (@shipmates/pi
  * or the shipmates CLI made it), checking every `openPollMs` until then, so a
@@ -74,7 +76,7 @@ export interface ShipmatesArchiveView {
 
 export const SHIPMATES_ARCHIVES_FILE = 'shipmates-archives.json';
 
-/** A blocking item to push through the channels (`ChannelNotification` shape). */
+/** An open item to push through the channels (`ChannelNotification` shape). */
 export interface ShipmatesNotification {
   itemId: string;
   /** The item's fixed answers (none = free text): Telegram shows them as buttons. */
@@ -99,6 +101,8 @@ export type ShipmatesAnswerResult = { ok: true } | { ok: false; error: string };
 export const SHIPMATES_NOTIFIED_FILE = 'shipmates-notified.json';
 export const SHIPMATES_DISABLED_ERROR = 'shipmates is not available on this server (no shipmates database yet, or `shipmates.enabled` is false)';
 const NOTIFIED_RETENTION_MS = 30 * 86_400_000; // shipmates prunes finished items after 30 days (D11)
+/** On the first start with D39, a non-blocking item older than this is not pushed (`skipStaleNonBlocking`). */
+const STALE_NONBLOCKING_MS = 3_600_000;
 /**
  * shipmates' database dir, as shipmates' `defaultStateDir()` (its store.ts)
  * computes it, without loading shipmates (and `node:sqlite`) for a user who does
@@ -146,10 +150,27 @@ export function presenceView(p: Presence): ShipmatesPresenceView {
   };
 }
 
-/** The notification for a blocking item. Pure. */
-export function shipmatesNotification(item: AttentionItem, presence: Presence | null): ShipmatesNotification {
+/**
+ * Who an item blocks, as the human reads it: the presence's role or folder,
+ * else shipmates' `labelOf` when it is a role (it is the transcript path
+ * otherwise), else the file name.
+ */
+export function blockedLabel(sessionFile: string, presence: Presence | null | undefined, shipmatesLabel?: string | null): string {
+  if (presence) return sessionLabel(sessionFile, presence);
+  if (shipmatesLabel && shipmatesLabel !== sessionFile && !shipmatesLabel.startsWith('/')) return shipmatesLabel;
+  return sessionLabel(sessionFile, null);
+}
+
+/**
+ * The notification for an open item (shipmates D39: every item is pushed, and
+ * says whether a session waits on it). `label` names the session it blocks
+ * (default: from the presence). Pure.
+ */
+export function shipmatesNotification(item: AttentionItem, presence: Presence | null, label?: string): ShipmatesNotification {
+  const who = label ?? blockedLabel(item.session, presence);
   const lines = [item.question];
   if (item.options?.length) lines.push(`Options: ${item.options.join(' / ')}`);
+  lines.push(item.blocking ? `This blocks ${who} until you answer.` : 'No session is waiting on it: answer when you can.');
   // Every channel's wording: how to answer ON a channel (Telegram: buttons,
   // swipe to reply) is that channel's to say, since only it knows.
   lines.push('Answer in the wherever inbox.');
@@ -158,7 +179,7 @@ export function shipmatesNotification(item: AttentionItem, presence: Presence | 
     options: item.options ?? [],
     title: 'Question for you',
     body: lines.join('\n'),
-    source: sessionLabel(item.session, presence),
+    source: who,
     navigate: sessionIdOf(item.session, presence) ?? '',
   };
 }
@@ -166,6 +187,38 @@ export function shipmatesNotification(item: AttentionItem, presence: Presence | 
 interface NotifiedRecord {
   at: number;
   refs: string[];
+  /** When its pushed messages were marked closed (or found not to need it): never again. */
+  closed?: number;
+}
+
+/** Where an item was answered, as a sentence names it. */
+export function answerChannelLabel(channel: string | null): string {
+  switch (channel) {
+    case 'session':
+      return 'the session';
+    case 'web':
+      return 'the wherever inbox';
+    case 'cli':
+      return 'the shipmates CLI';
+    case 'terminal':
+      return 'a terminal';
+    case 'telegram':
+      return 'Telegram';
+    default:
+      return channel || 'another channel';
+  }
+}
+
+/** What a pushed message says once its item closed through another channel. Pure. */
+export function closedNote(item: AttentionItem): string {
+  if (item.state === 'withdrawn') return '↩️ Withdrawn: the session no longer needs an answer.';
+  return `✅ Answered in ${answerChannelLabel(item.answerChannel)}${item.answer ? `: ${clip(item.answer, 200)}` : '.'}`;
+}
+
+/** The reply to a channel-side answer for an item already closed. Pure. */
+export function alreadyClosedReply(item: AttentionItem): string {
+  if (item.state === 'withdrawn') return 'This question was withdrawn.';
+  return `Already answered in ${answerChannelLabel(item.answerChannel)}.`;
 }
 
 export interface ShipmatesServiceOptions {
@@ -205,7 +258,13 @@ export class ShipmatesService {
   private lastUpdateAt = 0;
   private lastSent = '';
   private notifier: ((n: ShipmatesNotification) => Promise<ShipmatesNotifyOutcome>) | null = null;
+  private closer: ((refs: string[], note: string) => Promise<boolean>) | null = null;
   private notified = new Map<string, NotifiedRecord>();
+  /** Items finished at or after this (shipmates' clock) are still to be looked at (persisted). */
+  private closeCursor: number | null = null;
+  private closing = new Set<string>();
+  /** Closed items whose messages could not be marked yet: last try and count (memory only). */
+  private closeRetry = new Map<string, { at: number; tries: number }>();
   private notifying = new Set<string>();
   /** Items no channel delivered yet: when they were last tried (memory only). */
   private undelivered = new Map<string, number>();
@@ -266,11 +325,13 @@ export class ShipmatesService {
         return;
       }
       this.loadNotified();
+      this.skipStaleNonBlocking();
       this.loadArchives();
       this.log.log(`[wherever] shipmates: inbox and presence from ${this.dbPath}`);
       this.watcher = mod.watchChanges(this.shipmates, () => this.onChange(), { intervalMs: this.opts.pollMs ?? 1000 });
       this.refreshTimer = setInterval(() => {
         this.checkNotifications(); // retries an undelivered item even when nothing is written
+        this.checkClosed();
         this.flush();
       }, this.opts.refreshMs ?? 30_000);
       this.refreshTimer.unref?.();
@@ -481,7 +542,7 @@ export class ShipmatesService {
   }
 
   /**
-   * Where blocking items go (the assistant's channel dispatcher). Set once the
+   * Where open items go (the assistant's channel dispatcher). Set once the
    * channels have started; without one, nothing is pushed or recorded, so the
    * items are pushed when a later start has channels.
    */
@@ -496,21 +557,45 @@ export class ShipmatesService {
    * as the human on `channel`. `handled: false` when the message notified no
    * item: the channel then treats it as an ordinary message.
    */
-  answerFromReply(ref: string, text: string, channel: 'telegram'): { handled: false } | { handled: true; reply: string } {
+  answerFromReply(ref: string, text: string, channel: 'telegram'): { handled: false } | { handled: true; reply: string; answered: boolean } {
     let itemId: string | null = null;
     for (const [id, rec] of this.notified) if (rec.refs.includes(ref)) itemId = id;
     if (!itemId) return { handled: false };
     const k = this.shipmates;
-    if (!k) return { handled: true, reply: `⚠️ ${SHIPMATES_DISABLED_ERROR}.` };
+    if (!k) return { handled: true, reply: `⚠️ ${SHIPMATES_DISABLED_ERROR}.`, answered: false };
     const item = k.item(itemId);
-    if (!item || item.state !== 'open') return { handled: true, reply: 'That question was already answered (or withdrawn).' };
-    const r = this.answer(itemId, text, channel);
-    return { handled: true, reply: r.ok ? `✅ Answered: ${clip(item.question, 120)}` : `⚠️ Could not answer: ${r.error}` };
+    if (!item) return { handled: true, reply: 'That question is no longer in the inbox.', answered: false };
+    // Closed through another channel: say where, deliver nothing (shipmates D39).
+    if (item.state !== 'open') return { handled: true, reply: alreadyClosedReply(item), answered: false };
+    if (!text.trim()) return { handled: true, reply: '⚠️ Could not answer: the answer is empty', answered: false };
+    try {
+      k.answerItem(itemId, text, { channel });
+    } catch (err) {
+      // `answerItem` checks inside its write, so another channel that answered
+      // meanwhile makes this one throw `answered` (or `withdrawn`).
+      const code = (err as { code?: string }).code;
+      const now = k.item(itemId);
+      if ((code === 'answered' || code === 'withdrawn') && now && now.state !== 'open') return { handled: true, reply: alreadyClosedReply(now), answered: false };
+      return { handled: true, reply: `⚠️ Could not answer: ${(err as Error).message}`, answered: false };
+    }
+    this.onChange();
+    return { handled: true, reply: `✅ Answered: ${clip(item.question, 120)}`, answered: true };
+  }
+
+  /**
+   * How a pushed notification is marked closed on the channels that sent it
+   * (the dispatcher's `closeNotification`). Without one nothing is marked, and
+   * nothing recorded, so a later start with channels still does it.
+   */
+  setCloser(fn: ((refs: string[], note: string) => Promise<boolean>) | null): void {
+    this.closer = fn;
+    if (fn) this.checkClosed();
   }
 
   private onChange(): void {
     this.lookups.clear();
     this.checkNotifications();
+    this.checkClosed();
     try {
       this.opts.onShipmatesChange?.();
     } catch (err) {
@@ -545,23 +630,34 @@ export class ShipmatesService {
     }
   }
 
-  /** Push every open blocking item not pushed before, once (recorded in the state dir). */
+  /**
+   * Push every open item not pushed before, once (recorded in the state dir).
+   * Every item, not only blocking ones (shipmates D39): the human's inbox and
+   * their channels must agree; the wording says whether a session waits.
+   */
   private checkNotifications(): void {
     const k = this.shipmates;
     const notify = this.notifier;
     if (!k || !notify) return;
     let items: AttentionItem[];
     try {
-      items = k.inbox().filter((i) => i.blocking);
+      items = k.inbox();
     } catch {
       return;
     }
+    const open = new Set(items.map((i) => i.id));
+    for (const id of this.undelivered.keys()) if (!open.has(id)) this.undelivered.delete(id);
     for (const item of items) {
       if (this.notified.has(item.id) || this.notifying.has(item.id)) continue;
       const lastTry = this.undelivered.get(item.id);
       if (lastTry !== undefined && this.now() - lastTry < (this.opts.notifyRetryMs ?? 60_000)) continue;
       this.notifying.add(item.id);
-      const n = shipmatesNotification(item, k.presence(item.session));
+      const presence = k.presence(item.session);
+      let label: string | null = null;
+      try {
+        label = k.labelOf(item.session);
+      } catch {}
+      const n = shipmatesNotification(item, presence, blockedLabel(item.session, presence, label));
       void notify(n)
         .catch((err): ShipmatesNotifyOutcome => ({ delivered: false, refs: [], error: (err as Error).message }))
         .then((out) => {
@@ -579,8 +675,108 @@ export class ShipmatesService {
           this.undelivered.delete(item.id);
           this.notified.set(item.id, { at: this.now(), refs: out.refs });
           this.saveNotified();
+          // Closed while it was being pushed: the close check has passed it by.
+          const now = this.shipmates?.item(item.id);
+          if (now && now.state !== 'open') this.closeOne(now);
         });
     }
+  }
+
+  /**
+   * Mark the pushed messages of items that closed through another channel
+   * (the session, the web inbox, the CLI, a terminal dialog, or withdrawn) so
+   * they no longer look open (shipmates D39). Read from `itemsFinishedSince`
+   * the persisted cursor, so a restart picks up what closed while it was down;
+   * each item once (`closed` in its record).
+   */
+  private checkClosed(): void {
+    const k = this.shipmates;
+    if (!k || !this.closer) return;
+    const kNow = (this.opts.shipmatesNow ?? Date.now)();
+    const since = this.closeCursor ?? kNow;
+    let items: AttentionItem[];
+    try {
+      // A little overlap: an item that closes during the read is seen next time; `closed` dedupes.
+      items = k.itemsFinishedSince(since - 5000);
+    } catch {
+      return;
+    }
+    for (const item of items) this.closeOne(item);
+    for (const id of [...this.closeRetry.keys()]) {
+      const item = k.item(id);
+      if (item && item.state !== 'open') this.closeOne(item);
+      else this.closeRetry.delete(id);
+    }
+    // Never past a close still in flight or waiting for a retry (those live in
+    // memory only): after a restart the cursor must still reach it. Persisted
+    // with the next record write; an older cursor only re-reads, `closed` dedupes.
+    let cursor = kNow;
+    for (const id of [...this.closing, ...this.closeRetry.keys()]) {
+      const at = k.item(id)?.finishedAt;
+      if (typeof at === 'number' && at < cursor) cursor = at;
+    }
+    this.closeCursor = cursor;
+  }
+
+  private closeOne(item: AttentionItem): void {
+    const rec = this.notified.get(item.id);
+    const close = this.closer;
+    if (!rec || rec.closed !== undefined || !close || this.closing.has(item.id)) return;
+    // Answered on the very channel that holds its messages (a Telegram reply or
+    // tap): that channel already said so. Nothing to mark either without refs.
+    if (rec.refs.length === 0 || (item.state === 'answered' && item.answerChannel && rec.refs.every((r) => r.startsWith(`${item.answerChannel}:`)))) {
+      rec.closed = this.now();
+      this.saveNotified();
+      return;
+    }
+    const retry = this.closeRetry.get(item.id);
+    if (retry && this.now() - retry.at < (this.opts.notifyRetryMs ?? 60_000)) return;
+    this.closing.add(item.id);
+    void close(rec.refs, closedNote(item))
+      .catch(() => false)
+      .then((ok) => {
+        this.closing.delete(item.id);
+        if (!ok) {
+          const tries = (retry?.tries ?? 0) + 1;
+          if (tries >= 10) {
+            this.log.warn(`[wherever] shipmates: gave up marking the closed item ${item.id} on its channels`);
+            this.closeRetry.delete(item.id);
+            rec.closed = this.now();
+            this.saveNotified();
+          } else this.closeRetry.set(item.id, { at: this.now(), tries });
+          return;
+        }
+        this.closeRetry.delete(item.id);
+        rec.closed = this.now();
+        this.saveNotified();
+      });
+  }
+
+  /**
+   * Before shipmates D39 only blocking items were pushed, so on the first start
+   * without a close cursor (a notified file from before, or none at all) every
+   * old non-blocking item would arrive at once. Those older than
+   * `STALE_NONBLOCKING_MS` are recorded as pushed, with no refs: they stay in
+   * the inbox, they are just not pushed. Newer ones and blocking ones are.
+   */
+  private skipStaleNonBlocking(): void {
+    const k = this.shipmates;
+    if (!k || this.closeCursor !== null) return;
+    const kNow = (this.opts.shipmatesNow ?? Date.now)();
+    let skipped = 0;
+    try {
+      for (const item of k.inbox()) {
+        if (item.blocking || this.notified.has(item.id) || kNow - item.createdAt < STALE_NONBLOCKING_MS) continue;
+        this.notified.set(item.id, { at: this.now(), refs: [] });
+        skipped++;
+      }
+    } catch {
+      return;
+    }
+    this.closeCursor = kNow;
+    // Nothing written for a user with nothing recorded yet (the cursor goes with the first record).
+    if (skipped || fs.existsSync(this.notifiedPath())) this.saveNotified();
+    if (skipped) this.log.log(`[wherever] shipmates: not pushing ${skipped} non-blocking item(s) raised more than an hour before this version (they stay in the inbox)`);
   }
 
   private notifiedPath(): string {
@@ -589,10 +785,18 @@ export class ShipmatesService {
 
   private loadNotified(): void {
     try {
-      const raw = JSON.parse(fs.readFileSync(this.notifiedPath(), 'utf8')) as { items?: Record<string, NotifiedRecord> };
+      const raw = JSON.parse(fs.readFileSync(this.notifiedPath(), 'utf8')) as { items?: Record<string, NotifiedRecord>; closedCursor?: number };
       for (const [id, rec] of Object.entries(raw.items ?? {})) {
-        if (rec && typeof rec.at === 'number') this.notified.set(id, { at: rec.at, refs: Array.isArray(rec.refs) ? rec.refs.filter((r) => typeof r === 'string') : [] });
+        if (rec && typeof rec.at === 'number')
+          this.notified.set(id, {
+            at: rec.at,
+            refs: Array.isArray(rec.refs) ? rec.refs.filter((r) => typeof r === 'string') : [],
+            ...(typeof rec.closed === 'number' ? { closed: rec.closed } : {}),
+          });
       }
+      // A record from before close marking has no cursor: start from now, so an
+      // upgrade does not annotate a month of old questions at once.
+      if (typeof raw.closedCursor === 'number') this.closeCursor = raw.closedCursor;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') this.log.warn(`[wherever] shipmates: ignoring an unreadable ${SHIPMATES_NOTIFIED_FILE}: ${(err as Error).message}`);
     }
@@ -600,12 +804,22 @@ export class ShipmatesService {
 
   private saveNotified(): void {
     const cutoff = this.now() - NOTIFIED_RETENTION_MS;
-    for (const [id, rec] of this.notified) if (rec.at < cutoff) this.notified.delete(id);
+    // A record of an item still OPEN stays, however old: pruning it would push
+    // the item again (a non-blocking item can wait for weeks).
+    for (const [id, rec] of this.notified) {
+      if (rec.at >= cutoff) continue;
+      let open = false;
+      try {
+        open = this.shipmates?.item(id)?.state === 'open';
+      } catch {}
+      if (!open) this.notified.delete(id);
+    }
     const file = this.notifiedPath();
     const tmp = `${file}.tmp`;
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(tmp, JSON.stringify({ items: Object.fromEntries(this.notified) }, null, 2) + '\n', { mode: 0o600 });
+      const closedCursor = this.closeCursor ?? (this.opts.shipmatesNow ?? Date.now)();
+      fs.writeFileSync(tmp, JSON.stringify({ items: Object.fromEntries(this.notified), closedCursor }, null, 2) + '\n', { mode: 0o600 });
       fs.renameSync(tmp, file);
     } catch (err) {
       this.log.warn(`[wherever] shipmates: could not record notified items: ${(err as Error).message}`);

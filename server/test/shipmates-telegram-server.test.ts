@@ -103,4 +103,67 @@ describe('a blocking shipmates question on Telegram', () => {
       return /the human answered h_[\w-]+ \(origin human, on telegram\)/.test(seen);
     }, 20_000, 'the tool result');
   }, 120_000);
+
+  it('pushes a non-blocking item too; a reply in the session answers both, the Telegram messages say so, and a late Telegram reply changes nothing', async () => {
+    const web = await h.connect();
+    await web.waitForType('shipmates_update');
+    const dir = path.join(root, 'notes');
+    fs.mkdirSync(dir, { recursive: true });
+    web.send({ type: 'session_new', cwd: dir });
+    const created = await web.waitForType('session_created', 30_000);
+    const sessionFile = created.sessionFile as string;
+    await web.waitFor((m) => m.type === 'shipmates_update' && (m as any).presence.some((p: any) => p.sessionFile === sessionFile), 15_000);
+
+    h.fake.queue({ kind: 'tool-call', toolName: 'human_ask', input: { question: 'Merge the PR now?', options: ['merge', 'wait'] } });
+    web.send({ type: 'message', sessionId: created.sessionId, message: 'merge when I say' });
+    await until(() => api.of('sendMessage').some((c) => String(c.params.text).includes('Merge the PR now?')), 30_000, 'the blocking item on Telegram');
+    const mergeText = String(api.of('sendMessage').find((c) => String(c.params.text).includes('Merge the PR now?'))!.params.text);
+    expect(mergeText).toContain('This blocks notes until you answer.');
+    const item = shipmates.inbox().find((i) => i.question === 'Merge the PR now?')!;
+    expect(item.blocking).toBe(true);
+    const mergeMessage = api.withKeyboard().at(-1)!;
+
+    // Not blocking (raised after the human's last message, which would have closed it): pushed all the same (shipmates D39), saying it can wait.
+    const later = shipmates.humanAsk({ from: sessionFile, question: 'Which changelog wording?' });
+    await until(() => api.of('sendMessage').some((c) => String(c.params.text).includes('Which changelog wording?')), 30_000, 'the non-blocking item on Telegram');
+    const laterText = String(api.of('sendMessage').find((c) => String(c.params.text).includes('Which changelog wording?'))!.params.text);
+    expect(laterText).toContain('No session is waiting on it: answer when you can.');
+    expect(laterText).not.toContain('This blocks');
+
+    // The human answers in the session while human_ask waits: pi ends the send
+    // with preflight `handled`, and wherever still confirms it as delivered.
+    web.send({ type: 'message', sessionId: created.sessionId, message: 'merge it' });
+    const ack = await web.waitFor((m) => m.type === 'message_ack' && (m as any).content === 'merge it', 20_000);
+    expect(ack).toMatchObject({ sessionId: created.sessionId });
+    await until(() => shipmates.item(item.id)?.state === 'answered', 15_000, 'the answer');
+    expect(shipmates.item(item.id)).toMatchObject({ answer: 'merge it', answerChannel: 'session' });
+    expect(shipmates.item(later.id)).toMatchObject({ state: 'answered', answer: 'merge it', answerChannel: 'session' });
+
+    // Both Telegram messages stop looking open: buttons gone, a note replying to each.
+    await until(() => api.of('sendMessage').filter((c) => c.params.text === '✅ Answered in the session: merge it').length === 2, 20_000, 'the close notes');
+    expect(api.withKeyboard()).not.toContain(mergeMessage);
+    const notes = api.of('sendMessage').filter((c) => c.params.text === '✅ Answered in the session: merge it');
+    expect(notes.map((c) => c.params.reply_parameters?.message_id)).toContain(mergeMessage);
+
+    // The words reached the model as the tool's result, not as a user message.
+    let requests = '';
+    await until(() => {
+      requests = JSON.stringify(h.fake.requests().map((r: any) => r.messages ?? []));
+      return requests.includes('replying in this session');
+    }, 20_000, 'the tool result');
+    const userTexts = h.fake
+      .requests()
+      .flatMap((r: any) => r.messages ?? [])
+      .filter((m: any) => m.role === 'user')
+      .flatMap((m: any) => (typeof m.content === 'string' ? [m.content] : (m.content ?? []).filter((b: any) => b.type === 'text').map((b: any) => b.text)));
+    expect(userTexts).not.toContain('merge it');
+
+    // A late Telegram reply to the closed question: told where it was answered, nothing delivered.
+    const before = shipmates.item(item.id);
+    const sent = api.of('sendMessage').length;
+    api.message(USER, 'wait', { replyTo: mergeMessage });
+    await until(() => api.of('sendMessage').slice(sent).some((c) => c.params.text === 'Already answered in the session.'), 15_000, 'the already-answered reply');
+    expect(shipmates.item(item.id)).toEqual(before);
+    expect(shipmates.pendingFor(sessionFile).filter((m) => m.text === 'wait')).toEqual([]);
+  }, 120_000);
 });

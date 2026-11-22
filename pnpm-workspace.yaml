@@ -20,5 +20,5 @@ allowBuilds:
   svelte-preprocess: false
 
 minimumReleaseAgeExclude:
-  - '@shipmates/pi@0.3.0'
-  - shipmates@0.2.0
+  - '@shipmates/pi@0.4.0'
+  - shipmates@0.3.0

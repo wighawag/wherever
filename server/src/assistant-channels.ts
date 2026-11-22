@@ -88,7 +88,12 @@ export interface ChannelNotificationReply {
   text: string;
 }
 
-export type ChannelNotificationReplyResult = { handled: false } | { handled: true; reply: string };
+/**
+ * `answered: false` (with `handled: true`): the reply named a notification
+ * whose question is already closed, so nothing was answered and `reply` says
+ * why (a Telegram tap then shows it instead of "Answered").
+ */
+export type ChannelNotificationReplyResult = { handled: false } | { handled: true; reply: string; answered?: boolean };
 
 /** Who answers notification replies (the shipmates inbox; none = every reply is an ordinary message). */
 export type NotificationReplyHandler = (reply: ChannelNotificationReply) => ChannelNotificationReplyResult | Promise<ChannelNotificationReplyResult>;
@@ -163,6 +168,13 @@ export interface AssistantChannel {
   deliverReply?(reply: ChannelReply): void | Promise<void>;
   /** Report messages from this channel that were dropped. */
   reportDropped?(report: ChannelDroppedReport): void | Promise<void>;
+  /**
+   * A notification this channel sent no longer stands (a shipmates question
+   * answered or withdrawn elsewhere): make its messages (`refs`, this channel's
+   * own, as `notify` returned them) stop looking open, saying `note`. True once
+   * done; false = try again later.
+   */
+  closeNotification?(refs: string[], note: string): Promise<boolean>;
 }
 
 /** The slice of the controller the dispatcher drives (faked in tests). */
@@ -427,6 +439,39 @@ export class ChannelDispatcher {
       console.error(`[wherever] assistant channel "${channel.name}": a notification reply failed: ${errMessage(err)}`);
       return { handled: false };
     }
+  }
+
+  /**
+   * Make a notification's messages stop looking open (`AssistantChannel.closeNotification`):
+   * each ref goes to the channel it names (`<channel>:...`). True when every
+   * channel that holds refs and can close them did; refs of a channel that
+   * cannot (Web Push) are ignored. False = try again later (a channel is not
+   * started, or its call failed).
+   */
+  async closeNotification(refs: string[], note: string): Promise<boolean> {
+    const byChannel = new Map<AssistantChannel, string[]>();
+    let missing = false;
+    for (const ref of refs) {
+      const name = ref.slice(0, ref.indexOf(':'));
+      const channel = this.channels.find((c) => c.name === name);
+      if (!channel?.closeNotification) continue;
+      if (!this.started.has(channel)) {
+        missing = true;
+        continue;
+      }
+      byChannel.set(channel, [...(byChannel.get(channel) ?? []), ref]);
+    }
+    const results = await Promise.all(
+      [...byChannel].map(async ([c, rs]) => {
+        try {
+          return await c.closeNotification!(rs, note);
+        } catch (err) {
+          console.error(`[wherever] assistant channel "${c.name}": closing a notification failed: ${errMessage(err)}`);
+          return false;
+        }
+      }),
+    );
+    return !missing && results.every(Boolean);
   }
 
   /** The started channels that can notify. */

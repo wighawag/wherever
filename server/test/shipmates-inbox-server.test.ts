@@ -185,7 +185,8 @@ describe('shipmates inbox and presence on the web', () => {
     h.fake.queue({
       kind: 'tool-calls',
       calls: [
-        { toolName: 'human_ask', input: { question: 'Which branch should the docs go to?' } },
+        // `blocking: false` is no longer the default (shipmates D39): this is the non-blocking path.
+        { toolName: 'human_ask', input: { question: 'Which branch should the docs go to?', blocking: false } },
         { toolName: 'session_register', input: { state: 'waiting-for-human', status: 'waiting for the branch' } },
       ],
     });

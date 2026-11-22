@@ -49,7 +49,11 @@
 			>
 		{:else}
 			<span class="text-brand-text">
-				{card.items.length > 1 ? `${card.items.length} messages` : 'Message'}
+				{card.items.length > 1
+					? `${card.items.length} ${card.notice ? 'notices' : 'messages'}`
+					: card.notice
+						? 'Notice'
+						: 'Message'}
 				{#if card.senders.length}from {card.senders.map(name).join(', ')}{/if}
 			</span>
 		{/if}

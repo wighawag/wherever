@@ -478,6 +478,41 @@ export class TelegramChannel implements AssistantChannel {
     return { ok: true, detail: 'sent', files, refs };
   }
 
+  /**
+   * A notification closed elsewhere (a shipmates question answered in the
+   * session, the web inbox, the CLI or a terminal, or withdrawn, shipmates D39):
+   * its answer buttons go (they ride on the LAST part) and `note` is sent as a
+   * reply to its first part, so the question no longer looks open. False when
+   * the channel cannot send now (the caller tries again later).
+   */
+  async closeNotification(refs: string[], note: string): Promise<boolean> {
+    if (!this.started) return false;
+    const parsed = refs
+      .map((r) => /^telegram:(-?\d+):(\d+)$/.exec(r))
+      .filter((m): m is RegExpExecArray => !!m)
+      .map((m) => ({ chatId: m[1], messageId: Number(m[2]) }));
+    if (parsed.length === 0) return true;
+    const last = parsed[parsed.length - 1];
+    try {
+      await this.call('editMessageReplyMarkup', { chat_id: last.chatId, message_id: last.messageId, reply_markup: { inline_keyboard: [] } });
+    } catch (err) {
+      // A question without options has no buttons ("message is not modified"): expected, the note still goes.
+      const why = this.redact(errMessage(err));
+      if (!/not modified/i.test(why)) this.log.warn(`[wherever] telegram: removing the answer buttons of a closed question failed: ${why}`);
+    }
+    try {
+      await this.call('sendMessage', {
+        chat_id: parsed[0].chatId,
+        text: note,
+        reply_parameters: { message_id: parsed[0].messageId, allow_sending_without_reply: true },
+      });
+    } catch (err) {
+      this.log.warn(`[wherever] telegram: could not mark a closed question: ${this.redact(errMessage(err))}`);
+      return false;
+    }
+    return true;
+  }
+
   /** An error message without the bot token (a URL in a network error carries it). */
   private redact(message: string): string {
     return message.split(this.token).join('<token>');
@@ -683,7 +718,7 @@ export class TelegramChannel implements AssistantChannel {
       return;
     }
     const r = await ctx.onNotificationReply({ channel: TELEGRAM_CHANNEL, ref: telegramMessageRef(msg.chat.id, msg.message_id), text: answer });
-    await toast(r.handled ? `Answered: ${answer}` : 'This question is no longer open.');
+    await toast(!r.handled ? 'This question is no longer open.' : r.answered === false ? r.reply : `Answered: ${answer}`);
     try {
       await this.call('editMessageReplyMarkup', { chat_id: msg.chat.id, message_id: msg.message_id, reply_markup: { inline_keyboard: [] } });
     } catch (err) {

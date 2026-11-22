@@ -254,7 +254,7 @@ export interface WhereverConfig {
   assistantScheduleGraceMinutes?: number;
   /**
    * wherever as a shipmates host (shipmates-service.ts): the attention inbox and
-   * session presence on the web, blocking items pushed through the assistant's
+   * session presence on the web, open items pushed through the assistant's
    * channels. `enabled` defaults to true, and even then nothing happens until
    * shipmates' own database exists (@shipmates/pi or the shipmates CLI creates it).
    * Read at start.

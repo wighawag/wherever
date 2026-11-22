@@ -1451,7 +1451,7 @@ async function main(): Promise<void> {
     };
   }
   // wherever as a shipmates host (shipmates-service.ts): the attention inbox and
-  // presence on every dashboard (`shipmates_update`), and blocking items pushed
+  // presence on every dashboard (`shipmates_update`), and every open item pushed
   // once through the channels above, a Telegram reply to one answering it. It
   // opens shipmates' database only once that exists, so nothing is written for
   // a user who does not use shipmates. Independent of the assistant: without
@@ -1507,6 +1507,8 @@ async function main(): Promise<void> {
       const refs = out.deliveries.flatMap((d) => (d.result.ok ? (d.result.refs ?? []) : []));
       return out.ok ? { delivered: true, refs } : { delivered: false, refs, error: out.error };
     });
+    // An item closed through another channel: its Telegram message stops looking open (shipmates D39).
+    shipmates.setCloser((refs, note) => dispatcher.closeNotification(refs, note));
     dispatcher.setNotificationReplyHandler((r) =>
       r.channel === 'telegram' ? shipmates.answerFromReply(r.ref, r.text, 'telegram') : { handled: false },
     );
