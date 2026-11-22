@@ -3,10 +3,10 @@ import {defaultAppearance, type AppearanceInfo} from '$lib/theme';
 import {adoptTokenFromUrlOnce} from '$lib/core/token-adoption';
 import type {TelegramStatus} from '$lib/core/telegram-settings';
 import {
-	emptyKenningState,
-	parseKenningUpdate,
-	type KenningState,
-} from '$lib/core/kenning';
+	emptyShipmatesState,
+	parseShipmatesUpdate,
+	type ShipmatesState,
+} from '$lib/core/shipmates';
 
 // getToken()/getBaseUrl() below read the stored config STRAIGHT out of
 // localStorage, and a route can import this module without importing
@@ -34,8 +34,8 @@ export interface SessionInfo {
 	// True when the user starred it ("come back to this"). Server-side, so a
 	// star set on one device shows on every other.
 	starred?: boolean;
-	// The session that spawned this one through kenning (`session_spawn`), when
-	// the server has kenning. Owner and child may be in different folders.
+	// The session that spawned this one through shipmates (`session_spawn`), when
+	// the server has shipmates. Owner and child may be in different folders.
 	ownerSessionPath?: string;
 }
 
@@ -766,13 +766,13 @@ export function setCurrentSession(sessionId: string | null): void {
 }
 
 /**
- * kenning's attention inbox and the live sessions' presence (wherever ADR
- * 0023), as the server pushes them (`kenning_update`, on connect and on every
- * change). `available` false (an older server, no kenning database, or
- * `kenning.enabled: false`) hides the inbox entirely.
+ * shipmates' attention inbox and the live sessions' presence (wherever ADR
+ * 0023), as the server pushes them (`shipmates_update`, on connect and on every
+ * change). `available` false (an older server, no shipmates database, or
+ * `shipmates.enabled: false`) hides the inbox entirely.
  */
-export const kenningStore = writable<KenningState>(emptyKenningState);
+export const shipmatesStore = writable<ShipmatesState>(emptyShipmatesState);
 
-export function applyKenningUpdate(frame: unknown): void {
-	kenningStore.set(parseKenningUpdate(frame));
+export function applyShipmatesUpdate(frame: unknown): void {
+	shipmatesStore.set(parseShipmatesUpdate(frame));
 }

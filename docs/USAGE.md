@@ -359,7 +359,7 @@ Three more opt-in parameters exist (a client that omits them gets exactly the ol
 
 * `&frames=chunk.v1`: the server splits any frame longer than 32 KiB (UTF-16 code units) into several TEXT frames, each `\u0001<id> <seq> <count>\n<data>`. U+0001 never starts a JSON document, which is how a chunk is told apart from an ordinary frame. `seq` is 0-based; concatenating the `data` of chunks `0..count-1` gives back the original JSON frame. The chunks of one message are sent back to back, so frame order is unchanged. Why: a browser delivers a WebSocket message only once all of it arrived, so a multi-MB frame over a slow link looked like a silent (dead) socket to the client's liveness watchdog.
 * `&imageRefs=1`: in `message_history` and `message_history_prepend`, a tool image whose base64 is larger than 16 KiB (raster types only, and only on a result with a `toolCallId`) is sent WITHOUT `data`, as `{ "mimeType": "image/png", "bytes": 2250000, "toolCallId": "...", "entryId": "...", "index": 1 }`. Fetch it from `GET /session/tool-image`. Live `tool_end` images stay inline.
-* `&kenning=1`: receive what [kenning](https://github.com/wighawag/kenning) delivered into a session. `message_history` and `message_history_prepend` then include messages with `role: "kenning"`, whose `content` is kenning's formatted text (what the model read) and whose `kenning` field is `{ "ids": [...], "from": [...], "origins": [...] }` (one entry per delivered message: kenning message id, sender label, origin `agent` / `human` / `human-relayed`). They carry no `entryId` and are never user messages. Live, the same arrives as a `kenning_delivery` frame (see below). Without the parameter neither is sent, and `offset` / `totalCount` still count those messages, so paging uses the same indices. `@wherever-dev/client` sends it only when constructed with `kenningCards: true`, as the web app is.
+* `&shipmates=1`: receive what [shipmates](https://github.com/wighawag/shipmates) delivered into a session. `message_history` and `message_history_prepend` then include messages with `role: "shipmates"`, whose `content` is shipmates' formatted text (what the model read) and whose `shipmates` field is `{ "ids": [...], "from": [...], "origins": [...] }` (one entry per delivered message: shipmates message id, sender label, origin `agent` / `human` / `human-relayed`). They carry no `entryId` and are never user messages. Live, the same arrives as a `shipmates_delivery` frame (see below). Without the parameter neither is sent, and `offset` / `totalCount` still count those messages, so paging uses the same indices. `@wherever-dev/client` sends it only when constructed with `shipmatesCards: true`, as the web app is.
 
 The server also negotiates `permessage-deflate` (frames of 1 KiB and more are compressed), and serves the web app's text assets with `br` or `gzip` when the request accepts them.
 
@@ -522,13 +522,13 @@ Streamed deltas (`message_update`, `thinking_update`, `tool_update`) are COALESC
   "delta": "Analyzing directory structure..."
 }
 
-// kenning delivered messages into this session (only with `kenning=1`)
+// shipmates delivered messages into this session (only with `shipmates=1`)
 {
-  "type": "kenning_delivery",
+  "type": "shipmates_delivery",
   "sessionId": "abc123xyz",
-  "content": "[kenning] 1 message for you:\n--- m_1 · from lead · origin: agent · tell\n...",
+  "content": "[shipmates] 1 message for you:\n--- m_1 · from lead · origin: agent · tell\n...",
   "timestamp": 1716490010000,
-  "kenning": { "ids": ["m_1"], "from": ["lead"], "origins": ["agent"] }
+  "shipmates": { "ids": ["m_1"], "from": ["lead"], "origins": ["agent"] }
 }
 
 // Message generation finalized

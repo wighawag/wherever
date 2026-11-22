@@ -155,7 +155,7 @@ test("a fresh session registers isNew once with its capabilities; a reconnect do
     assert.ok(first.capabilities.includes("cli_request"));
 
     // The assistant_info fetch follows the register.
-    // assistant_info (and kenning_host_info, which has its own test) follow the register.
+    // assistant_info (and shipmates_host_info, which has its own test) follow the register.
     const infoReqs = () => received.filter((m) => m.type === "cli_request" && m.op === "assistant_info");
     await until(() => infoReqs().length > 0, 5_000);
     const reqs = infoReqs();
@@ -235,9 +235,9 @@ test("a disabled bridge sends nothing at all", async () => {
   }
 });
 
-test("a cli_message marked humanInput is announced to kenning on the bus right before the send; an unmarked one is not", async () => {
+test("a cli_message marked humanInput is announced to shipmates on the bus right before the send; an unmarked one is not", async () => {
   const { emit, calls } = await loadBridge();
-  const sessionFile = path.join(root, "kenning-mark.jsonl");
+  const sessionFile = path.join(root, "shipmates-mark.jsonl");
   await emit("session_start", { type: "session_start", reason: "startup" }, fakeCtx(sessionFile, []));
   try {
     await until(() => registers().length >= 1 && sockets.length >= 1, 5_000);
@@ -246,7 +246,7 @@ test("a cli_message marked humanInput is announced to kenning on the bus right b
     ws.send(JSON.stringify({ type: "cli_message", message: "[schedule:x] approve" }));
     await until(() => calls.filter((c) => c.kind === "send").length >= 2, 5_000);
     assert.deepEqual(calls, [
-      { kind: "emit", name: "kenning:human-input", data: { text: "I approve the release", channel: "web" } },
+      { kind: "emit", name: "shipmates:human-input", data: { text: "I approve the release", channel: "web" } },
       { kind: "send", content: "I approve the release" },
       { kind: "send", content: "[schedule:x] approve" },
     ]);

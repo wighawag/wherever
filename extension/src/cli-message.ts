@@ -34,16 +34,16 @@ export function cliMessageContent(msg: { message: string; images?: unknown }): C
 }
 
 /**
- * The event kenning's pi extension listens for on a session's `pi.events` bus
- * (kenning D22, ADR 0003; wherever ADR 0023): emitted right before a human's
- * text is sent into the session, so kenning records that turn as the human's
- * own words. The string is a contract with kenning (`HUMAN_INPUT_EVENT` in
- * kenning's `host.ts`); server/test/kenning-human-input.test.ts pins it.
+ * The event shipmates' pi extension listens for on a session's `pi.events` bus
+ * (shipmates D22, ADR 0003; wherever ADR 0023): emitted right before a human's
+ * text is sent into the session, so shipmates records that turn as the human's
+ * own words. The string is a contract with shipmates (`HUMAN_INPUT_EVENT` in
+ * shipmates' `host.ts`); server/test/shipmates-human-input.test.ts pins it.
  */
-export const KENNING_HUMAN_INPUT_EVENT = "kenning:human-input";
+export const SHIPMATES_HUMAN_INPUT_EVENT = "shipmates:human-input";
 
 /**
- * The kenning mark for a server `cli_message`, or null. The server sets
+ * The shipmates mark for a server `cli_message`, or null. The server sets
  * `humanInput: {channel}` only for a send a human typed (web, Telegram), never
  * for a scheduled job; anything else (absent, an unknown channel) marks nothing.
  * The text is the message itself: what pi's `input` event will carry, since

@@ -12,16 +12,20 @@
 		autocompletePath,
 		setCurrentSession,
 		setSessionStarred,
-		kenningStore,
+		shipmatesStore,
 		type ModelInfo,
 		type FolderWithSessions,
 	} from '$lib/session-store';
-	import {ownedChildren, presenceByFile, presenceLine} from '$lib/core/kenning';
-	import {undoKenningDelete} from '$lib/wherever';
+	import {
+		ownedChildren,
+		presenceByFile,
+		presenceLine,
+	} from '$lib/core/shipmates';
+	import {undoShipmatesDelete} from '$lib/wherever';
 	// Fork-hierarchy flattening + recency ordering (unit-tested in core).
 	import {buildForkTree} from '$lib/core/fork-tree.js';
-	// kenning presence (role, state, status line) by session file, the listing's `path`.
-	let presence = $derived(presenceByFile($kenningStore.presence));
+	// shipmates presence (role, state, status line) by session file, the listing's `path`.
+	let presence = $derived(presenceByFile($shipmatesStore.presence));
 
 	// When true, this browser shows the read-only sessions page: it sources from
 	// the read-only folder list, hides the create form, and hides all delete
@@ -73,7 +77,7 @@
 	let confirmingDeleteFolder = $state<string | null>(null);
 	let searchQuery = $state('');
 	let filteredFolders = $state<FolderWithSessions[]>([]);
-	// kenning ownership (`session_spawn`): every listed session by path, and the
+	// shipmates ownership (`session_spawn`): every listed session by path, and the
 	// sessions each owner spawned (they may be in other folders, e.g. a worktree).
 	let allListed = $derived(folders.flatMap((f) => f.sessions));
 	let byPath = $derived(new Map(allListed.map((s) => [s.path, s])));
@@ -466,10 +470,10 @@
 </script>
 
 <div class="flex h-full flex-col">
-	{#if !readOnly && $kenningStore.archives.length}
-		<!-- kenning (D24): a delete that took the sessions a session owns, undoable for 7 days. -->
+	{#if !readOnly && $shipmatesStore.archives.length}
+		<!-- shipmates (D24): a delete that took the sessions a session owns, undoable for 7 days. -->
 		<div class="space-y-1 border-b border-brand-border/50 p-2">
-			{#each $kenningStore.archives as a (a.batch)}
+			{#each $shipmatesStore.archives as a (a.batch)}
 				<div class="flex items-center gap-2 text-[10px] text-brand-text-muted">
 					<span class="min-w-0 flex-1 truncate" title={a.sessions.join('\n')}
 						>Deleted {sessionLabel(a.root)}{a.sessions.length > 1
@@ -481,7 +485,7 @@
 						disabled={undoing[a.batch]}
 						onclick={async () => {
 							undoing[a.batch] = true;
-							await undoKenningDelete(a.batch);
+							await undoShipmatesDelete(a.batch);
 							undoing[a.batch] = false;
 						}}
 						class="rounded border border-brand-border bg-brand-surface-2 px-1.5 py-0.5 text-brand-text hover:bg-brand-surface-3 disabled:opacity-50"
@@ -987,7 +991,7 @@
 									{/if}
 								</div>
 								{#if owned.get(session.path)?.length}
-									<!-- kenning: the sessions this one spawned, wherever they live. -->
+									<!-- shipmates: the sessions this one spawned, wherever they live. -->
 									<div
 										class="mb-1 ml-6 flex flex-wrap gap-1"
 										style={depth > 0

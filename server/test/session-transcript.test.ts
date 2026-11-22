@@ -380,25 +380,25 @@ describe('readTranscriptWindow', () => {
     // Third of the heavy cases: same reasoning as the two above.
   }, 60_000);
 
-  // kenning-pi delivers into a session as pi custom messages (customType
-  // 'kenning', details {ids, from, origins}); pi persists them as a
+  // @shipmates/pi delivers into a session as pi custom messages (customType
+  // 'shipmates', details {ids, from, origins}); pi persists them as a
   // `custom_message` entry (key order from `appendCustomMessageEntry`); a
-  // `message` entry with role `custom` is the shape kenning-pi also accepts.
-  function kenningEntry(content: unknown, details: unknown, ts = '2026-01-01T00:04:00.000Z') {
-    return { type: 'custom_message', customType: 'kenning', content, display: true, details, id: 'k1', parentId: null, timestamp: ts };
+  // `message` entry with role `custom` is the shape @shipmates/pi also accepts.
+  function shipmatesEntry(content: unknown, details: unknown, ts = '2026-01-01T00:04:00.000Z') {
+    return { type: 'custom_message', customType: 'shipmates', content, display: true, details, id: 'k1', parentId: null, timestamp: ts };
   }
 
-  it("maps kenning's deliveries, in both persisted shapes, to kenning messages", async () => {
-    const text = '[kenning] 1 message for you:\n--- m1 · from lead · origin: agent · spawn\nbuild it\n---';
+  it("maps shipmates' deliveries, in both persisted shapes, to shipmates messages", async () => {
+    const text = '[shipmates] 1 message for you:\n--- m1 · from lead · origin: agent · spawn\nbuild it\n---';
     const file = writeTranscript([
-      kenningEntry(text, { ids: ['m1'], from: ['lead'], origins: ['agent'] }),
+      shipmatesEntry(text, { ids: ['m1'], from: ['lead'], origins: ['agent'] }),
       assistantMsg('on it'),
       {
         type: 'message',
         timestamp: '2026-01-01T00:05:00.000Z',
         message: {
           role: 'custom',
-          customType: 'kenning',
+          customType: 'shipmates',
           content: [{ type: 'text', text: 'second' }],
           display: true,
           details: { ids: ['m2'], from: ['you'], origins: ['human-relayed'] },
@@ -408,17 +408,17 @@ describe('readTranscriptWindow', () => {
     ]);
     const w = await readTranscriptWindow(file, 60);
     expect(w.totalCount).toBe(3);
-    expect(w.messages.map((m) => m.role)).toEqual(['kenning', 'assistant', 'kenning']);
+    expect(w.messages.map((m) => m.role)).toEqual(['shipmates', 'assistant', 'shipmates']);
     expect(w.messages[0]).toEqual({
-      role: 'kenning',
+      role: 'shipmates',
       content: text,
       timestamp: Date.parse('2026-01-01T00:04:00.000Z'),
-      kenning: { ids: ['m1'], from: ['lead'], origins: ['agent'] },
+      shipmates: { ids: ['m1'], from: ['lead'], origins: ['agent'] },
     });
     // Never a fork point: no entry id on the card.
     expect(w.messages[0].entryId).toBeUndefined();
     expect(w.messages[2].content).toBe('second');
-    expect(w.messages[2].kenning?.origins).toEqual(['human-relayed']);
+    expect(w.messages[2].shipmates?.origins).toEqual(['human-relayed']);
   });
 
   it("keeps other extensions' custom messages out of history, discarded from their head", async () => {
@@ -428,7 +428,7 @@ describe('readTranscriptWindow', () => {
     for (let i = 0; i < 30; i++) {
       lines.push({ type: 'custom_message', customType: 'other', content: 'z'.repeat(1_000_000), display: true, id: `o${i}`, parentId: null, timestamp: '2026-01-01T00:04:00.000Z' });
     }
-    lines.push(kenningEntry('hello', { ids: ['m1'], from: ['a'], origins: ['agent'] }));
+    lines.push(shipmatesEntry('hello', { ids: ['m1'], from: ['a'], origins: ['agent'] }));
     lines.push(userMsg('hi'));
     const file = writeTranscript(lines);
 
@@ -438,20 +438,20 @@ describe('readTranscriptWindow', () => {
     const grew = process.memoryUsage().heapUsed - before;
 
     expect(w.totalCount).toBe(2);
-    expect(w.messages.map((m) => m.role)).toEqual(['kenning', 'user']);
+    expect(w.messages.map((m) => m.role)).toEqual(['shipmates', 'user']);
     // A single assembled line would be 1 MB of string plus its parse; 30 of them
     // never coexist, but even one parse each would show here as tens of MB.
     expect(grew).toBeLessThan(8 * 1024 * 1024);
   }, 60_000);
 
-  it('pages through kenning messages with the same indices as everything else', async () => {
+  it('pages through shipmates messages with the same indices as everything else', async () => {
     const file = writeTranscript([
       userMsg('one'),
-      kenningEntry('k', { ids: ['m1'], from: ['a'], origins: ['agent'] }),
+      shipmatesEntry('k', { ids: ['m1'], from: ['a'], origins: ['agent'] }),
       userMsg('two'),
     ]);
     const older = await readTranscriptWindow(file, 1, 2);
     expect(older.offset).toBe(1);
-    expect(older.messages.map((m) => m.role)).toEqual(['kenning']);
+    expect(older.messages.map((m) => m.role)).toEqual(['shipmates']);
   });
 });

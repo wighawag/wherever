@@ -1,20 +1,20 @@
 /**
- * How fast, and at what cost, kenning-pi's OWN delivery works inside wherever's
- * server sessions (the measurement behind "no KenningHost.deliver yet", see
- * CONTEXT.md "wherever as a kenning host").
+ * How fast, and at what cost, @shipmates/pi's OWN delivery works inside wherever's
+ * server sessions (the measurement behind "no ShipmatesHost.deliver yet", see
+ * CONTEXT.md "wherever as a shipmates host").
  *
- * kenning-pi runs one `PRAGMA data_version` poller per PROCESS (its shared.ts),
+ * @shipmates/pi runs one `PRAGMA data_version` poller per PROCESS (its shared.ts),
  * every 1 s by default, shared by every session in it, and wakes an idle
  * session with `sendMessage(..., {triggerTurn: true})`. wherever runs all its
  * server sessions in one process, so this measures, with N idle server sessions
- * (REAL pi on the fake LLM, kenning-pi as an inline extension) in one pool:
+ * (REAL pi on the fake LLM, @shipmates/pi as an inline extension) in one pool:
  *
- *  - latency: a message sent from another kenning connection (another process'
+ *  - latency: a message sent from another shipmates connection (another process'
  *    view of the same database) at a random moment, until the receiving
  *    session's `agent_start`;
- *  - cost: the process' CPU over an idle window, with and without kenning-pi.
+ *  - cost: the process' CPU over an idle window, with and without @shipmates/pi.
  *
- * Usage (from server/): `timeout 300 npx tsx test/bench/kenning-delivery.ts [sessions] [messages]`
+ * Usage (from server/): `timeout 300 npx tsx test/bench/shipmates-delivery.ts [sessions] [messages]`
  * Everything is in temp dirs; nothing outside them is read or written.
  */
 import fs from 'node:fs';
@@ -25,18 +25,18 @@ const N = Number(process.argv[2]) || 10;
 const MESSAGES = Number(process.argv[3]) || 30;
 const IDLE_MS = 10_000;
 
-const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-kenning-bench-')));
+const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-shipmates-bench-')));
 for (const [key, dir] of [
   ['HOME', 'home'],
   ['PI_CODING_AGENT_DIR', 'agent'],
   ['WHEREVER_CONFIG_DIR', 'config'],
   ['WHEREVER_STATE_DIR', 'state'],
-  ['KENNING_STATE_DIR', 'kenning'],
+  ['SHIPMATES_STATE_DIR', 'shipmates'],
 ] as const) {
   process.env[key] = path.join(root, dir);
   fs.mkdirSync(process.env[key]!, { recursive: true });
 }
-delete process.env.KENNING_POLL_MS; // the default 1 s poll is what is measured
+delete process.env.SHIPMATES_POLL_MS; // the default 1 s poll is what is measured
 
 const { startFakeLlmServer } = await import('../fake-llm-server.ts');
 const fake = await startFakeLlmServer({ kind: 'reply', text: 'ok' });
@@ -47,11 +47,11 @@ fs.writeFileSync(
 fs.writeFileSync(path.join(process.env.PI_CODING_AGENT_DIR!, 'settings.json'), JSON.stringify({ defaultProvider: 'fake', defaultModel: 'fake-model' }));
 
 const { SessionPool } = await import('../../src/session-pool.ts');
-const kenningPi = (await import('kenning-pi')).default;
-const { openKenning } = await import('kenning');
+const shipmatesPi = (await import('@shipmates/pi')).default;
+const { openShipmates } = await import('shipmates');
 
-async function pool(withKenning: boolean) {
-  const p = new SessionPool(3_600_000, withKenning ? { extraExtensionFactories: [{ name: 'kenning-pi', factory: kenningPi as any }] } : {});
+async function pool(withShipmates: boolean) {
+  const p = new SessionPool(3_600_000, withShipmates ? { extraExtensionFactories: [{ name: '@shipmates/pi', factory: shipmatesPi as any }] } : {});
   const files: string[] = [];
   for (let i = 0; i < N; i++) {
     const cwd = fs.mkdtempSync(path.join(root, 'cwd-'));
@@ -73,13 +73,13 @@ async function idleCpu(): Promise<number> {
 
 const pct = (xs: number[], q: number) => [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(q * xs.length))];
 
-// Baseline: the same sessions without kenning-pi. Measured twice, around the
-// kenning-pi window, so start-up warm-up cannot pass for kenning's cost.
+// Baseline: the same sessions without @shipmates/pi. Measured twice, around the
+// @shipmates/pi window, so start-up warm-up cannot pass for shipmates' cost.
 async function baseline(label: string) {
   const { p } = await pool(false);
   await new Promise((r) => setTimeout(r, 8000)); // settle after the build (pi and the pool have start-up timers)
   const ms = await idleCpu();
-  console.log(`idle CPU, ${N} server sessions WITHOUT kenning-pi (${label}): ${ms.toFixed(1)} ms over ${IDLE_MS / 1000} s`);
+  console.log(`idle CPU, ${N} server sessions WITHOUT @shipmates/pi (${label}): ${ms.toFixed(1)} ms over ${IDLE_MS / 1000} s`);
   await p.disposeAll();
 }
 await baseline('before');
@@ -87,9 +87,9 @@ await baseline('before');
 const { p, files } = await pool(true);
 await new Promise((r) => setTimeout(r, 8000));
 const ms = await idleCpu();
-console.log(`idle CPU, ${N} server sessions WITH kenning-pi:           ${ms.toFixed(1)} ms over ${IDLE_MS / 1000} s`);
+console.log(`idle CPU, ${N} server sessions WITH @shipmates/pi:           ${ms.toFixed(1)} ms over ${IDLE_MS / 1000} s`);
 
-const sender = openKenning();
+const sender = openShipmates();
 const latencies: number[] = [];
 for (let i = 0; i < MESSAGES; i++) {
   const target = files[i % files.length];

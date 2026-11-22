@@ -33,8 +33,8 @@ process.env.HOME = home;
 delete process.env.WHEREVER_CONFIG_DIR;
 delete process.env.WHEREVER_STATE_DIR;
 delete process.env.PI_CODING_AGENT_DIR;
-// kenning's database (`KENNING_STATE_DIR`, else `$XDG_STATE_HOME/kenning`) is
+// shipmates' database (`SHIPMATES_STATE_DIR`, else `$XDG_STATE_HOME/shipmates`) is
 // shared by every pi process on the machine, so a server under test must never
 // open the developer's real one: point it into this file's home. A test that
-// wants a kenning database creates it there (or sets its own dir).
-process.env.KENNING_STATE_DIR = path.join(home, '.local', 'state', 'kenning');
+// wants a shipmates database creates it there (or sets its own dir).
+process.env.SHIPMATES_STATE_DIR = path.join(home, '.local', 'state', 'shipmates');

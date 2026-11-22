@@ -297,19 +297,19 @@ describe('pool reply routing (server sessions)', () => {
 });
 
 /**
- * Delivers the way kenning-pi does (its `session.ts` `payload()` and index.ts),
+ * Delivers the way @shipmates/pi does (its `session.ts` `payload()` and index.ts),
  * on demand: a wake (`sendMessage(..., {triggerTurn: true})`), a message
  * attached by `before_agent_start`, and boundary entries from `turn_end` and
- * `agent_before_settle`. Deterministic where the real kenning-pi depends on
- * timing; kenning-chat-cards.test.ts runs the real one.
+ * `agent_before_settle`. Deterministic where the real @shipmates/pi depends on
+ * timing; shipmates-chat-cards.test.ts runs the real one.
  */
-function fakeKenning() {
+function fakeShipmates() {
   let api: ExtensionAPI | undefined;
   const armed = { attach: false, turnEnd: false, settle: false };
   let n = 0;
   const payload = (label: string) => ({
-    customType: 'kenning',
-    content: `[kenning] 1 message for you:\n--- m_${++n} · from lane · origin: agent · tell\n${label}\n---`,
+    customType: 'shipmates',
+    content: `[shipmates] 1 message for you:\n--- m_${++n} · from lane · origin: agent · tell\n${label}\n---`,
     display: true,
     details: { ids: [`m_${n}`], from: ['lane'], origins: ['agent'] },
   });
@@ -319,7 +319,7 @@ function fakeKenning() {
     return was;
   };
   const extension: InlineExtension = {
-    name: 'fake-kenning',
+    name: 'fake-shipmates',
     factory: (pi: ExtensionAPI) => {
       api = pi;
       pi.on('before_agent_start', (event: any) => {
@@ -337,14 +337,14 @@ function fakeKenning() {
   };
 }
 
-describe('pool reply routing: kenning deliveries', () => {
+describe('pool reply routing: shipmates deliveries', () => {
   async function setup() {
-    const k = fakeKenning();
+    const k = fakeShipmates();
     const pool = new SessionPool(300_000, { extraExtensionFactories: [handlers, k.extension] });
     pools.push(pool);
     const s = await newServerSession(pool);
     const rec = record(pool, s.sessionFile);
-    // A human asked on Telegram first: that is the destination a kenning turn
+    // A human asked on Telegram first: that is the destination a shipmates turn
     // must NOT inherit.
     await pool.sendUserMessage(s.sessionFile, 'from my phone', undefined, false, 'telegram');
     await until(() => rec.settled() === 1);
@@ -387,7 +387,7 @@ describe('pool reply routing: kenning deliveries', () => {
     expect(repliesAfter(seen, before).map((x) => x.dest)).toEqual(['telegram', null]);
     // What the rule relies on: pi commits the settle entry after agent_end and
     // before the continuation's agent_start, i.e. outside any run.
-    const at = events.findIndex((e) => (e.type as string) === 'entry_appended' && (e as any).entry?.customType === 'kenning');
+    const at = events.findIndex((e) => (e.type as string) === 'entry_appended' && (e as any).entry?.customType === 'shipmates');
     const runs = events.slice(0, at).filter((e) => e.type === 'agent_start' || e.type === 'agent_end');
     expect(runs.at(-1)?.type).toBe('agent_end');
   }, 60_000);
@@ -494,19 +494,19 @@ describe('pool reply routing (CLI-bridge sessions)', () => {
     expect(pool.getReplyDestination(file)).toBeNull();
   }, 30_000);
 
-  it('a kenning wake forwarded by the bridge answers nobody', async () => {
+  it('a shipmates wake forwarded by the bridge answers nobody', async () => {
     const pool = newPool();
     const cwd = fs.realpathSync(fs.mkdtempSync(path.join(root, 'cli-')));
-    const file = path.join(root, 'cli-kenning.jsonl');
+    const file = path.join(root, 'cli-shipmates.jsonl');
     await pool.registerCliSession(file, cwd, '', fakeCliWs().ws);
     await pool.sendUserMessage(file, 'from telegram', undefined, false, 'telegram');
     pool.handleCliEvent(file, { type: 'agent_start' } as any);
     pool.handleCliEvent(file, { type: 'message_end', message: { role: 'user', content: 'from telegram' } } as any);
     pool.handleCliEvent(file, { type: 'agent_end' } as any);
     expect(pool.getReplyDestination(file)).toBe('telegram');
-    // kenning-pi in the terminal wakes it: the forwarded custom message_end.
+    // @shipmates/pi in the terminal wakes it: the forwarded custom message_end.
     pool.handleCliEvent(file, { type: 'agent_start' } as any);
-    pool.handleCliEvent(file, { type: 'message_end', message: { role: 'custom', customType: 'kenning', content: 'x', details: {} } } as any);
+    pool.handleCliEvent(file, { type: 'message_end', message: { role: 'custom', customType: 'shipmates', content: 'x', details: {} } } as any);
     expect(pool.getReplyDestination(file)).toBeNull();
   }, 30_000);
 

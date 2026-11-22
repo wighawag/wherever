@@ -61,8 +61,8 @@ export interface FolderSessionInfo {
    */
   parentSessionPath?: string;
   /**
-   * The session that spawned this one through kenning (`session_spawn`,
-   * kenning D23), normalized; set by the `/sessions` handler while kenning is
+   * The session that spawned this one through shipmates (`session_spawn`,
+   * shipmates D23), normalized; set by the `/sessions` handler while shipmates is
    * open. Owner and child may live in different folders (a worktree).
    */
   ownerSessionPath?: string;
@@ -128,12 +128,12 @@ export interface HistoryToolImage {
 }
 
 /**
- * kenning-pi's `details` on a delivery (its `session.ts` `payload()`), one
- * entry per delivered message, in order: kenning message ids, sender labels,
+ * @shipmates/pi's `details` on a delivery (its `session.ts` `payload()`), one
+ * entry per delivered message, in order: shipmates message ids, sender labels,
  * and origins (`agent`, `human`, `human-relayed`). The message KIND (`spawn`,
  * `ask`, ...) is not there; it is in the formatted text's header lines.
  */
-export interface KenningDeliveryInfo {
+export interface ShipmatesDeliveryInfo {
   ids: string[];
   from: string[];
   origins: string[];
@@ -141,10 +141,10 @@ export interface KenningDeliveryInfo {
 
 export interface HistoryMessage {
   /**
-   * `kenning`: messages kenning delivered into the session (kenning-delivery.ts),
-   * sent only to a client that asked (`kenning=1`). Never a user message.
+   * `shipmates`: messages shipmates delivered into the session (shipmates-delivery.ts),
+   * sent only to a client that asked (`shipmates=1`). Never a user message.
    */
-  role: 'user' | 'assistant' | 'thinking' | 'tool_call' | 'tool_result' | 'kenning';
+  role: 'user' | 'assistant' | 'thinking' | 'tool_call' | 'tool_result' | 'shipmates';
   content: string;
   timestamp: number;
   toolName?: string;
@@ -174,8 +174,8 @@ export interface HistoryMessage {
    * output. Set only on the bash tool_call; agent tool calls leave it unset.
    */
   forceCommand?: boolean;
-  /** Set on a `kenning` message: who sent what, with which origin. */
-  kenning?: KenningDeliveryInfo;
+  /** Set on a `shipmates` message: who sent what, with which origin. */
+  shipmates?: ShipmatesDeliveryInfo;
 }
 
 export interface ModelInfo {

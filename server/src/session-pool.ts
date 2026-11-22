@@ -253,13 +253,13 @@ export interface WhereverConfig {
    */
   assistantScheduleGraceMinutes?: number;
   /**
-   * wherever as a kenning host (kenning-service.ts): the attention inbox and
+   * wherever as a shipmates host (shipmates-service.ts): the attention inbox and
    * session presence on the web, blocking items pushed through the assistant's
    * channels. `enabled` defaults to true, and even then nothing happens until
-   * kenning's own database exists (kenning-pi or the kenning CLI creates it).
+   * shipmates' own database exists (@shipmates/pi or the shipmates CLI creates it).
    * Read at start.
    */
-  kenning?: { enabled?: boolean };
+  shipmates?: { enabled?: boolean };
   /**
    * The assistant's Web Push channel (web-push.ts, ADR 0017). Only used while the
    * assistant is ACTIVE. `enabled` defaults to true (a device still has to turn
@@ -1017,8 +1017,8 @@ import type { InlineExtension, ToolDefinition } from '@earendil-works/pi-coding-
 const EXTENSION_DISCOVERY_WAIT_MS = 10_000;
 import { matchRemoteRepoRule } from './remote-candidates.js';
 import { ReplyRouting, WEB_ORIGIN, type ReplyOrigin, type RoutingSnapshot } from './reply-routing.js';
-import { KENNING_CUSTOM_TYPE } from './kenning-delivery.js';
-import { createHumanInputMarker, humanInputChannel, willReachInputEvent, type HumanInputMarker } from './kenning-human-input.js';
+import { SHIPMATES_CUSTOM_TYPE } from './shipmates-delivery.js';
+import { createHumanInputMarker, humanInputChannel, willReachInputEvent, type HumanInputMarker } from './shipmates-human-input.js';
 import type { AgentSession, AgentSessionEvent } from '@earendil-works/pi-coding-agent';
 import type { Model, Api, ImageContent } from '@earendil-works/pi-ai';
 import type { SessionMessageEntry, SessionEntry } from '@earendil-works/pi-coding-agent';
@@ -1078,7 +1078,7 @@ export interface ServerTrackedSession {
   // turn's system prompt. See conversation-mode-hint.ts.
   conversationSignal: ConversationModeSignal;
   // This session's way onto its own `pi.events` bus, to mark a human's send for
-  // kenning (`kenning:human-input`, ADR 0023). Rebuilt with the agent.
+  // shipmates (`shipmates:human-input`, ADR 0023). Rebuilt with the agent.
   humanInput: HumanInputMarker;
   // True while `reloadSession` is rebuilding this session's agent. During that
   // window `agentSession` is the OLD, shutting-down agent: sends are refused, and
@@ -1131,7 +1131,7 @@ export type TrackedSession = ServerTrackedSession | CliTrackedSession;
 export function composeServerAgentParts(opts: {
   cwd: string;
   conversationExtension: InlineExtension;
-  /** The human-input marker's extension (kenning, ADR 0023); right after the conversation one. */
+  /** The human-input marker's extension (shipmates, ADR 0023); right after the conversation one. */
   humanInputExtension?: InlineExtension;
   extraExtensionFactories: readonly InlineExtension[];
   assistant: AssistantSessionHooks | undefined;
@@ -2173,7 +2173,7 @@ export class SessionPool {
    */
   private routeEvent(tracked: TrackedSession, event: AgentSessionEvent): void {
     // Run boundaries are tracked from the first run on, even before any send
-    // recorded an origin: a kenning delivery is judged by where in a run it falls.
+    // recorded an origin: a shipmates delivery is judged by where in a run it falls.
     if (event.type === 'agent_start') {
       this.routingFor(tracked.sessionFile).runStarted();
       return;
@@ -2183,11 +2183,11 @@ export class SessionPool {
     const message = (event as any).message;
     if (event.type === 'message_end' && message?.role === 'user') {
       r.takeForUserMessage();
-    } else if (event.type === 'message_end' && message?.role === 'custom' && message.customType === KENNING_CUSTOM_TYPE) {
-      r.kenningDelivered('message');
+    } else if (event.type === 'message_end' && message?.role === 'custom' && message.customType === SHIPMATES_CUSTOM_TYPE) {
+      r.shipmatesDelivered('message');
     } else if ((event.type as string) === 'entry_appended') {
       const entry = (event as any).entry;
-      if (entry?.type === 'custom_message' && entry.customType === KENNING_CUSTOM_TYPE) r.kenningDelivered('entry');
+      if (entry?.type === 'custom_message' && entry.customType === SHIPMATES_CUSTOM_TYPE) r.shipmatesDelivered('entry');
     } else if (event.type === 'agent_end') {
       r.runEnded();
     } else if (event.type === 'agent_settled') {
@@ -2324,12 +2324,12 @@ export class SessionPool {
   }
 
   /**
-   * A session kenning asked for (`KenningHost.spawn`, kenning D28): built in
-   * `folder` with a live agent (so kenning-pi starts in it and is woken by the
+   * A session shipmates asked for (`ShipmatesHost.spawn`, shipmates D28): built in
+   * `folder` with a live agent (so @shipmates/pi starts in it and is woken by the
    * owner's first message), and NOTHING sent into it. With `fork`, it starts as
    * a branch of `fork.sessionFile` up to `fork.entryId` (inclusive; the whole
    * transcript without one), written by pi's own SessionManager into `folder`'s
-   * session dir with `folder` as its cwd (kenning D34). `title` becomes the
+   * session dir with `folder` as its cwd (shipmates D34). `title` becomes the
    * session's name, which the sidebar shows.
    */
   async spawnSession(opts: {
@@ -2364,7 +2364,7 @@ export class SessionPool {
       try {
         tracked.agentSession.setSessionName(opts.title);
       } catch (err) {
-        console.warn(`[wherever] kenning spawn: could not name ${tracked.sessionFile}: ${(err as Error).message}`);
+        console.warn(`[wherever] shipmates spawn: could not name ${tracked.sessionFile}: ${(err as Error).message}`);
       }
     }
     return { tracked };
@@ -2780,11 +2780,11 @@ export class SessionPool {
       // (no expansion); calling prompt() directly is what lets the pool observe
       // `preflightResult` for reply routing.
       // The `input` event's source is `extension` for BOTH: `interactive` means
-      // typed in pi's TUI, and kenning records an `interactive` input as the
+      // typed in pi's TUI, and shipmates records an `interactive` input as the
       // human's own words, which a scheduled `/`-prompt is not (ADR 0023). It is
       // also what a CLI-bridge session reports for the same web text, which
       // arrives there through `pi.sendUserMessage`. A human's send is marked on
-      // the session's bus right before it instead (kenning-human-input.ts).
+      // the session's bus right before it instead (shipmates-human-input.ts).
       // Counted as busy (synchronously, before the first await) so a /reload
       // cannot dispose the agent under a send that pi has not started streaming.
       const routing = this.routingFor(tracked.sessionFile);
@@ -2797,8 +2797,8 @@ export class SessionPool {
         else routing.queued(ticket);
       };
       tracked.busy = (tracked.busy ?? 0) + 1;
-      // The kenning mark for a human's send (ADR 0023), closed in `finally` once
-      // the awaited prompt() settled (kenning D35): a send another extension
+      // The shipmates mark for a human's send (ADR 0023), closed in `finally` once
+      // the awaited prompt() settled (shipmates D35): a send another extension
       // handled, or one refused while compacting, leaves no mark behind.
       const humanInput = tracked.humanInput;
       const humanChannel = humanInputChannel(origin);
@@ -2838,7 +2838,7 @@ export class SessionPool {
       const ticket = routing.record(origin, streamingBehavior === 'followUp' ? 'followUp' : 'promptOrSteer');
       // Relay the signal to the bridged pi (omitted when off, so the payload is
       // unchanged for a non-conversation message and older extensions are fine).
-      // `humanInput` asks the extension to mark the send for kenning on its own
+      // `humanInput` asks the extension to mark the send for shipmates on its own
       // bus (ADR 0023); omitted for anything not a human's, and ignored by an
       // older extension, which then marks nothing (the safe side).
       const humanChannel = humanInputChannel(origin);
@@ -3502,7 +3502,7 @@ export class SessionPool {
     // per session, so the armed flag can never cross sessions.
     const conversationSignal = createConversationModeSignal();
     // Likewise per session: the bus a human-input mark goes on is this
-    // session's own (kenning-human-input.ts).
+    // session's own (shipmates-human-input.ts).
     const humanInput = createHumanInputMarker();
     const parts = composeServerAgentParts({
       cwd: opts.cwd,

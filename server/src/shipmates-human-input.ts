@@ -2,11 +2,11 @@ import type { ExtensionAPI, InlineExtension } from '@earendil-works/pi-coding-ag
 import { WEB_ORIGIN, type ReplyOrigin } from './reply-routing.js';
 
 /**
- * Marking human input for kenning (kenning's D22 and ADR 0003, wherever ADR 0023).
+ * Marking human input for shipmates (shipmates' D22 and ADR 0003, wherever ADR 0023).
  *
- * kenning records a user message as the HUMAN's words (which only then may be
+ * shipmates records a user message as the HUMAN's words (which only then may be
  * relayed as `human-relayed` to satisfy another session's safety gate) when the
- * host emits `kenning:human-input` `{text, channel}` on that session's
+ * host emits `shipmates:human-input` `{text, channel}` on that session's
  * `pi.events` bus right before sending the text. The bus belongs to one
  * session's resource loader, and no tool can reach it, so the model cannot
  * produce a mark.
@@ -19,25 +19,25 @@ import { WEB_ORIGIN, type ReplyOrigin } from './reply-routing.js';
  */
 
 /**
- * The event kenning-pi listens for: kenning's `HUMAN_INPUT_EVENT` (its
- * `host.ts`), copied so that loading the session pool does not load kenning
- * (and `node:sqlite`) for a user who does not use it. kenning-human-input.test.ts
- * pins it against kenning's constant.
+ * The event @shipmates/pi listens for: shipmates' `HUMAN_INPUT_EVENT` (its
+ * `host.ts`), copied so that loading the session pool does not load shipmates
+ * (and `node:sqlite`) for a user who does not use it. shipmates-human-input.test.ts
+ * pins it against shipmates' constant.
  */
-export const HUMAN_INPUT_EVENT = 'kenning:human-input';
+export const HUMAN_INPUT_EVENT = 'shipmates:human-input';
 
 /**
- * kenning's `HUMAN_INPUT_END_EVENT` (kenning D35), copied for the same reason:
- * emitted once the marked, AWAITED send settled, so kenning drops the mark if
+ * shipmates' `HUMAN_INPUT_END_EVENT` (shipmates D35), copied for the same reason:
+ * emitted once the marked, AWAITED send settled, so shipmates drops the mark if
  * no input consumed it. Server sessions only: the CLI bridge's
  * `pi.sendUserMessage()` is fire-and-forget, so an end there could drop a mark
- * that is about to match (it relies on kenning's 5 s expiry instead).
+ * that is about to match (it relies on shipmates' 5 s expiry instead).
  */
-export const HUMAN_INPUT_END_EVENT = 'kenning:human-input-end';
+export const HUMAN_INPUT_END_EVENT = 'shipmates:human-input-end';
 
 export type HumanInputChannel = 'web' | 'telegram';
 
-/** The kenning channel of a routing origin, or null when the send is not a human's. */
+/** The shipmates channel of a routing origin, or null when the send is not a human's. */
 export function humanInputChannel(origin: ReplyOrigin | null | undefined): HumanInputChannel | null {
   if (origin === WEB_ORIGIN) return 'web';
   if (origin === 'telegram' || (typeof origin === 'string' && origin.startsWith('telegram:'))) return 'telegram';
@@ -52,13 +52,13 @@ export interface InputEventProbe {
 
 /**
  * Whether pi's `prompt()` will emit the `input` event for this text, which is
- * what consumes a mark. A mark it never consumes stays in kenning-pi's queue
+ * what consumes a mark. A mark it never consumes stays in @shipmates/pi's queue
  * and could later match the identical text from a scheduled job, so wherever
  * does not mark a send pi will not pass to `input`: one an extension command
  * handles (`/name ...` with `expandPromptTemplates`, before `input`), or one
  * made while compacting (refused before `input`; auto-compaction is counted
  * too, the safe side). A residue remains: another extension's `input` handler
- * that returns `handled` before kenning-pi's (ADR 0023).
+ * that returns `handled` before @shipmates/pi's (ADR 0023).
  */
 export function willReachInputEvent(session: InputEventProbe, text: string): boolean {
   if (session.isCompacting) return false;
@@ -76,7 +76,7 @@ export interface HumanInputMarker {
   inlineExtension: InlineExtension;
   /** Emit the mark, and return its id for `end`. A no-op until the extension was loaded. */
   mark(text: string, channel: HumanInputChannel): string;
-  /** The marked send settled (resolved or threw): close that mark (kenning D35). */
+  /** The marked send settled (resolved or threw): close that mark (shipmates D35). */
   end(text: string, id: string): void;
 }
 

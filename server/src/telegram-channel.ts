@@ -113,7 +113,7 @@ export type TelegramFetch = (
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
-  /** A tap on an inline button (a kenning question's option). */
+  /** A tap on an inline button (a shipmates question's option). */
   callback_query?: TelegramCallbackQuery;
 }
 
@@ -141,7 +141,7 @@ export interface TelegramMessage {
   media_group_id?: string;
   photo?: Array<{ file_id: string; file_size?: number; width?: number; height?: number }>;
   document?: { file_id: string; file_name?: string; mime_type?: string; file_size?: number };
-  /** The message this one replies to (a reply to a kenning question answers it). */
+  /** The message this one replies to (a reply to a shipmates question answers it). */
   reply_to_message?: { message_id: number };
   [k: string]: unknown;
 }
@@ -738,7 +738,7 @@ export class TelegramChannel implements AssistantChannel {
     const wanted = messages.flatMap((m) => inboundFilesOf(m));
     const unsupported = messages.some((m) => hasUnsupportedMedia(m));
     const trimmed = text.trim();
-    // A text reply to a message this channel sent for a notification (a kenning
+    // A text reply to a message this channel sent for a notification (a shipmates
     // question): the answer, from the paired user, i.e. a human act (wherever
     // ADR 0023). Checked first: replying is explicit. A reply to anything else
     // is an ordinary message.

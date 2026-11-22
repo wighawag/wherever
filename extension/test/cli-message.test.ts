@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cliHumanInputMark, cliMessageContent, KENNING_HUMAN_INPUT_EVENT } from "../src/cli-message.ts";
+import { cliHumanInputMark, cliMessageContent, SHIPMATES_HUMAN_INPUT_EVENT } from "../src/cli-message.ts";
 
 const PNG = { type: "image" as const, data: "iVBORw0KGgo=", mimeType: "image/png" };
 
@@ -34,8 +34,8 @@ test("malformed image entries are dropped (all malformed = the plain string)", (
   ]);
 });
 
-test("the kenning mark: only a human's send (web, Telegram), with the exact text", () => {
-  assert.equal(KENNING_HUMAN_INPUT_EVENT, "kenning:human-input");
+test("the shipmates mark: only a human's send (web, Telegram), with the exact text", () => {
+  assert.equal(SHIPMATES_HUMAN_INPUT_EVENT, "shipmates:human-input");
   assert.deepEqual(cliHumanInputMark({ message: "I approve", humanInput: { channel: "web" } }), { text: "I approve", channel: "web" });
   assert.deepEqual(cliHumanInputMark({ message: "/skill:x go", humanInput: { channel: "telegram" } }), { text: "/skill:x go", channel: "telegram" });
   // A scheduled job (no field), an older server, an unknown channel: nothing.

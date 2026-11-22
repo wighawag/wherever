@@ -43,7 +43,7 @@ import {
 	searchFolderStore,
 	searchCreateRemoteStore,
 	applyAssistantPointer,
-	applyKenningUpdate,
+	applyShipmatesUpdate,
 } from './session-store';
 
 export type {ChatMessage, WhereverState};
@@ -568,8 +568,8 @@ export const client = new WhereverClient({
 	hideTools: !!initialConfig.hideTools,
 	// Large history images come by reference; `toolImageSrc` loads them.
 	imageRefs: true,
-	// kenning's deliveries into a session render as cards (KenningCard.svelte).
-	kenningCards: true,
+	// shipmates' deliveries into a session render as cards (ShipmatesCard.svelte).
+	shipmatesCards: true,
 });
 
 export const state = client.stateStore;
@@ -742,74 +742,74 @@ export function prefillComposer(text: string) {
 // (forked) session, not the source one.
 let pendingForkPrefill: string | null = null;
 
-/** Undo requests in flight, by batch, settled by `kenning_undo_result`. */
-const pendingKenningUndos = new Map<
+/** Undo requests in flight, by batch, settled by `shipmates_undo_result`. */
+const pendingShipmatesUndos = new Map<
 	string,
 	(r: {ok: true} | {ok: false; error: string}) => void
 >();
 
 /**
- * Undo a delete that cascaded through kenning ownership (kenning D24): the
+ * Undo a delete that cascaded through shipmates ownership (shipmates D24): the
  * sessions come back to the list (the server re-lists). Resolves with the
  * server's verdict, or an error when not connected or after 15 s.
  */
-export function undoKenningDelete(
+export function undoShipmatesDelete(
 	batch: string,
 ): Promise<{ok: true} | {ok: false; error: string}> {
 	return new Promise((resolve) => {
 		const timer = setTimeout(() => {
-			if (!pendingKenningUndos.delete(batch)) return;
+			if (!pendingShipmatesUndos.delete(batch)) return;
 			resolve({ok: false, error: 'no answer from the server'});
 		}, 15_000);
-		pendingKenningUndos.get(batch)?.({ok: false, error: 'superseded'});
-		pendingKenningUndos.set(batch, (r) => {
+		pendingShipmatesUndos.get(batch)?.({ok: false, error: 'superseded'});
+		pendingShipmatesUndos.set(batch, (r) => {
 			clearTimeout(timer);
 			resolve(r);
 		});
-		if (!client.send({type: 'kenning_undo_delete', batch})) {
-			pendingKenningUndos.get(batch)?.({ok: false, error: 'not connected'});
-			pendingKenningUndos.delete(batch);
+		if (!client.send({type: 'shipmates_undo_delete', batch})) {
+			pendingShipmatesUndos.get(batch)?.({ok: false, error: 'not connected'});
+			pendingShipmatesUndos.delete(batch);
 		}
 	});
 }
 
-/** Answers to kenning items in flight, by request id, settled by `kenning_answer_result`. */
-const pendingKenningAnswers = new Map<
+/** Answers to shipmates items in flight, by request id, settled by `shipmates_answer_result`. */
+const pendingShipmatesAnswers = new Map<
 	string,
 	(r: {ok: true} | {ok: false; error: string}) => void
 >();
-let kenningAnswerSeq = 0;
+let shipmatesAnswerSeq = 0;
 
 /**
- * Answer a kenning attention item from the web reply box (wherever ADR 0023):
+ * Answer a shipmates attention item from the web reply box (wherever ADR 0023):
  * the server records it as the human's answer (channel `web`) and delivers it
  * to the asking session. Resolves with the server's verdict (matched by a
  * request id, so a second answer in flight gets its own), or an error when not
  * connected or no answer came within 15 s.
  */
-export function answerKenningItem(
+export function answerShipmatesItem(
 	itemId: string,
 	text: string,
 ): Promise<{ok: true} | {ok: false; error: string}> {
 	return new Promise((resolve) => {
-		const requestId = `ka-${Date.now()}-${++kenningAnswerSeq}`;
+		const requestId = `ka-${Date.now()}-${++shipmatesAnswerSeq}`;
 		const timer = setTimeout(() => {
-			if (!pendingKenningAnswers.delete(requestId)) return;
+			if (!pendingShipmatesAnswers.delete(requestId)) return;
 			resolve({
 				ok: false,
 				error: 'no answer from the server; check the connection and try again',
 			});
 		}, 15_000);
-		pendingKenningAnswers.set(requestId, (r) => {
+		pendingShipmatesAnswers.set(requestId, (r) => {
 			clearTimeout(timer);
 			resolve(r);
 		});
-		if (!client.send({type: 'kenning_answer', itemId, text, requestId})) {
-			pendingKenningAnswers.get(requestId)?.({
+		if (!client.send({type: 'shipmates_answer', itemId, text, requestId})) {
+			pendingShipmatesAnswers.get(requestId)?.({
 				ok: false,
 				error: 'not connected',
 			});
-			pendingKenningAnswers.delete(requestId);
+			pendingShipmatesAnswers.delete(requestId);
 		}
 	});
 }
@@ -916,15 +916,15 @@ client.onMessage((msg) => {
 			fetchSessions();
 			break;
 
-		case 'kenning_update':
-			applyKenningUpdate(msg);
+		case 'shipmates_update':
+			applyShipmatesUpdate(msg);
 			break;
 
-		case 'kenning_undo_result': {
+		case 'shipmates_undo_result': {
 			const m = msg as {batch: string; ok: boolean; error?: string};
-			const pending = pendingKenningUndos.get(m.batch);
+			const pending = pendingShipmatesUndos.get(m.batch);
 			if (pending) {
-				pendingKenningUndos.delete(m.batch);
+				pendingShipmatesUndos.delete(m.batch);
 				pending(
 					m.ok ? {ok: true} : {ok: false, error: m.error || 'not undone'},
 				);
@@ -932,13 +932,13 @@ client.onMessage((msg) => {
 			break;
 		}
 
-		case 'kenning_answer_result': {
+		case 'shipmates_answer_result': {
 			const m = msg as {requestId?: string; ok: boolean; error?: string};
 			const pending = m.requestId
-				? pendingKenningAnswers.get(m.requestId)
+				? pendingShipmatesAnswers.get(m.requestId)
 				: undefined;
 			if (pending && m.requestId) {
-				pendingKenningAnswers.delete(m.requestId);
+				pendingShipmatesAnswers.delete(m.requestId);
 				pending(
 					m.ok ? {ok: true} : {ok: false, error: m.error || 'not answered'},
 				);

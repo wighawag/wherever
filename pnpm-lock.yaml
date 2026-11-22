@@ -73,15 +73,15 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: 1.4.0
         version: 1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/signature-v4@5.7.4)(supports-color@5.5.0)(ws@8.20.1)(zod@4.4.3)
-      kenning:
-        specifier: ^0.1.1
-        version: 0.1.1
       memonaut:
         specifier: ^0.4.0
         version: 0.4.0
       semver:
         specifier: ^7.7.0
         version: 7.8.0
+      shipmates:
+        specifier: ^0.2.0
+        version: 0.2.0
       typebox:
         specifier: ^1.1.38
         version: 1.1.38
@@ -89,6 +89,9 @@ importers:
         specifier: ^8.18.0
         version: 8.20.1
     devDependencies:
+      '@shipmates/pi':
+        specifier: ^0.3.0
+        version: 0.3.0(@earendil-works/pi-coding-agent@1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/signature-v4@5.7.4)(supports-color@5.5.0)(ws@8.20.1)(zod@4.4.3))(typebox@1.1.38)
       '@types/node':
         specifier: ^22.0.0
         version: 22.19.19
@@ -98,9 +101,6 @@ importers:
       '@types/ws':
         specifier: ^8.5.13
         version: 8.18.1
-      kenning-pi:
-        specifier: ^0.1.1
-        version: 0.1.1(@earendil-works/pi-coding-agent@1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/signature-v4@5.7.4)(supports-color@5.5.0)(ws@8.20.1)(zod@4.4.3))(typebox@1.1.38)
       tsx:
         specifier: ^4.19.0
         version: 4.22.3
@@ -1399,6 +1399,13 @@ packages:
     resolution: {integrity: sha512-QVTUovf40zgTqlFVrKA1uXMVvU2QWEFWfAH8Wdc48IxLvrJMQVMBRjuQyUpzZCDkakImib9eVazbWlC6ksWtJw==}
     cpu: [x64]
     os: [win32]
+
+  '@shipmates/pi@0.3.0':
+    resolution: {integrity: sha512-gJi2HGnEpW4Nu6O/jHx7YiTinRWz8FJ2hyb8UXklJEd9nw+LLt4Lxos0cTIE8KTpFheg/0jeRkxjLOW71moUiQ==}
+    engines: {node: '>=22.5.0'}
+    peerDependencies:
+      '@earendil-works/pi-coding-agent': '*'
+      typebox: '*'
 
   '@silvia-odwyer/photon-node@0.3.4':
     resolution: {integrity: sha512-bnly4BKB3KDTFxrUIcgCLbaeVVS8lrAkri1pEzskpmxu9MdfGQTy8b8EgcD83ywD3RPMsIulY8xJH5Awa+t9fA==}
@@ -2729,18 +2736,6 @@ packages:
   jws@4.0.1:
     resolution: {integrity: sha512-EKI/M/yqPncGUUh44xz0PxSidXFr/+r0pA70+gIYhjv+et7yxM+s29Y+VGDkovRofQem0fs7Uvf4+YmAdyRduA==}
 
-  kenning-pi@0.1.1:
-    resolution: {integrity: sha512-7HwbvNwKRLELcqOuMkh7UsSTKSzYo33CLohYk8b6DrHNn1N+H7wpviu9phWoOllaUIxqb2Nb4x7+O3sy/bByug==}
-    engines: {node: '>=22.5.0'}
-    peerDependencies:
-      '@earendil-works/pi-coding-agent': '*'
-      typebox: '*'
-
-  kenning@0.1.1:
-    resolution: {integrity: sha512-LvmcOwZHn1mJC5yQcPuiTfdjkxX2rMyPzctL0US6KouwJm1jvB6giVXnQb4lsUXtgGs9OIRSLFWLXQv3MF+g1w==}
-    engines: {node: '>=22.5.0'}
-    hasBin: true
-
   keygrip@1.1.0:
     resolution: {integrity: sha512-iYSchDJ+liQ8iwbSI2QqsQOvqv58eJCEanyJPJi+Khyu8smkcKSFUCbPwzFcL7YVtZ6eONjqRX/38caJ7QjRAQ==}
     engines: {node: '>= 0.6'}
@@ -3644,6 +3639,11 @@ packages:
   shebang-regex@3.0.0:
     resolution: {integrity: sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==}
     engines: {node: '>=8'}
+
+  shipmates@0.2.0:
+    resolution: {integrity: sha512-Uzd6QB9FfQTY+wdKywxi6ilbn3eeFO93u+iBMsivrYeSxOx6S6sVjEG41jbiowM7xpY+mrTsN/xbQACXwJ5ncA==}
+    engines: {node: '>=22.5.0'}
+    hasBin: true
 
   side-channel-list@1.0.1:
     resolution: {integrity: sha512-mjn/0bi/oUURjc5Xl7IaWi/OJJJumuoJFQJfDDyO46+hBWsfaVM65TBHq2eoZBhzl9EchxOijpkbRC8SVBQU0w==}
@@ -5196,6 +5196,12 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.60.4':
     optional: true
 
+  '@shipmates/pi@0.3.0(@earendil-works/pi-coding-agent@1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/signature-v4@5.7.4)(supports-color@5.5.0)(ws@8.20.1)(zod@4.4.3))(typebox@1.1.38)':
+    dependencies:
+      '@earendil-works/pi-coding-agent': 1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/signature-v4@5.7.4)(supports-color@5.5.0)(ws@8.20.1)(zod@4.4.3)
+      shipmates: 0.2.0
+      typebox: 1.1.38
+
   '@silvia-odwyer/photon-node@0.3.4': {}
 
   '@sindresorhus/merge-streams@2.3.0': {}
@@ -6554,14 +6560,6 @@ snapshots:
       jwa: 2.0.1
       safe-buffer: 5.2.1
 
-  kenning-pi@0.1.1(@earendil-works/pi-coding-agent@1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/signature-v4@5.7.4)(supports-color@5.5.0)(ws@8.20.1)(zod@4.4.3))(typebox@1.1.38):
-    dependencies:
-      '@earendil-works/pi-coding-agent': 1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/signature-v4@5.7.4)(supports-color@5.5.0)(ws@8.20.1)(zod@4.4.3)
-      kenning: 0.1.1
-      typebox: 1.1.38
-
-  kenning@0.1.1: {}
-
   keygrip@1.1.0:
     dependencies:
       tsscmp: 1.0.6
@@ -7447,6 +7445,8 @@ snapshots:
       shebang-regex: 3.0.0
 
   shebang-regex@3.0.0: {}
+
+  shipmates@0.2.0: {}
 
   side-channel-list@1.0.1:
     dependencies:

@@ -1,16 +1,16 @@
 <script lang="ts">
 	/**
-	 * kenning's attention inbox (wherever ADR 0023): the questions sessions
+	 * shipmates' attention inbox (wherever ADR 0023): the questions sessions
 	 * raised for the human (`human_ask`), blocking ones first. Answering here is
 	 * a HUMAN act: the server records it as the human's answer (channel `web`)
 	 * and delivers it to the asking session, which may be waiting on it.
 	 *
-	 * The inbox is live (`kenning_update` frames): an item answered elsewhere
+	 * The inbox is live (`shipmates_update` frames): an item answered elsewhere
 	 * (a terminal, Telegram, another device) disappears here on its own.
 	 */
-	import {kenningStore} from '$lib/session-store';
-	import {answerKenningItem} from '$lib/wherever';
-	import type {KenningInboxItem} from '$lib/core/kenning';
+	import {shipmatesStore} from '$lib/session-store';
+	import {answerShipmatesItem} from '$lib/wherever';
+	import type {ShipmatesInboxItem} from '$lib/core/shipmates';
 
 	let {onOpened}: {onOpened?: () => void} = $props();
 
@@ -18,18 +18,18 @@
 	let sending = $state<Record<string, boolean>>({});
 	let errors = $state<Record<string, string>>({});
 
-	async function answer(item: KenningInboxItem, text: string) {
+	async function answer(item: ShipmatesInboxItem, text: string) {
 		const trimmed = text.trim();
 		if (!trimmed || sending[item.id]) return;
 		sending[item.id] = true;
 		errors[item.id] = '';
-		const r = await answerKenningItem(item.id, trimmed);
+		const r = await answerShipmatesItem(item.id, trimmed);
 		sending[item.id] = false;
 		if (r.ok) drafts[item.id] = '';
 		else errors[item.id] = r.error;
 	}
 
-	function openAsker(item: KenningInboxItem) {
+	function openAsker(item: ShipmatesInboxItem) {
 		if (!item.sessionId) return;
 		// The page's hashchange handler opens it, as a notification tap does.
 		window.location.hash = encodeURIComponent(item.sessionId);
@@ -46,13 +46,13 @@
 </script>
 
 <div class="flex h-full flex-col overflow-y-auto">
-	{#if $kenningStore.inbox.length === 0}
+	{#if $shipmatesStore.inbox.length === 0}
 		<div class="p-3 text-xs text-brand-text-muted">
 			Nothing needs you right now. Questions sessions raise with
 			<code class="text-brand-blue">human_ask</code> show up here.
 		</div>
 	{:else}
-		{#each $kenningStore.inbox as item (item.id)}
+		{#each $shipmatesStore.inbox as item (item.id)}
 			<div class="border-b border-brand-border/30 px-3 py-2">
 				<div
 					class="flex items-center gap-1.5 text-[10px] text-brand-text-muted"

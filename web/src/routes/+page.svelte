@@ -8,13 +8,13 @@
 	import ChatInput from '$lib/components/ChatInput.svelte';
 	import SessionBrowser from '$lib/components/SessionBrowser.svelte';
 	import ConversationSearch from '$lib/components/ConversationSearch.svelte';
-	import KenningInbox from '$lib/components/KenningInbox.svelte';
+	import ShipmatesInbox from '$lib/components/ShipmatesInbox.svelte';
 	import {
 		inboxBadge,
 		inboxCount,
 		syncAppBadge,
 		titleWithInboxCount,
-	} from '$lib/core/kenning';
+	} from '$lib/core/shipmates';
 	import SudoPasswordDialog from '$lib/components/SudoPasswordDialog.svelte';
 	import RestorePanel from '$lib/components/RestorePanel.svelte';
 	import RestoreProgress from '$lib/components/RestoreProgress.svelte';
@@ -71,7 +71,7 @@
 		setSessionStarred,
 		assistantStatusStore,
 		isAssistantSession,
-		kenningStore,
+		shipmatesStore,
 	} from '$lib/session-store';
 	import {onMount} from 'svelte';
 	import {version} from '$app/environment';
@@ -84,8 +84,8 @@
 	// read-only page (sessions.readOnly folders) reached via the sidebar link, or
 	// conversation search (full-text over every past session, GET /search).
 	// The read-only page hides the create form, delete controls, and the composer.
-	// Or kenning's attention inbox ('inbox', wherever ADR 0023), shown only while
-	// the server has kenning.
+	// Or shipmates' attention inbox ('inbox', wherever ADR 0023), shown only while
+	// the server has shipmates.
 	let sessionView = $state<'main' | 'readonly' | 'search' | 'inbox'>('main');
 	// Search mirrors the two list views rather than spanning them: it is opened
 	// from one of them and searches exactly that view's sessions, so the visibility
@@ -443,24 +443,24 @@
 	// server (configured and holding its folder lock); Reset only on the current
 	// assistant session itself.
 	let assistantActive = $derived($assistantStatusStore.active);
-	// kenning's inbox badge: how many questions wait for the human, and whether
-	// a session is blocked on one. Null when empty or when the server has no kenning.
-	let kenningBadge = $derived(
-		$kenningStore.available ? inboxBadge($kenningStore.inbox) : null,
+	// shipmates' inbox badge: how many questions wait for the human, and whether
+	// a session is blocked on one. Null when empty or when the server has no shipmates.
+	let shipmatesBadge = $derived(
+		$shipmatesStore.available ? inboxBadge($shipmatesStore.inbox) : null,
 	);
 	// The same count in the tab title and on the installed app's icon, so a
 	// question is visible from another tab or the home screen. Needs no
-	// assistant: it comes from `kenning_update` alone.
-	let kenningCount = $derived(inboxCount($kenningStore));
+	// assistant: it comes from `shipmates_update` alone.
+	let shipmatesCount = $derived(inboxCount($shipmatesStore));
 	$effect(() => {
 		syncAppBadge(
 			typeof navigator === 'undefined' ? undefined : navigator,
-			kenningCount,
+			shipmatesCount,
 		);
 	});
 	$effect(() => {
-		// The server lost kenning (or a reconnect to one without it): leave the panel.
-		if (sessionView === 'inbox' && !$kenningStore.available)
+		// The server lost shipmates (or a reconnect to one without it): leave the panel.
+		if (sessionView === 'inbox' && !$shipmatesStore.available)
 			sessionView = 'main';
 	});
 	let viewingAssistant = $derived(
@@ -550,7 +550,7 @@
 <Head
 	title={titleWithInboxCount(
 		appearanceLabel ? `Wherever · ${appearanceLabel}` : 'Wherever',
-		kenningCount,
+		shipmatesCount,
 	)}
 	description="Create & maintain apps from wherever"
 />
@@ -794,22 +794,22 @@
 							>
 						</button>
 					{/if}
-					{#if $kenningStore.available}
+					{#if $shipmatesStore.available}
 						<button
 							onclick={() => (sessionView = 'inbox')}
-							class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-brand-surface-3/50 hover:text-brand-text {kenningBadge
+							class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-brand-surface-3/50 hover:text-brand-text {shipmatesBadge
 								? 'text-brand-text'
 								: 'text-brand-text-muted'}"
-							title="Questions your sessions asked you (kenning)"
+							title="Questions your sessions asked you (shipmates)"
 						>
 							<span>🙋</span>
 							<span>Needs you</span>
-							{#if kenningBadge}
+							{#if shipmatesBadge}
 								<span
-									class="ml-auto rounded-full px-1.5 text-[10px] font-semibold {kenningBadge.blocking
+									class="ml-auto rounded-full px-1.5 text-[10px] font-semibold {shipmatesBadge.blocking
 										? 'bg-amber-500 text-black'
 										: 'bg-brand-surface-3 text-brand-text'}"
-									>{kenningBadge.count}</span
+									>{shipmatesBadge.count}</span
 								>
 								<span>→</span>
 							{:else}
@@ -879,7 +879,7 @@
 			<!-- Session Browser -->
 			<div class="flex-1 overflow-hidden">
 				{#if sessionView === 'inbox'}
-					<KenningInbox onOpened={() => (sidebarOpen = false)} />
+					<ShipmatesInbox onOpened={() => (sidebarOpen = false)} />
 				{:else if sessionView === 'search'}
 					<!-- onOpened closes the mobile sidebar even when the tapped result is
 					     the session already open: that path starts no load, so the
@@ -909,13 +909,13 @@
 				class="relative p-1 text-brand-text-muted hover:text-brand-text md:hidden"
 			>
 				=
-				{#if kenningBadge}
-					<!-- kenning: something needs the human (the sidebar holds the inbox). -->
+				{#if shipmatesBadge}
+					<!-- shipmates: something needs the human (the sidebar holds the inbox). -->
 					<span
-						class="absolute -top-0.5 -right-1 h-2 w-2 rounded-full {kenningBadge.blocking
+						class="absolute -top-0.5 -right-1 h-2 w-2 rounded-full {shipmatesBadge.blocking
 							? 'bg-amber-500'
 							: 'bg-brand-blue'}"
-						title="{kenningBadge.count} question{kenningBadge.count === 1
+						title="{shipmatesBadge.count} question{shipmatesBadge.count === 1
 							? ''
 							: 's'} for you"
 					></span>
