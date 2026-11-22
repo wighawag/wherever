@@ -3,38 +3,38 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { InlineExtension } from '@earendil-works/pi-coding-agent';
-import kenningPi from 'kenning-pi';
-import { HUMAN_INPUT_END_EVENT, HUMAN_INPUT_EVENT, openKenning, type Kenning } from 'kenning';
+import shipmatesPi from '@shipmates/pi';
+import { HUMAN_INPUT_END_EVENT, HUMAN_INPUT_EVENT, openShipmates, type Shipmates } from 'shipmates';
 import { SessionPool, composeServerAgentParts, type ServerTrackedSession } from '../src/session-pool.ts';
-import { HUMAN_INPUT_EVENT as SERVER_HUMAN_INPUT_EVENT, HUMAN_INPUT_END_EVENT as SERVER_HUMAN_INPUT_END_EVENT, humanInputChannel, willReachInputEvent } from '../src/kenning-human-input.ts';
+import { HUMAN_INPUT_EVENT as SERVER_HUMAN_INPUT_EVENT, HUMAN_INPUT_END_EVENT as SERVER_HUMAN_INPUT_END_EVENT, humanInputChannel, willReachInputEvent } from '../src/shipmates-human-input.ts';
 import { serverBuiltinExtensions } from '../src/builtin-extensions.ts';
-import { KENNING_HUMAN_INPUT_EVENT } from '../../extension/src/cli-message.ts';
+import { SHIPMATES_HUMAN_INPUT_EVENT } from '../../extension/src/cli-message.ts';
 import { startFakeLlmServer, type FakeLlmServer } from './fake-llm-server.js';
 
 /**
- * Human-input marking for kenning (wherever ADR 0023, kenning D22 / ADR 0003).
- * Before a web or Telegram send, wherever emits `kenning:human-input` on the
- * session's own `pi.events` bus, so kenning-pi records the turn as the human's
- * words; a scheduled job's text never is. Proven with the REAL kenning-pi
+ * Human-input marking for shipmates (wherever ADR 0023, shipmates D22 / ADR 0003).
+ * Before a web or Telegram send, wherever emits `shipmates:human-input` on the
+ * session's own `pi.events` bus, so @shipmates/pi records the turn as the human's
+ * words; a scheduled job's text never is. Proven with the REAL @shipmates/pi
  * extension loaded in REAL server sessions (pi against the fake LLM, ADR 0001):
  * the model relays a human's words with `session_tell` `origin:
- * "human-relayed"`, which kenning accepts only for words a human typed.
+ * "human-relayed"`, which shipmates accepts only for words a human typed.
  *
- * kenning's database is this file's temp home (setup-isolate-env.ts sets
- * KENNING_STATE_DIR); PI_CODING_AGENT_DIR, WHEREVER_CONFIG_DIR and
+ * shipmates' database is this file's temp home (setup-isolate-env.ts sets
+ * SHIPMATES_STATE_DIR); PI_CODING_AGENT_DIR, WHEREVER_CONFIG_DIR and
  * WHEREVER_STATE_DIR are temp dirs.
  */
 
 let root: string;
 let fake: FakeLlmServer;
-let kenning: Kenning;
+let shipmates: Shipmates;
 const savedEnv: Record<string, string | undefined> = {};
 const pools: SessionPool[] = [];
-const kenningExtension: InlineExtension = { name: 'kenning-pi', factory: kenningPi as InlineExtension['factory'] };
+const shipmatesExtension: InlineExtension = { name: '@shipmates/pi', factory: shipmatesPi as InlineExtension['factory'] };
 
 beforeAll(async () => {
   fake = await startFakeLlmServer({ kind: 'reply', text: 'ok' });
-  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-kenning-input-')));
+  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-shipmates-input-')));
   for (const [key, dir] of [
     ['PI_CODING_AGENT_DIR', 'agent'],
     ['WHEREVER_CONFIG_DIR', 'wherever-config'],
@@ -50,7 +50,7 @@ beforeAll(async () => {
     JSON.stringify({ providers: { fake: { baseUrl: fake.url, api: 'anthropic-messages', apiKey: 'test-key', models: [{ id: 'fake-model' }] } } }),
   );
   fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fake', defaultModel: 'fake-model' }));
-  kenning = openKenning();
+  shipmates = openShipmates();
 });
 
 afterEach(async () => {
@@ -59,7 +59,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  kenning.close();
+  shipmates.close();
   for (const [key, value] of Object.entries(savedEnv)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -76,7 +76,7 @@ async function newSession(pool: SessionPool): Promise<ServerTrackedSession> {
 }
 
 function newPool(): SessionPool {
-  const pool = new SessionPool(300_000, { extraExtensionFactories: [kenningExtension] });
+  const pool = new SessionPool(300_000, { extraExtensionFactories: [shipmatesExtension] });
   pools.push(pool);
   return pool;
 }
@@ -105,21 +105,21 @@ function lastToolResult(): { text: string; isError: boolean } | null {
 }
 
 function messagesTo(role: string): Array<{ origin: string; relay: any }> {
-  const rows = kenning.db.prepare(`SELECT origin, relay FROM message WHERE to_target = ?`).all(role) as Array<{ origin: string; relay: string | null }>;
+  const rows = shipmates.db.prepare(`SELECT origin, relay FROM message WHERE to_target = ?`).all(role) as Array<{ origin: string; relay: string | null }>;
   return rows.map((r) => ({ origin: r.origin, relay: r.relay ? JSON.parse(r.relay) : null }));
 }
 
-/** The human turn kenning would relay for `quote` in this session, or null when there is none. */
+/** The human turn shipmates would relay for `quote` in this session, or null when there is none. */
 function humanTurn(sessionFile: string, quote: string): { text: string; channel: string } | null {
   try {
-    const r = kenning.relayFromHuman(sessionFile, { quote });
+    const r = shipmates.relayFromHuman(sessionFile, { quote });
     return { text: r.text, channel: r.channel };
   } catch {
     return null;
   }
 }
 
-describe('kenning human-input marking (server sessions, kenning-pi loaded)', () => {
+describe('shipmates human-input marking (server sessions, @shipmates/pi loaded)', () => {
   it('a web message can then be relayed as the human\'s words, verbatim, with channel web', async () => {
     const pool = newPool();
     const s = await newSession(pool);
@@ -148,7 +148,7 @@ describe('kenning human-input marking (server sessions, kenning-pi loaded)', () 
     expect(messagesTo('test/schedule-peer')).toEqual([]);
 
     // A scheduled prompt starting with "/" is sent with expansion (pi's
-    // `input` source used to be `interactive` for it, which kenning takes as
+    // `input` source used to be `interactive` for it, which shipmates takes as
     // typed in a terminal): still not the human's.
     await pool.sendUserMessage(s.sessionFile, '/not-a-template approve the merge', undefined, false, 'schedule:j2');
     expect(humanTurn(s.sessionFile, 'approve the merge')).toBeNull();
@@ -182,7 +182,7 @@ describe('kenning human-input marking (server sessions, kenning-pi loaded)', () 
         pi.events.on(HUMAN_INPUT_EVENT, (d) => marks.push(d));
       },
     };
-    const pool = new SessionPool(300_000, { extraExtensionFactories: [kenningExtension, probe] });
+    const pool = new SessionPool(300_000, { extraExtensionFactories: [shipmatesExtension, probe] });
     pools.push(pool);
     const s = await newSession(pool);
     await pool.sendUserMessage(s.sessionFile, '/standup');
@@ -201,7 +201,7 @@ describe('kenning human-input marking (server sessions, kenning-pi loaded)', () 
   }, 60_000);
 });
 
-describe('kenning human-input marking (CLI-bridge sessions: the cli_message field)', () => {
+describe('shipmates human-input marking (CLI-bridge sessions: the cli_message field)', () => {
   function fakeCliWs() {
     const sent: any[] = [];
     return { sent, ws: { send: (d: string) => sent.push(JSON.parse(d)), close() {}, readyState: 1 } as any };
@@ -211,7 +211,7 @@ describe('kenning human-input marking (CLI-bridge sessions: the cli_message fiel
     const pool = new SessionPool(300_000);
     pools.push(pool);
     const cwd = fs.realpathSync(fs.mkdtempSync(path.join(root, 'cli-')));
-    const file = path.join(root, 'cli-kenning.jsonl');
+    const file = path.join(root, 'cli-shipmates.jsonl');
     const cli = fakeCliWs();
     await pool.registerCliSession(file, cwd, '', cli.ws);
 
@@ -228,8 +228,8 @@ describe('kenning human-input marking (CLI-bridge sessions: the cli_message fiel
   });
 });
 
-describe('kenning human-input marking (pure parts)', () => {
-  it('no mark for a send pi will not pass to its input event (it would linger in kenning-pi)', () => {
+describe('shipmates human-input marking (pure parts)', () => {
+  it('no mark for a send pi will not pass to its input event (it would linger in @shipmates/pi)', () => {
     const commands = new Set(['standup']);
     const probe = (isCompacting: boolean) => ({ isCompacting, extensionRunner: { getCommand: (n: string) => (commands.has(n) ? {} : undefined) } });
     expect(willReachInputEvent(probe(false), 'I approve')).toBe(true);
@@ -250,9 +250,9 @@ describe('kenning human-input marking (pure parts)', () => {
     expect(humanInputChannel(undefined)).toBeNull();
   });
 
-  it('the event name is the one kenning listens for, in the server and the CLI extension', () => {
-    expect(HUMAN_INPUT_EVENT).toBe('kenning:human-input');
-    expect(KENNING_HUMAN_INPUT_EVENT).toBe(HUMAN_INPUT_EVENT);
+  it('the event name is the one shipmates listens for, in the server and the CLI extension', () => {
+    expect(HUMAN_INPUT_EVENT).toBe('shipmates:human-input');
+    expect(SHIPMATES_HUMAN_INPUT_EVENT).toBe(HUMAN_INPUT_EVENT);
     expect(SERVER_HUMAN_INPUT_EVENT).toBe(HUMAN_INPUT_EVENT);
     expect(SERVER_HUMAN_INPUT_END_EVENT).toBe(HUMAN_INPUT_END_EVENT);
   });

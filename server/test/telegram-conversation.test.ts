@@ -49,7 +49,7 @@ class FakeController {
   resets = 0;
   aborts = 0;
   resetError: string | null = null;
-  /** Answers a reply to a notification (the kenning inbox's role); unset = never handled. */
+  /** Answers a reply to a notification (the shipmates inbox's role); unset = never handled. */
   notificationReply: ((r: { channel: string; ref: string; text: string }) => { handled: false } | { handled: true; reply: string }) | null = null;
   replies: Array<{ channel: string; ref: string; text: string }> = [];
   private ends: Array<() => void> = [];
@@ -241,7 +241,7 @@ describe('Telegram conversation: outbound', () => {
     const { api, channel } = setup({ publicUrl: 'https://box.example/' });
     await until(() => api.of('getUpdates').length > 0);
     const r = await channel.notify({ title: 'CI', body: 'tests are red', source: 'app', navigate: 'sess-1' });
-    // `refs` name the sent message, so a reply to it can be matched (kenning).
+    // `refs` name the sent message, so a reply to it can be matched (shipmates).
     expect(r).toEqual({ ok: true, detail: 'sent', refs: [`telegram:${USER}:1`] });
     expect(sentTexts(api)).toEqual(['🔔 app: CI\n\ntests are red\n\nhttps://box.example/#sess-1']);
 
@@ -251,7 +251,7 @@ describe('Telegram conversation: outbound', () => {
     expect(sentTexts(api2)).toEqual(['🔔 assistant: Hi']);
   });
 
-  it('a text reply to a notification goes to its handler (a kenning answer), not to the assistant', async () => {
+  it('a text reply to a notification goes to its handler (a shipmates answer), not to the assistant', async () => {
     const { api, channel, controller } = setup();
     await until(() => api.of('getUpdates').length > 0);
     const r = await channel.notify({ title: 'Question for you', body: 'Publish?', source: 'lane', navigate: 's' });

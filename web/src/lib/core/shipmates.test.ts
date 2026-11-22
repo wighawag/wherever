@@ -1,19 +1,19 @@
 import {describe, it, expect} from 'vitest';
 import {
-	emptyKenningState,
+	emptyShipmatesState,
 	inboxBadge,
 	inboxCount,
 	syncAppBadge,
 	titleWithInboxCount,
 	ownedChildren,
-	parseKenningUpdate,
+	parseShipmatesUpdate,
 	presenceByFile,
 	presenceLine,
-	type KenningInboxItem,
-	type KenningPresence,
-} from './kenning';
+	type ShipmatesInboxItem,
+	type ShipmatesPresence,
+} from './shipmates';
 
-const presence = (p: Partial<KenningPresence> = {}): KenningPresence => ({
+const presence = (p: Partial<ShipmatesPresence> = {}): ShipmatesPresence => ({
 	sessionFile: '/s/a.jsonl',
 	sessionId: 'a',
 	roles: [],
@@ -23,7 +23,7 @@ const presence = (p: Partial<KenningPresence> = {}): KenningPresence => ({
 	...p,
 });
 
-const item = (i: Partial<KenningInboxItem> = {}): KenningInboxItem => ({
+const item = (i: Partial<ShipmatesInboxItem> = {}): ShipmatesInboxItem => ({
 	id: 'h_1',
 	question: 'Publish?',
 	options: null,
@@ -36,18 +36,18 @@ const item = (i: Partial<KenningInboxItem> = {}): KenningInboxItem => ({
 	...i,
 });
 
-describe('kenning on the web', () => {
-	it('reads a kenning_update, and anything unavailable or malformed as no kenning', () => {
+describe('shipmates on the web', () => {
+	it('reads a shipmates_update, and anything unavailable or malformed as no shipmates', () => {
 		expect(
-			parseKenningUpdate({
-				type: 'kenning_update',
+			parseShipmatesUpdate({
+				type: 'shipmates_update',
 				available: false,
 				inbox: [item()],
 			}),
-		).toBe(emptyKenningState);
-		expect(parseKenningUpdate(null)).toBe(emptyKenningState);
+		).toBe(emptyShipmatesState);
+		expect(parseShipmatesUpdate(null)).toBe(emptyShipmatesState);
 		expect(
-			parseKenningUpdate({
+			parseShipmatesUpdate({
 				available: true,
 				inbox: [item(), {nope: 1}],
 				presence: [presence(), 5],
@@ -58,7 +58,7 @@ describe('kenning on the web', () => {
 			presence: [presence()],
 			archives: [],
 		});
-		expect(parseKenningUpdate({available: true})).toEqual({
+		expect(parseShipmatesUpdate({available: true})).toEqual({
 			available: true,
 			inbox: [],
 			presence: [],
@@ -72,7 +72,7 @@ describe('kenning on the web', () => {
 			undoUntil: 2,
 		};
 		expect(
-			parseKenningUpdate({available: true, archives: [archive, {batch: 5}]})
+			parseShipmatesUpdate({available: true, archives: [archive, {batch: 5}]})
 				.archives,
 		).toEqual([archive]);
 	});
@@ -126,7 +126,7 @@ describe('kenning on the web', () => {
 });
 
 describe('the inbox count outside the page', () => {
-	const item = (id: string): KenningInboxItem => ({
+	const item = (id: string): ShipmatesInboxItem => ({
 		id,
 		question: 'q',
 		options: null,
@@ -138,16 +138,20 @@ describe('the inbox count outside the page', () => {
 		onBehalfOf: 0,
 	});
 
-	it('counts open items only while kenning is available', () => {
+	it('counts open items only while shipmates is available', () => {
 		expect(
 			inboxCount({
-				...emptyKenningState,
+				...emptyShipmatesState,
 				available: true,
 				inbox: [item('1'), item('2')],
 			}),
 		).toBe(2);
 		expect(
-			inboxCount({...emptyKenningState, available: false, inbox: [item('1')]}),
+			inboxCount({
+				...emptyShipmatesState,
+				available: false,
+				inbox: [item('1')],
+			}),
 		).toBe(0);
 	});
 

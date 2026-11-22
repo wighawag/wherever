@@ -16,11 +16,11 @@ export interface ToolImage {
 }
 
 /**
- * Messages kenning delivered into a session (the server's
- * `KenningDeliveryInfo`), one entry per message, in order: kenning ids, sender
+ * Messages shipmates delivered into a session (the server's
+ * `ShipmatesDeliveryInfo`), one entry per message, in order: shipmates ids, sender
  * labels, origins (`agent`, `human`, `human-relayed`).
  */
-export interface KenningDelivery {
+export interface ShipmatesDelivery {
 	ids: string[];
 	from: string[];
 	origins: string[];
@@ -28,9 +28,9 @@ export interface KenningDelivery {
 
 export interface ChatMessage {
 	id: string;
-	// `kenning`: a delivery from other sessions (only with `kenningCards`). It is
+	// `shipmates`: a delivery from other sessions (only with `shipmatesCards`). It is
 	// never a user message: not forkable, not editable, no delivery state.
-	role: 'user' | 'assistant' | 'thinking' | 'tool' | 'kenning';
+	role: 'user' | 'assistant' | 'thinking' | 'tool' | 'shipmates';
 	content: string;
 	timestamp: number;
 	isStreaming?: boolean;
@@ -97,9 +97,9 @@ export interface ChatMessage {
 	// last user message is not enough: with several messages queued they are
 	// delivered oldest-first, so the echoed one is usually not the last bubble.
 	restoredFromQueue?: boolean;
-	// Set on role 'kenning': who sent what, with which origin. `content` is
-	// kenning's formatted text, as the model read it.
-	kenning?: KenningDelivery;
+	// Set on role 'shipmates': who sent what, with which origin. `content` is
+	// shipmates' formatted text, as the model read it.
+	shipmates?: ShipmatesDelivery;
 }
 
 export interface SessionNotice {

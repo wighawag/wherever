@@ -84,7 +84,7 @@ export interface Harness {
   output(): string;
   /** Open a WS client and wait for the socket to open. `clientKey` is the stable
    *  per-viewer identity the server uses to retire a superseded connection.
-   *  `params` are extra socket URL parameters (e.g. `{kenning: '1'}`). */
+   *  `params` are extra socket URL parameters (e.g. `{shipmates: '1'}`). */
   connect(clientKey?: string, params?: Record<string, string>): Promise<TestClient>;
   /** Wait until `sessionFile` is resident in the server's pool (it shows in
    *  `GET /sessions` `activeSessions`). `cli_register` has no ack and registers

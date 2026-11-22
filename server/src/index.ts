@@ -39,7 +39,7 @@ import { DEFAULT_DOWNLOAD_MAX_BYTES } from './attach-file-tool.js';
 import { splitFrame, wantsFrameChunks, FRAME_CHUNK_CHARS } from './frame-chunks.js';
 import { compressCached, isCompressible, negotiateEncoding } from './static-compression.js';
 import { stripHistoryImages, wantsImageRefs, SERVABLE_IMAGE_TYPES } from './history-images.js';
-import { kenningDeliveryOf, stripKenningCards, wantsKenningCards } from './kenning-delivery.js';
+import { shipmatesDeliveryOf, stripShipmatesCards, wantsShipmatesCards } from './shipmates-delivery.js';
 import { readToolResultImage } from './session-transcript.js';
 import { DeltaCoalescer } from './delta-coalescer.js';
 import { UploadStaging, UPLOAD_CAPABILITY, isValidUploadId, parseChunkFrame, CHUNK_FRAME_KIND, type Authorize } from './upload-staging.js';
@@ -57,8 +57,8 @@ import {
 } from './commands/install.js';
 import { runConfigCommand } from './commands/config.js';
 import { getWhereverConfigPath } from './config-dir.js';
-import { KenningService, type KenningNotifyOutcome } from './kenning-service.js';
-import { registerKenningHost, WhereverKenningHost } from './kenning-host.js';
+import { ShipmatesService, type ShipmatesNotifyOutcome } from './shipmates-service.js';
+import { registerShipmatesHost, WhereverShipmatesHost } from './shipmates-host.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1088,10 +1088,10 @@ let nextFrameChunkId = 1;
 // Sockets whose client loads large history images by reference (`imageRefs=1`,
 // see history-images.ts) instead of receiving their base64 inline.
 const imageRefSockets = new WeakSet<WebSocket>();
-// Sockets whose client renders kenning's deliveries (`kenning=1`, see
-// kenning-delivery.ts). Every other socket gets history without them and no
-// `kenning_delivery` frame: an older client would show the raw text as a bubble.
-const kenningCardSockets = new WeakSet<WebSocket>();
+// Sockets whose client renders shipmates' deliveries (`shipmates=1`, see
+// shipmates-delivery.ts). Every other socket gets history without them and no
+// `shipmates_delivery` frame: an older client would show the raw text as a bubble.
+const shipmatesCardSockets = new WeakSet<WebSocket>();
 // Per-socket coalescing of streamed deltas (delta-coalescer.ts): fewer, larger
 // frames, frame order unchanged. "Backed up" = more than 64 KB still unsent.
 const deltaCoalescers = new WeakMap<WebSocket, DeltaCoalescer<ServerMessage>>();
@@ -1120,9 +1120,9 @@ function writeWS(ws: WebSocket, msg: ServerMessage): void {
       if (msg.type === 'message_history' || msg.type === 'message_history_prepend') {
         // `offset` / `totalCount` keep counting the cards, so a client without
         // them pages through the same indices and only gets fewer messages.
-        if (!kenningCardSockets.has(ws)) msg = { ...msg, messages: stripKenningCards(msg.messages) };
+        if (!shipmatesCardSockets.has(ws)) msg = { ...msg, messages: stripShipmatesCards(msg.messages) };
         if (imageRefSockets.has(ws)) msg = { ...msg, messages: stripHistoryImages(msg.messages) };
-      } else if (msg.type === 'kenning_delivery' && !kenningCardSockets.has(ws)) {
+      } else if (msg.type === 'shipmates_delivery' && !shipmatesCardSockets.has(ws)) {
         return;
       }
       const json = JSON.stringify(msg);
@@ -1450,65 +1450,65 @@ async function main(): Promise<void> {
       jobForSession: (sessionFile) => scheduler.jobForSession(sessionFile),
     };
   }
-  // wherever as a kenning host (kenning-service.ts): the attention inbox and
-  // presence on every dashboard (`kenning_update`), and blocking items pushed
+  // wherever as a shipmates host (shipmates-service.ts): the attention inbox and
+  // presence on every dashboard (`shipmates_update`), and blocking items pushed
   // once through the channels above, a Telegram reply to one answering it. It
-  // opens kenning's database only once that exists, so nothing is written for
-  // a user who does not use kenning. Independent of the assistant: without
+  // opens shipmates' database only once that exists, so nothing is written for
+  // a user who does not use shipmates. Independent of the assistant: without
   // active channels the inbox is still on the web, it is just never pushed.
-  const kenningEnabled = getWhereverConfig().kenning?.enabled !== false;
-  // kenning's host for spawn and stop (kenning-host.ts, ADR 0024): registered
+  const shipmatesEnabled = getWhereverConfig().shipmates?.enabled !== false;
+  // shipmates' host for spawn and stop (shipmates-host.ts, ADR 0024): registered
   // for the whole process at start, so a session's `session_spawn` becomes a
-  // sidebar session; it reads kenning through the service below.
-  const kenningHost = new WhereverKenningHost({
+  // sidebar session; it reads shipmates through the service below.
+  const shipmatesHost = new WhereverShipmatesHost({
     pool: sessionPool,
     stateDir: getWhereverStateDir(),
-    kenning: () => kenning.api(),
+    shipmates: () => shipmates.api(),
     onSpawned: () => broadcastSessionsUpdated(),
   });
-  const unregisterKenningHost = kenningEnabled ? registerKenningHost(kenningHost) : () => {};
-  const kenning = new KenningService({
-    enabled: kenningEnabled,
+  const unregisterShipmatesHost = shipmatesEnabled ? registerShipmatesHost(shipmatesHost) : () => {};
+  const shipmates = new ShipmatesService({
+    enabled: shipmatesEnabled,
     // Wake an evicted child of ours when a message waits for it (D29's rule).
-    onKenningChange: () => kenningHost.wakeEvicted(),
+    onShipmatesChange: () => shipmatesHost.wakeEvicted(),
     whereverStateDir: getWhereverStateDir(),
-    // The same knob kenning-pi reads (its shared.ts), so one setting speeds up both.
-    pollMs: Number(process.env.KENNING_POLL_MS) || undefined,
+    // The same knob @shipmates/pi reads (its shared.ts), so one setting speeds up both.
+    pollMs: Number(process.env.SHIPMATES_POLL_MS) || undefined,
     onUpdate: (snapshot) => {
-      const frame: ServerMessage = { type: 'kenning_update', ...snapshot };
+      const frame: ServerMessage = { type: 'shipmates_update', ...snapshot };
       for (const c of clients.values()) {
         if (!c.isCliBridge) sendWS(c.ws, frame);
       }
     },
   });
-  kenning.start();
-  // Transcripts of a cascaded delete go only once kenning says the undo window
-  // passed (D24): checked once kenning is open, then hourly.
-  const purgeKenningDeletes = () => {
-    const n = kenning.purgeExpired((file) => {
+  shipmates.start();
+  // Transcripts of a cascaded delete go only once shipmates says the undo window
+  // passed (D24): checked once shipmates is open, then hourly.
+  const purgeShipmatesDeletes = () => {
+    const n = shipmates.purgeExpired((file) => {
       const tracked = sessionPool.getSession(file);
       if (tracked) void sessionPool.destroySession(tracked.sessionFile, 'deleted');
       if (sessionPool.isSessionFile(file) && fs.existsSync(file)) fs.unlinkSync(file);
       forgetStar(file);
-      kenningHost.forget(file);
+      shipmatesHost.forget(file);
     });
     if (n) {
-      console.log(`[wherever] kenning: deleted ${n} transcript(s) whose undo window passed`);
+      console.log(`[wherever] shipmates: deleted ${n} transcript(s) whose undo window passed`);
       broadcastSessionsUpdated();
     }
   };
-  void kenning.ready().then(purgeKenningDeletes);
-  const kenningPurgeTimer = setInterval(purgeKenningDeletes, 60 * 60 * 1000);
-  kenningPurgeTimer.unref?.();
+  void shipmates.ready().then(purgeShipmatesDeletes);
+  const shipmatesPurgeTimer = setInterval(purgeShipmatesDeletes, 60 * 60 * 1000);
+  shipmatesPurgeTimer.unref?.();
   if (channelDispatcher) {
     const dispatcher = channelDispatcher;
-    kenning.setNotifier(async (n): Promise<KenningNotifyOutcome> => {
+    shipmates.setNotifier(async (n): Promise<ShipmatesNotifyOutcome> => {
       const out = await dispatcher.notify({ title: n.title, body: n.body, source: n.source, navigate: n.navigate, question: { options: n.options } });
       const refs = out.deliveries.flatMap((d) => (d.result.ok ? (d.result.refs ?? []) : []));
       return out.ok ? { delivered: true, refs } : { delivered: false, refs, error: out.error };
     });
     dispatcher.setNotificationReplyHandler((r) =>
-      r.channel === 'telegram' ? kenning.answerFromReply(r.ref, r.text, 'telegram') : { handled: false },
+      r.channel === 'telegram' ? shipmates.answerFromReply(r.ref, r.text, 'telegram') : { handled: false },
     );
   }
 
@@ -1565,7 +1565,7 @@ async function main(): Promise<void> {
   const cliRequests = createCliRequestRouter({
     assistantInfo: currentAssistantInfo,
     assistantHooks: () => assistantHooks,
-    kenningHost: () => (kenningEnabled ? kenningHost : null),
+    shipmatesHost: () => (shipmatesEnabled ? shipmatesHost : null),
   });
   // Push the current assistant info to every connected CLI bridge, which updates
   // its cached `assistant_info`. The folder takes effect on restart only, so the
@@ -1750,12 +1750,12 @@ async function main(): Promise<void> {
       case 'message_end': {
         const role = (event.message as any)?.role;
         if (role === 'custom') {
-          // A kenning wake (`sendMessage(..., {triggerTurn: true})`) or what its
+          // A shipmates wake (`sendMessage(..., {triggerTurn: true})`) or what its
           // `before_agent_start` attached. Not a user message: the routing only
           // ever takes an entry for role `user` (ADR 0014).
-          const d = kenningDeliveryOf(event.message as any);
+          const d = shipmatesDeliveryOf(event.message as any);
           const t = (event.message as any).timestamp;
-          if (d) msg = { type: 'kenning_delivery', sessionId, content: d.content, timestamp: typeof t === 'number' ? t : Date.now(), kenning: d.kenning };
+          if (d) msg = { type: 'shipmates_delivery', sessionId, content: d.content, timestamp: typeof t === 'number' ? t : Date.now(), shipmates: d.shipmates };
           break;
         }
         if (role !== 'assistant' && role !== 'user') break;
@@ -1764,13 +1764,13 @@ async function main(): Promise<void> {
         break;
       }
       case 'entry_appended' as any: {
-        // What kenning returned from `agent_before_settle` / `turn_end`: pi
+        // What shipmates returned from `agent_before_settle` / `turn_end`: pi
         // writes those boundary entries without a message_end.
         const entry = (event as any).entry;
-        const d = entry?.type === 'custom_message' ? kenningDeliveryOf(entry) : null;
+        const d = entry?.type === 'custom_message' ? shipmatesDeliveryOf(entry) : null;
         if (d) {
           const t = Date.parse(entry.timestamp);
-          msg = { type: 'kenning_delivery', sessionId, content: d.content, timestamp: Number.isFinite(t) ? t : Date.now(), kenning: d.kenning };
+          msg = { type: 'shipmates_delivery', sessionId, content: d.content, timestamp: Number.isFinite(t) ? t : Date.now(), shipmates: d.shipmates };
         }
         break;
       }
@@ -2008,17 +2008,17 @@ async function main(): Promise<void> {
       // read-only page); default returns the main list (ignore + readOnly hidden).
       const view = url.searchParams.get('view') === 'readonly' ? 'readonly' : 'default';
       const listed = await sessionPool.listSessions(view);
-      // kenning (ADR 0024): each session's owner, so the sidebar shows a spawned
+      // shipmates (ADR 0024): each session's owner, so the sidebar shows a spawned
       // session under the session that spawned it, and sessions a cascaded
       // delete hid (within its undo window) left out. Memoized lookups.
-      const folders = kenning.available
+      const folders = shipmates.available
         ? listed
             .map((f) => ({
               ...f,
               sessions: f.sessions
-                .filter((s) => !kenning.isArchived(s.path))
+                .filter((s) => !shipmates.isArchived(s.path))
                 .map((s) => {
-                  const owner = kenning.ownerOf(s.path);
+                  const owner = shipmates.ownerOf(s.path);
                   return owner ? { ...s, ownerSessionPath: owner } : s;
                 }),
             }))
@@ -2677,17 +2677,17 @@ async function main(): Promise<void> {
           if (tracked.type === 'server') sessionPool.destroySession(tracked.sessionFile, 'deleted');
         };
 
-        // kenning (D24, ADR 0024): a session that owns others takes them with it,
+        // shipmates (D24, ADR 0024): a session that owns others takes them with it,
         // as ONE undoable batch: all are hidden and their agents closed, and the
-        // transcripts stay until the undo window passed (purgeKenningDeletes). A
+        // transcripts stay until the undo window passed (purgeShipmatesDeletes). A
         // session a cascade already hid needs nothing more. Every other session
         // is deleted at once, as before.
-        if (kenning.isArchived(resolved)) {
+        if (shipmates.isArchived(resolved)) {
           sendJSON(res, 200, { status: 'deleted' });
           return;
         }
-        if (kenning.ownsSessions(resolved)) {
-          const cascade = kenning.deleteCascade(resolved);
+        if (shipmates.ownsSessions(resolved)) {
+          const cascade = shipmates.deleteCascade(resolved);
           if (cascade) {
             for (const file of cascade.sessions) closeResident(file);
             broadcastSessionsUpdated();
@@ -3207,7 +3207,7 @@ async function main(): Promise<void> {
       }
       if (wantsFrameChunks(url.searchParams)) chunkingSockets.add(ws);
       if (wantsImageRefs(url.searchParams)) imageRefSockets.add(ws);
-      if (wantsKenningCards(url.searchParams)) kenningCardSockets.add(ws);
+      if (wantsShipmatesCards(url.searchParams)) shipmatesCardSockets.add(ws);
     } catch {}
     if (clientKey) {
       evictPreviousConnection(clientKey, clients, sessionPool, broadcastSessionsUpdated);
@@ -3232,9 +3232,9 @@ async function main(): Promise<void> {
     });
 
     sendWS(ws, { type: 'connected', clientId, serverVersion: getVersion(), capabilities: [UPLOAD_CAPABILITY], piVersion: piSdkInfo.version });
-    // The kenning inbox and presence as they are now; live changes follow as
-    // further `kenning_update` frames. A CLI bridge ignores it (unknown frame).
-    sendWS(ws, { type: 'kenning_update', ...kenning.snapshot() });
+    // The shipmates inbox and presence as they are now; live changes follow as
+    // further `shipmates_update` frames. A CLI bridge ignores it (unknown frame).
+    sendWS(ws, { type: 'shipmates_update', ...shipmates.snapshot() });
 
     ws.on('message', async (data, isBinary) => {
       // Binary frames are upload chunks (`upload.v1`), routed BEFORE any
@@ -3265,7 +3265,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated, assistantController, cliRequests, onClientTimezone, kenning);
+        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated, assistantController, cliRequests, onClientTimezone, shipmates);
       } catch (err) {
         console.error('WS message processing error:', err);
         const errorText = (err as Error).message || 'An error occurred';
@@ -3437,9 +3437,9 @@ This encrypts all network traffic securely and enables safe, private remote acce
     }
     assistantScheduler?.stop();
     await channelDispatcher?.stop();
-    kenning.stop();
-    unregisterKenningHost();
-    clearInterval(kenningPurgeTimer);
+    shipmates.stop();
+    unregisterShipmatesHost();
+    clearInterval(shipmatesPurgeTimer);
     await sessionPool.disposeAll();
     assistant.release();
     server.close();
@@ -3852,32 +3852,32 @@ async function handleWSMessage(
   assistantController: AssistantController | null = null,
   cliRequests: CliRequestRouter | null = null,
   onClientTimezone: (report: WebTimezoneReport) => void = () => {},
-  kenning: KenningService | null = null,
+  shipmates: ShipmatesService | null = null,
 ): Promise<void> {
   switch (msg.type) {
-    case 'kenning_undo_delete': {
-      // Undo a cascaded delete (kenning D24) from the web, within its window.
+    case 'shipmates_undo_delete': {
+      // Undo a cascaded delete (shipmates D24) from the web, within its window.
       const r = client.isCliBridge
         ? { ok: false as const, error: 'a CLI bridge cannot undo a delete' }
-        : kenning
-          ? kenning.undoDelete(msg.batch)
-          : { ok: false as const, error: 'kenning is not available on this server' };
-      sendWS(client.ws, r.ok ? { type: 'kenning_undo_result', batch: msg.batch, ok: true } : { type: 'kenning_undo_result', batch: msg.batch, ok: false, error: r.error });
+        : shipmates
+          ? shipmates.undoDelete(msg.batch)
+          : { ok: false as const, error: 'shipmates is not available on this server' };
+      sendWS(client.ws, r.ok ? { type: 'shipmates_undo_result', batch: msg.batch, ok: true } : { type: 'shipmates_undo_result', batch: msg.batch, ok: false, error: r.error });
       if (r.ok) onSessionsUpdated();
       return;
     }
 
-    case 'kenning_answer': {
-      // The human answering a kenning attention item from the web: an
+    case 'shipmates_answer': {
+      // The human answering a shipmates attention item from the web: an
       // authenticated dashboard is a human act (ADR 0003, wherever ADR 0023).
       // Never from a CLI bridge connection, which an agent's process holds.
       const r = client.isCliBridge
         ? { ok: false as const, error: 'a CLI bridge cannot answer the inbox' }
-        : kenning
-          ? kenning.answer(msg.itemId, msg.text, 'web')
-          : { ok: false as const, error: 'kenning is not available on this server' };
+        : shipmates
+          ? shipmates.answer(msg.itemId, msg.text, 'web')
+          : { ok: false as const, error: 'shipmates is not available on this server' };
       sendWS(client.ws, {
-        type: 'kenning_answer_result',
+        type: 'shipmates_answer_result',
         itemId: msg.itemId,
         ...(typeof msg.requestId === 'string' ? { requestId: msg.requestId } : {}),
         ...r,
@@ -4559,7 +4559,7 @@ async function handleWSMessage(
 
     case 'message': {
       // A user message is a dashboard's (origin `none`, which the pool marks as
-      // the human's for kenning, ADR 0023). A CLI bridge connection is held by
+      // the human's for shipmates, ADR 0023). A CLI bridge connection is held by
       // an agent's process: it relays its terminal's input as `cli_event`, never
       // as `message`, so refuse it rather than let it mark text as human.
       if (client.isCliBridge) {

@@ -1,17 +1,17 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AttentionItem, Kenning, Presence } from 'kenning';
+import type { AttentionItem, Shipmates, Presence } from 'shipmates';
 
 /**
- * wherever as a kenning HOST (kenning's spec "Architecture", D20; wherever ADR
- * 0023 for the human-input half). kenning-pi already runs inside every server
+ * wherever as a shipmates HOST (shipmates' spec "Architecture", D20; wherever ADR
+ * 0023 for the human-input half). @shipmates/pi already runs inside every server
  * session as an ordinary extension (presence, delivery, the tools); this module
  * adds what only wherever can do with the same database:
  *
  * - the human's ATTENTION INBOX on the web (a panel, a badge, a reply box) and
  *   the PRESENCE of each session in the session list, pushed to dashboards as
- *   `kenning_update` frames on every change (polled like kenning's own D6
+ *   `shipmates_update` frames on every change (polled like shipmates' own D6
  *   watcher, then throttled like `sessions_updated`);
  * - an authenticated web or Telegram answer is a HUMAN act, so it goes through
  *   `answerItem(id, text, {channel})`;
@@ -19,14 +19,14 @@ import type { AttentionItem, Kenning, Presence } from 'kenning';
  *   Telegram), linking to the asking session; a Telegram reply to that message
  *   answers it.
  *
- * It never creates kenning's database: it opens it once it EXISTS (kenning-pi
- * or the kenning CLI made it), checking every `openPollMs` until then, so a
- * user who does not use kenning gets nothing written. `kenning.enabled: false`
+ * It never creates shipmates' database: it opens it once it EXISTS (@shipmates/pi
+ * or the shipmates CLI made it), checking every `openPollMs` until then, so a
+ * user who does not use shipmates gets nothing written. `shipmates.enabled: false`
  * in config.json turns it off entirely.
  */
 
 /** One open attention item, as the web shows it. */
-export interface KenningInboxItemView {
+export interface ShipmatesInboxItemView {
   id: string;
   question: string;
   options: string[] | null;
@@ -43,7 +43,7 @@ export interface KenningInboxItemView {
 }
 
 /** One live session's presence, as the session list shows it. */
-export interface KenningPresenceView {
+export interface ShipmatesPresenceView {
   sessionFile: string;
   sessionId: string | null;
   roles: string[];
@@ -52,17 +52,17 @@ export interface KenningPresenceView {
   waitingOn: string | null;
 }
 
-/** What a dashboard gets (`kenning_update`). `available` false = no kenning database (or off). */
-export interface KenningSnapshot {
+/** What a dashboard gets (`shipmates_update`). `available` false = no shipmates database (or off). */
+export interface ShipmatesSnapshot {
   available: boolean;
-  inbox: KenningInboxItemView[];
-  presence: KenningPresenceView[];
-  /** Deletions this server cascaded through ownership that can still be undone (kenning D24). */
-  archives: KenningArchiveView[];
+  inbox: ShipmatesInboxItemView[];
+  presence: ShipmatesPresenceView[];
+  /** Deletions this server cascaded through ownership that can still be undone (shipmates D24). */
+  archives: ShipmatesArchiveView[];
 }
 
 /** One delete that took a session and everything it owns, undoable until `undoUntil`. */
-export interface KenningArchiveView {
+export interface ShipmatesArchiveView {
   batch: string;
   /** The session the human deleted (normalized file). */
   root: string;
@@ -72,10 +72,10 @@ export interface KenningArchiveView {
   undoUntil: number;
 }
 
-export const KENNING_ARCHIVES_FILE = 'kenning-archives.json';
+export const SHIPMATES_ARCHIVES_FILE = 'shipmates-archives.json';
 
 /** A blocking item to push through the channels (`ChannelNotification` shape). */
-export interface KenningNotification {
+export interface ShipmatesNotification {
   itemId: string;
   /** The item's fixed answers (none = free text): Telegram shows them as buttons. */
   options: string[];
@@ -87,26 +87,26 @@ export interface KenningNotification {
 }
 
 /** What pushing one notification produced: whether anything delivered, and the channel-side refs a reply can name. */
-export interface KenningNotifyOutcome {
+export interface ShipmatesNotifyOutcome {
   delivered: boolean;
   /** `<channel>:<id>` per message sent (Telegram: `telegram:<chatId>:<messageId>`). */
   refs: string[];
   error?: string;
 }
 
-export type KenningAnswerResult = { ok: true } | { ok: false; error: string };
+export type ShipmatesAnswerResult = { ok: true } | { ok: false; error: string };
 
-export const KENNING_NOTIFIED_FILE = 'kenning-notified.json';
-export const KENNING_DISABLED_ERROR = 'kenning is not available on this server (no kenning database yet, or `kenning.enabled` is false)';
-const NOTIFIED_RETENTION_MS = 30 * 86_400_000; // kenning prunes finished items after 30 days (D11)
+export const SHIPMATES_NOTIFIED_FILE = 'shipmates-notified.json';
+export const SHIPMATES_DISABLED_ERROR = 'shipmates is not available on this server (no shipmates database yet, or `shipmates.enabled` is false)';
+const NOTIFIED_RETENTION_MS = 30 * 86_400_000; // shipmates prunes finished items after 30 days (D11)
 /**
- * kenning's database dir, as kenning's `defaultStateDir()` (its store.ts)
- * computes it, without loading kenning (and `node:sqlite`) for a user who does
- * not use it. kenning-service.test.ts pins the two together.
+ * shipmates' database dir, as shipmates' `defaultStateDir()` (its store.ts)
+ * computes it, without loading shipmates (and `node:sqlite`) for a user who does
+ * not use it. shipmates-service.test.ts pins the two together.
  */
-export function kenningStateDir(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.KENNING_STATE_DIR) return env.KENNING_STATE_DIR;
-  return path.join(env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'kenning');
+export function shipmatesStateDir(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.SHIPMATES_STATE_DIR) return env.SHIPMATES_STATE_DIR;
+  return path.join(env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'shipmates');
 }
 
 const SESSION_ID_RE = /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
@@ -121,7 +121,7 @@ export function sessionLabel(sessionFile: string, presence: Presence | null | un
   return presence?.roles[0] || (presence?.cwd ? path.basename(presence.cwd) : '') || path.basename(sessionFile, '.jsonl');
 }
 
-export function inboxItemView(item: AttentionItem, presence: Presence | null): KenningInboxItemView {
+export function inboxItemView(item: AttentionItem, presence: Presence | null): ShipmatesInboxItemView {
   return {
     id: item.id,
     question: item.question,
@@ -135,7 +135,7 @@ export function inboxItemView(item: AttentionItem, presence: Presence | null): K
   };
 }
 
-export function presenceView(p: Presence): KenningPresenceView {
+export function presenceView(p: Presence): ShipmatesPresenceView {
   return {
     sessionFile: normalizeSessionFile(p.sessionFile),
     sessionId: p.sessionId,
@@ -147,7 +147,7 @@ export function presenceView(p: Presence): KenningPresenceView {
 }
 
 /** The notification for a blocking item. Pure. */
-export function kenningNotification(item: AttentionItem, presence: Presence | null): KenningNotification {
+export function shipmatesNotification(item: AttentionItem, presence: Presence | null): ShipmatesNotification {
   const lines = [item.question];
   if (item.options?.length) lines.push(`Options: ${item.options.join(' / ')}`);
   // Every channel's wording: how to answer ON a channel (Telegram: buttons,
@@ -168,20 +168,20 @@ interface NotifiedRecord {
   refs: string[];
 }
 
-export interface KenningServiceOptions {
-  /** Off = never open kenning (`kenning.enabled: false`). */
+export interface ShipmatesServiceOptions {
+  /** Off = never open shipmates (`shipmates.enabled: false`). */
   enabled: boolean;
   /** wherever's state dir: where the once-per-item notification record lives (ADR 0006). */
   whereverStateDir: string;
-  /** kenning's own state dir (default: kenning's, `KENNING_STATE_DIR` or `$XDG_STATE_HOME/kenning`). */
-  kenningStateDir?: string;
+  /** shipmates' own state dir (default: shipmates', `SHIPMATES_STATE_DIR` or `$XDG_STATE_HOME/shipmates`). */
+  shipmatesStateDir?: string;
   /** Called with a new snapshot whenever it changed (throttled). */
-  onUpdate(snapshot: KenningSnapshot): void;
-  /** Called on every kenning change, unthrottled (the host wakes evicted children from it). */
-  onKenningChange?(): void;
+  onUpdate(snapshot: ShipmatesSnapshot): void;
+  /** Called on every shipmates change, unthrottled (the host wakes evicted children from it). */
+  onShipmatesChange?(): void;
   /** Leading + trailing throttle of `onUpdate`, like `sessions_updated` (default 2000 ms). */
   throttleMs?: number;
-  /** How often kenning's database is polled for changes (kenning's D6 interval, default 1000 ms). */
+  /** How often shipmates' database is polled for changes (shipmates' D6 interval, default 1000 ms). */
   pollMs?: number;
   /** How often to look for the database before it exists (default 5000 ms). */
   openPollMs?: number;
@@ -191,12 +191,12 @@ export interface KenningServiceOptions {
   notifyRetryMs?: number;
   log?: Pick<Console, 'log' | 'warn' | 'error'>;
   now?: () => number;
-  /** kenning's own clock (tests: an archive made "8 days ago"). */
-  kenningNow?: () => number;
+  /** shipmates' own clock (tests: an archive made "8 days ago"). */
+  shipmatesNow?: () => number;
 }
 
-export class KenningService {
-  private kenning: Kenning | null = null;
+export class ShipmatesService {
+  private shipmates: Shipmates | null = null;
   private opening = false;
   private watcher: { stop(): void } | null = null;
   private openTimer: ReturnType<typeof setInterval> | null = null;
@@ -204,7 +204,7 @@ export class KenningService {
   private throttleTimer: ReturnType<typeof setTimeout> | null = null;
   private lastUpdateAt = 0;
   private lastSent = '';
-  private notifier: ((n: KenningNotification) => Promise<KenningNotifyOutcome>) | null = null;
+  private notifier: ((n: ShipmatesNotification) => Promise<ShipmatesNotifyOutcome>) | null = null;
   private notified = new Map<string, NotifiedRecord>();
   private notifying = new Set<string>();
   /** Items no channel delivered yet: when they were last tried (memory only). */
@@ -214,10 +214,10 @@ export class KenningService {
   private readonly now: () => number;
   private readonly dbPath: string;
 
-  constructor(private readonly opts: KenningServiceOptions) {
+  constructor(private readonly opts: ShipmatesServiceOptions) {
     this.log = opts.log ?? console;
     this.now = opts.now ?? Date.now;
-    this.dbPath = path.join(opts.kenningStateDir ?? kenningStateDir(), 'kenning.db');
+    this.dbPath = path.join(opts.shipmatesStateDir ?? shipmatesStateDir(), 'shipmates.db');
   }
 
   /** Open now if the database exists, else keep looking (unref'd). Never throws. */
@@ -243,11 +243,11 @@ export class KenningService {
   private openPromise: Promise<void> | null = null;
 
   get available(): boolean {
-    return this.kenning !== null;
+    return this.shipmates !== null;
   }
 
   /**
-   * Load kenning only now (it brings `node:sqlite`, which Node 22 announces with
+   * Load shipmates only now (it brings `node:sqlite`, which Node 22 announces with
    * an ExperimentalWarning) and open the database. A database that exists but
    * will not open is logged once and not retried.
    */
@@ -255,20 +255,20 @@ export class KenningService {
     if (this.opening) return this.openPromise ?? Promise.resolve();
     this.opening = true;
     this.openPromise = (async () => {
-      let mod: typeof import('kenning');
+      let mod: typeof import('shipmates');
       try {
-        mod = await import('kenning');
+        mod = await import('shipmates');
         if (this.stopped) return;
         mod.silenceSqliteWarning();
-        this.kenning = mod.openKenning({ stateDir: path.dirname(this.dbPath), ...(this.opts.kenningNow ? { now: this.opts.kenningNow } : {}) });
+        this.shipmates = mod.openShipmates({ stateDir: path.dirname(this.dbPath), ...(this.opts.shipmatesNow ? { now: this.opts.shipmatesNow } : {}) });
       } catch (err) {
-        this.log.warn(`[wherever] kenning: could not open ${this.dbPath} (${(err as Error).message}); the inbox stays off`);
+        this.log.warn(`[wherever] shipmates: could not open ${this.dbPath} (${(err as Error).message}); the inbox stays off`);
         return;
       }
       this.loadNotified();
       this.loadArchives();
-      this.log.log(`[wherever] kenning: inbox and presence from ${this.dbPath}`);
-      this.watcher = mod.watchChanges(this.kenning, () => this.onChange(), { intervalMs: this.opts.pollMs ?? 1000 });
+      this.log.log(`[wherever] shipmates: inbox and presence from ${this.dbPath}`);
+      this.watcher = mod.watchChanges(this.shipmates, () => this.onChange(), { intervalMs: this.opts.pollMs ?? 1000 });
       this.refreshTimer = setInterval(() => {
         this.checkNotifications(); // retries an undelivered item even when nothing is written
         this.flush();
@@ -288,14 +288,14 @@ export class KenningService {
     this.watcher?.stop();
     this.watcher = null;
     try {
-      this.kenning?.close();
+      this.shipmates?.close();
     } catch {}
-    this.kenning = null;
+    this.shipmates = null;
   }
 
   /** The current snapshot (sent to a dashboard as it connects). */
-  snapshot(): KenningSnapshot {
-    const k = this.kenning;
+  snapshot(): ShipmatesSnapshot {
+    const k = this.shipmates;
     if (!k) return { available: false, inbox: [], presence: [], archives: [] };
     try {
       const live = k.list();
@@ -303,7 +303,7 @@ export class KenningService {
       const inbox = k.inbox().map((item) => inboxItemView(item, bySession.get(item.session) ?? k.presence(item.session)));
       return { available: true, inbox, presence: live.map(presenceView), archives: this.archiveViews() };
     } catch (err) {
-      this.log.warn(`[wherever] kenning: reading the inbox failed: ${(err as Error).message}`);
+      this.log.warn(`[wherever] shipmates: reading the inbox failed: ${(err as Error).message}`);
       return { available: true, inbox: [], presence: [], archives: this.archiveViews() };
     }
   }
@@ -314,9 +314,9 @@ export class KenningService {
    * ever called for a real human act (ADR 0003): never from a CLI bridge
    * connection, never from a tool.
    */
-  answer(itemId: string, text: string, channel: 'web' | 'telegram'): KenningAnswerResult {
-    const k = this.kenning;
-    if (!k) return { ok: false, error: KENNING_DISABLED_ERROR };
+  answer(itemId: string, text: string, channel: 'web' | 'telegram'): ShipmatesAnswerResult {
+    const k = this.shipmates;
+    if (!k) return { ok: false, error: SHIPMATES_DISABLED_ERROR };
     if (typeof itemId !== 'string' || !itemId) return { ok: false, error: 'no item id' };
     if (typeof text !== 'string' || !text.trim()) return { ok: false, error: 'the answer is empty' };
     try {
@@ -328,16 +328,16 @@ export class KenningService {
     return { ok: true };
   }
 
-  /** The open kenning connection (the spawn/stop host reads ownership through it), or null. */
-  api(): Kenning | null {
-    return this.kenning;
+  /** The open shipmates connection (the spawn/stop host reads ownership through it), or null. */
+  api(): Shipmates | null {
+    return this.shipmates;
   }
 
   // ------------------------------------------------ ownership in the sidebar
 
   /**
    * Per-session lookups the `/sessions` listing makes for every session
-   * (owner, archived), memoized until the next kenning change: one indexed
+   * (owner, archived), memoized until the next shipmates change: one indexed
    * query each, but a real listing has thousands of sessions.
    */
   private lookups = new Map<string, { owner: string | null; archived: boolean }>();
@@ -345,7 +345,7 @@ export class KenningService {
   private lookup(sessionFile: string): { owner: string | null; archived: boolean } {
     const hit = this.lookups.get(sessionFile);
     if (hit) return hit;
-    const k = this.kenning;
+    const k = this.shipmates;
     let v = { owner: null as string | null, archived: false };
     if (k) {
       try {
@@ -356,7 +356,7 @@ export class KenningService {
     return v;
   }
 
-  /** The session that spawned this one (kenning D23), normalized; null when none or no kenning. */
+  /** The session that spawned this one (shipmates D23), normalized; null when none or no shipmates. */
   ownerOf(sessionFile: string): string | null {
     const o = this.lookup(sessionFile).owner;
     return o ? normalizeSessionFile(o) : null;
@@ -367,10 +367,10 @@ export class KenningService {
     return this.lookup(sessionFile).archived;
   }
 
-  /** Whether deleting this session must cascade (it owns sessions, kenning D24). */
+  /** Whether deleting this session must cascade (it owns sessions, shipmates D24). */
   ownsSessions(sessionFile: string): boolean {
     try {
-      return (this.kenning?.ownedBy(sessionFile).length ?? 0) > 0;
+      return (this.shipmates?.ownedBy(sessionFile).length ?? 0) > 0;
     } catch {
       return false;
     }
@@ -378,24 +378,24 @@ export class KenningService {
 
   // ------------------------------------------------------- cascaded delete
 
-  private archives = new Map<string, KenningArchiveView>();
+  private archives = new Map<string, ShipmatesArchiveView>();
 
-  private archiveViews(): KenningArchiveView[] {
+  private archiveViews(): ShipmatesArchiveView[] {
     const now = this.now();
     return [...this.archives.values()].filter((a) => a.undoUntil > now).sort((a, b) => b.at - a.at);
   }
 
   /**
-   * The human deleted a session that owns others (kenning D24): mark it and
+   * The human deleted a session that owns others (shipmates D24): mark it and
    * its whole owned subtree as one batch. The host hides every session in it
    * and keeps their transcripts until the undo window has passed
-   * (`purgeExpired`). Null without kenning.
+   * (`purgeExpired`). Null without shipmates.
    */
-  deleteCascade(sessionFile: string): KenningArchiveView | null {
-    const k = this.kenning;
+  deleteCascade(sessionFile: string): ShipmatesArchiveView | null {
+    const k = this.shipmates;
     if (!k) return null;
     const r = k.archive(sessionFile, { kind: 'deleted', by: 'web' });
-    const view: KenningArchiveView = {
+    const view: ShipmatesArchiveView = {
       batch: r.batch,
       root: normalizeSessionFile(sessionFile),
       sessions: r.sessions.map(normalizeSessionFile),
@@ -410,8 +410,8 @@ export class KenningService {
 
   /** Undo a cascaded delete within its window: the sessions come back. */
   undoDelete(batch: string): { ok: true; sessions: string[] } | { ok: false; error: string } {
-    const k = this.kenning;
-    if (!k) return { ok: false, error: KENNING_DISABLED_ERROR };
+    const k = this.shipmates;
+    if (!k) return { ok: false, error: SHIPMATES_DISABLED_ERROR };
     try {
       const sessions = k.undoArchive(batch).map(normalizeSessionFile);
       this.archives.delete(batch);
@@ -424,12 +424,12 @@ export class KenningService {
   }
 
   /**
-   * The cascaded deletes whose undo window kenning says has passed
+   * The cascaded deletes whose undo window shipmates says has passed
    * (`expiredArchives`): `remove` deletes each transcript for good, then the
-   * batch is forgotten. Never before kenning lists it (D24).
+   * batch is forgotten. Never before shipmates lists it (D24).
    */
   purgeExpired(remove: (sessionFile: string) => void): number {
-    const k = this.kenning;
+    const k = this.shipmates;
     if (!k) return 0;
     let expired: Set<string>;
     try {
@@ -446,7 +446,7 @@ export class KenningService {
           remove(s);
           n++;
         } catch (err) {
-          this.log.warn(`[wherever] kenning: could not delete ${s}: ${(err as Error).message}`);
+          this.log.warn(`[wherever] shipmates: could not delete ${s}: ${(err as Error).message}`);
         }
       }
       this.archives.delete(batch);
@@ -456,15 +456,15 @@ export class KenningService {
   }
 
   private archivesPath(): string {
-    return path.join(this.opts.whereverStateDir, KENNING_ARCHIVES_FILE);
+    return path.join(this.opts.whereverStateDir, SHIPMATES_ARCHIVES_FILE);
   }
 
   private loadArchives(): void {
     try {
-      const raw = JSON.parse(fs.readFileSync(this.archivesPath(), 'utf8')) as { batches?: KenningArchiveView[] };
+      const raw = JSON.parse(fs.readFileSync(this.archivesPath(), 'utf8')) as { batches?: ShipmatesArchiveView[] };
       for (const a of raw.batches ?? []) if (a && typeof a.batch === 'string' && Array.isArray(a.sessions)) this.archives.set(a.batch, a);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') this.log.warn(`[wherever] kenning: ignoring an unreadable ${KENNING_ARCHIVES_FILE}: ${(err as Error).message}`);
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') this.log.warn(`[wherever] shipmates: ignoring an unreadable ${SHIPMATES_ARCHIVES_FILE}: ${(err as Error).message}`);
     }
   }
 
@@ -476,7 +476,7 @@ export class KenningService {
       fs.writeFileSync(tmp, JSON.stringify({ batches: [...this.archives.values()] }, null, 2) + '\n', { mode: 0o600 });
       fs.renameSync(tmp, file);
     } catch (err) {
-      this.log.warn(`[wherever] kenning: could not record deleted sessions: ${(err as Error).message}`);
+      this.log.warn(`[wherever] shipmates: could not record deleted sessions: ${(err as Error).message}`);
     }
   }
 
@@ -485,7 +485,7 @@ export class KenningService {
    * channels have started; without one, nothing is pushed or recorded, so the
    * items are pushed when a later start has channels.
    */
-  setNotifier(fn: ((n: KenningNotification) => Promise<KenningNotifyOutcome>) | null): void {
+  setNotifier(fn: ((n: ShipmatesNotification) => Promise<ShipmatesNotifyOutcome>) | null): void {
     this.notifier = fn;
     if (fn) this.checkNotifications();
   }
@@ -500,8 +500,8 @@ export class KenningService {
     let itemId: string | null = null;
     for (const [id, rec] of this.notified) if (rec.refs.includes(ref)) itemId = id;
     if (!itemId) return { handled: false };
-    const k = this.kenning;
-    if (!k) return { handled: true, reply: `⚠️ ${KENNING_DISABLED_ERROR}.` };
+    const k = this.shipmates;
+    if (!k) return { handled: true, reply: `⚠️ ${SHIPMATES_DISABLED_ERROR}.` };
     const item = k.item(itemId);
     if (!item || item.state !== 'open') return { handled: true, reply: 'That question was already answered (or withdrawn).' };
     const r = this.answer(itemId, text, channel);
@@ -512,9 +512,9 @@ export class KenningService {
     this.lookups.clear();
     this.checkNotifications();
     try {
-      this.opts.onKenningChange?.();
+      this.opts.onShipmatesChange?.();
     } catch (err) {
-      this.log.error('[wherever] kenning: a change listener failed:', err);
+      this.log.error('[wherever] shipmates: a change listener failed:', err);
     }
     if (this.throttleTimer) return;
     const throttle = this.opts.throttleMs ?? 2000;
@@ -532,7 +532,7 @@ export class KenningService {
 
   /** Send the snapshot when it differs from the last one sent. */
   private flush(): void {
-    if (!this.kenning) return;
+    if (!this.shipmates) return;
     this.lastUpdateAt = this.now();
     const snap = this.snapshot();
     const json = JSON.stringify(snap);
@@ -541,13 +541,13 @@ export class KenningService {
     try {
       this.opts.onUpdate(snap);
     } catch (err) {
-      this.log.error('[wherever] kenning: broadcasting the inbox failed:', err);
+      this.log.error('[wherever] shipmates: broadcasting the inbox failed:', err);
     }
   }
 
   /** Push every open blocking item not pushed before, once (recorded in the state dir). */
   private checkNotifications(): void {
-    const k = this.kenning;
+    const k = this.shipmates;
     const notify = this.notifier;
     if (!k || !notify) return;
     let items: AttentionItem[];
@@ -561,9 +561,9 @@ export class KenningService {
       const lastTry = this.undelivered.get(item.id);
       if (lastTry !== undefined && this.now() - lastTry < (this.opts.notifyRetryMs ?? 60_000)) continue;
       this.notifying.add(item.id);
-      const n = kenningNotification(item, k.presence(item.session));
+      const n = shipmatesNotification(item, k.presence(item.session));
       void notify(n)
-        .catch((err): KenningNotifyOutcome => ({ delivered: false, refs: [], error: (err as Error).message }))
+        .catch((err): ShipmatesNotifyOutcome => ({ delivered: false, refs: [], error: (err as Error).message }))
         .then((out) => {
           this.notifying.delete(item.id);
           if (!out.delivered) {
@@ -571,7 +571,7 @@ export class KenningService {
             // paired, a network error): not recorded, so the item is pushed
             // once a channel can deliver, tried again at most every
             // `notifyRetryMs`. Said once per item, not on every try.
-            if (!this.undelivered.has(item.id)) this.log.warn(`[wherever] kenning: could not push item ${item.id}: ${out.error ?? 'no channel delivered'}; trying again later`);
+            if (!this.undelivered.has(item.id)) this.log.warn(`[wherever] shipmates: could not push item ${item.id}: ${out.error ?? 'no channel delivered'}; trying again later`);
             this.undelivered.set(item.id, this.now());
             return;
           }
@@ -584,7 +584,7 @@ export class KenningService {
   }
 
   private notifiedPath(): string {
-    return path.join(this.opts.whereverStateDir, KENNING_NOTIFIED_FILE);
+    return path.join(this.opts.whereverStateDir, SHIPMATES_NOTIFIED_FILE);
   }
 
   private loadNotified(): void {
@@ -594,7 +594,7 @@ export class KenningService {
         if (rec && typeof rec.at === 'number') this.notified.set(id, { at: rec.at, refs: Array.isArray(rec.refs) ? rec.refs.filter((r) => typeof r === 'string') : [] });
       }
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') this.log.warn(`[wherever] kenning: ignoring an unreadable ${KENNING_NOTIFIED_FILE}: ${(err as Error).message}`);
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') this.log.warn(`[wherever] shipmates: ignoring an unreadable ${SHIPMATES_NOTIFIED_FILE}: ${(err as Error).message}`);
     }
   }
 
@@ -608,7 +608,7 @@ export class KenningService {
       fs.writeFileSync(tmp, JSON.stringify({ items: Object.fromEntries(this.notified) }, null, 2) + '\n', { mode: 0o600 });
       fs.renameSync(tmp, file);
     } catch (err) {
-      this.log.warn(`[wherever] kenning: could not record notified items: ${(err as Error).message}`);
+      this.log.warn(`[wherever] shipmates: could not record notified items: ${(err as Error).message}`);
     }
   }
 }

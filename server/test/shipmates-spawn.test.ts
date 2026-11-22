@@ -3,38 +3,38 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { InlineExtension } from '@earendil-works/pi-coding-agent';
-import kenningPi from 'kenning-pi';
-import { currentHost, openKenning, type Kenning } from 'kenning';
+import shipmatesPi from '@shipmates/pi';
+import { currentHost, openShipmates, type Shipmates } from 'shipmates';
 import { SessionPool, type ServerTrackedSession } from '../src/session-pool.ts';
-import { registerKenningHost, WhereverKenningHost } from '../src/kenning-host.ts';
+import { registerShipmatesHost, WhereverShipmatesHost } from '../src/shipmates-host.ts';
 import { startFakeLlmServer, type FakeLlmServer } from './fake-llm-server.js';
 
 /**
- * wherever as kenning's host for spawn and stop (wherever ADR 0024, kenning
- * D26, D28, D30), and the closing of human-input marks (kenning D35), with the
- * REAL kenning-pi in REAL server sessions against the fake LLM (ADR 0001):
+ * wherever as shipmates' host for spawn and stop (wherever ADR 0024, shipmates
+ * D26, D28, D30), and the closing of human-input marks (shipmates D35), with the
+ * REAL @shipmates/pi in REAL server sessions against the fake LLM (ADR 0001):
  *
  * - an owner's `session_spawn` becomes a pool session in the asked folder; its
- *   first message is kenning's `spawn` message from the owner, origin agent,
+ *   first message is shipmates' `spawn` message from the owner, origin agent,
  *   never a human turn;
  * - the host's stop aborts only that session's run;
  * - a child the pool evicted is loaded again when a message waits for it;
  * - a human send another extension swallows leaves no mark, so an identical
  *   scheduled send right after is not the human's.
  *
- * kenning's database is this file's temp home (setup-isolate-env.ts).
+ * shipmates' database is this file's temp home (setup-isolate-env.ts).
  */
 
 let root: string;
 let fake: FakeLlmServer;
-let kenning: Kenning;
+let shipmates: Shipmates;
 const savedEnv: Record<string, string | undefined> = {};
 const cleanups: Array<() => unknown> = [];
-const kenningExtension: InlineExtension = { name: 'kenning-pi', factory: kenningPi as InlineExtension['factory'] };
+const shipmatesExtension: InlineExtension = { name: '@shipmates/pi', factory: shipmatesPi as InlineExtension['factory'] };
 
 beforeAll(async () => {
   fake = await startFakeLlmServer({ kind: 'reply', text: 'ok' });
-  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-kenning-spawn-')));
+  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-shipmates-spawn-')));
   for (const [key, dir] of [
     ['PI_CODING_AGENT_DIR', 'agent'],
     ['WHEREVER_CONFIG_DIR', 'wherever-config'],
@@ -44,15 +44,15 @@ beforeAll(async () => {
     process.env[key] = path.join(root, dir);
     fs.mkdirSync(process.env[key]!, { recursive: true });
   }
-  savedEnv.KENNING_POLL_MS = process.env.KENNING_POLL_MS;
-  process.env.KENNING_POLL_MS = '50';
+  savedEnv.SHIPMATES_POLL_MS = process.env.SHIPMATES_POLL_MS;
+  process.env.SHIPMATES_POLL_MS = '50';
   const agentDir = process.env.PI_CODING_AGENT_DIR!;
   fs.writeFileSync(
     path.join(agentDir, 'models.json'),
     JSON.stringify({ providers: { fake: { baseUrl: fake.url, api: 'anthropic-messages', apiKey: 'test-key', models: [{ id: 'fake-model' }] } } }),
   );
   fs.writeFileSync(path.join(agentDir, 'settings.json'), JSON.stringify({ defaultProvider: 'fake', defaultModel: 'fake-model' }));
-  kenning = openKenning();
+  shipmates = openShipmates();
 });
 
 afterEach(async () => {
@@ -61,7 +61,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  kenning.close();
+  shipmates.close();
   for (const [key, value] of Object.entries(savedEnv)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -71,9 +71,9 @@ afterAll(async () => {
 });
 
 function setup(extra: InlineExtension[] = []) {
-  const pool = new SessionPool(300_000, { extraExtensionFactories: [...extra, kenningExtension] });
-  const host = new WhereverKenningHost({ pool, stateDir: freshDir('host-state'), kenning: () => kenning, log: { log() {}, warn() {}, error() {} } });
-  const off = registerKenningHost(host);
+  const pool = new SessionPool(300_000, { extraExtensionFactories: [...extra, shipmatesExtension] });
+  const host = new WhereverShipmatesHost({ pool, stateDir: freshDir('host-state'), shipmates: () => shipmates, log: { log() {}, warn() {}, error() {} } });
+  const off = registerShipmatesHost(host);
   cleanups.push(() => pool.disposeAll(), off);
   return { pool, host };
 }
@@ -101,11 +101,11 @@ async function until<T>(get: () => T | null | undefined | false, ms = 15_000): P
 /** Everything any session sent the model, as one string (a request's messages). */
 const sentToModel = () => JSON.stringify(fake.requests().map((r) => r.messages));
 
-describe('kenning spawn and stop through the session pool', () => {
-  it("the host is the process's kenning host, and unregistering restores the previous one", () => {
+describe('shipmates spawn and stop through the session pool', () => {
+  it("the host is the process's shipmates host, and unregistering restores the previous one", () => {
     const before = currentHost();
     const a = { spawn: async () => ({ sessionFile: '/a.jsonl' }) };
-    const off = registerKenningHost(a);
+    const off = registerShipmatesHost(a);
     expect(currentHost()).toBe(a);
     off();
     expect(currentHost()).toBe(before);
@@ -125,15 +125,15 @@ describe('kenning spawn and stop through the session pool', () => {
 
     const child = await until(() => host.spawned().map((f) => pool.getSession(f)).find((t) => t && t.cwd === childDir));
     expect(host.spawned()).toEqual([child.sessionFile]);
-    expect(kenning.ownerOf(child.sessionFile)).toBe(owner.sessionFile);
-    expect(kenning.roleHolder('tree/push')).toBe(child.sessionFile);
+    expect(shipmates.ownerOf(child.sessionFile)).toBe(owner.sessionFile);
+    expect(shipmates.roleHolder('tree/push')).toBe(child.sessionFile);
 
-    // kenning delivered the first prompt as the owner's spawn message, and it woke the child.
-    await until(() => kenning.db.prepare(`SELECT state FROM message WHERE kind = 'spawn' AND to_target = ?`).get(child.sessionFile)?.state === 'delivered');
-    const spawnMsg = kenning.db.prepare(`SELECT origin, from_session FROM message WHERE kind = 'spawn' AND to_target = ?`).get(child.sessionFile) as { origin: string; from_session: string };
+    // shipmates delivered the first prompt as the owner's spawn message, and it woke the child.
+    await until(() => shipmates.db.prepare(`SELECT state FROM message WHERE kind = 'spawn' AND to_target = ?`).get(child.sessionFile)?.state === 'delivered');
+    const spawnMsg = shipmates.db.prepare(`SELECT origin, from_session FROM message WHERE kind = 'spawn' AND to_target = ?`).get(child.sessionFile) as { origin: string; from_session: string };
     expect(spawnMsg).toEqual({ origin: 'agent', from_session: owner.sessionFile });
     await until(() => sentToModel().includes('Build the push lane from docs/plan.md'));
-    expect(() => kenning.relayFromHuman(child.sessionFile, { quote: 'push lane' })).toThrow(/no human turn/);
+    expect(() => shipmates.relayFromHuman(child.sessionFile, { quote: 'push lane' })).toThrow(/no human turn/);
   }, 60_000);
 
   it('stop aborts only that session\'s run: not-running when idle, not-mine outside the pool', async () => {
@@ -159,7 +159,7 @@ describe('kenning spawn and stop through the session pool', () => {
     expect((pool.getSession(file) as ServerTrackedSession).agentSession.sessionManager.getSessionName()).toBe('tree/stop');
   }, 60_000);
 
-  it('a child the pool evicted is loaded again when a message waits for it (kenning only wakes its own headless children)', async () => {
+  it('a child the pool evicted is loaded again when a message waits for it (shipmates only wakes its own headless children)', async () => {
     const { pool, host } = setup();
     const owner = await newSession(pool);
     const childDir = freshDir('lane');
@@ -167,11 +167,11 @@ describe('kenning spawn and stop through the session pool', () => {
     await pool.sendUserMessage(owner.sessionFile, 'spawn it');
     const file = await until(() => host.spawned()[0]);
     // Its first turn wrote the transcript; then the pool lets it go.
-    await until(() => fs.existsSync(file) && !pool.isStreaming(file) && kenning.presence(file)?.state === 'idle');
+    await until(() => fs.existsSync(file) && !pool.isStreaming(file) && shipmates.presence(file)?.state === 'idle');
     await pool.destroySession(file, 'idle');
     expect(pool.getSession(file)).toBeNull();
 
-    kenning.send({ from: owner.sessionFile, to: file, text: 'second job: rebase onto main' });
+    shipmates.send({ from: owner.sessionFile, to: file, text: 'second job: rebase onto main' });
     host.wakeEvicted();
     await until(() => pool.getSession(file));
     await until(() => sentToModel().includes('second job: rebase onto main'));
@@ -185,14 +185,14 @@ describe('kenning spawn and stop through the session pool', () => {
         pi.on('input', (event) => (swallow && event.text === '/standup' ? { action: 'handled' } : { action: 'continue' }));
       },
     };
-    const { pool } = setup([swallower]); // loaded before kenning-pi, so its handler runs first
+    const { pool } = setup([swallower]); // loaded before @shipmates/pi, so its handler runs first
     const s = await newSession(pool);
-    await pool.sendUserMessage(s.sessionFile, '/standup'); // a web send: marked, never reaches kenning-pi
+    await pool.sendUserMessage(s.sessionFile, '/standup'); // a web send: marked, never reaches @shipmates/pi
     swallow = false;
-    await pool.sendUserMessage(s.sessionFile, '/standup', undefined, false, 'schedule:j1'); // well within kenning's 5 s
-    expect(() => kenning.relayFromHuman(s.sessionFile, { quote: '/standup' })).toThrow(/no human turn/);
-    // And a human send that does reach kenning-pi still counts.
+    await pool.sendUserMessage(s.sessionFile, '/standup', undefined, false, 'schedule:j1'); // well within shipmates' 5 s
+    expect(() => shipmates.relayFromHuman(s.sessionFile, { quote: '/standup' })).toThrow(/no human turn/);
+    // And a human send that does reach @shipmates/pi still counts.
     await pool.sendUserMessage(s.sessionFile, 'I approve the standup');
-    expect(kenning.relayFromHuman(s.sessionFile, { quote: 'approve the standup' }).channel).toBe('web');
+    expect(shipmates.relayFromHuman(s.sessionFile, { quote: 'approve the standup' }).channel).toBe('web');
   }, 60_000);
 });

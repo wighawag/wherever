@@ -19,7 +19,7 @@
  * timeout).
  */
 
-import type { KenningHost, SpawnRequest } from 'kenning';
+import type { ShipmatesHost, SpawnRequest } from 'shipmates';
 import { assistantCliOps, type AssistantSessionHooks } from './assistant-tools.js';
 
 /** The calling bridge session, resolved from its registration. */
@@ -97,11 +97,11 @@ export interface CliRequestRouterDeps {
    */
   assistantHooks?: () => AssistantSessionHooks | undefined;
   /**
-   * The server's kenning host (kenning-host.ts), for the bridge's own host in a
-   * terminal pi (`kenning_spawn`, `kenning_stop`): a terminal session's
-   * `session_spawn` becomes a sidebar session here. Null while kenning is off.
+   * The server's shipmates host (shipmates-host.ts), for the bridge's own host in a
+   * terminal pi (`shipmates_spawn`, `shipmates_stop`): a terminal session's
+   * `session_spawn` becomes a sidebar session here. Null while shipmates is off.
    */
-  kenningHost?: () => KenningHost | null;
+  shipmatesHost?: () => ShipmatesHost | null;
 }
 
 /** The router with this server's built-in ops. */
@@ -121,22 +121,22 @@ export function createCliRequestRouter(deps: CliRequestRouterDeps): CliRequestRo
   }
   // The owner / the asker is the REGISTERED session, never a field the bridge
   // chose: a bridge can spawn and stop only on its own session's behalf.
-  // kenning-pi in the terminal already checked ownership for a stop (D31).
-  // Whether the bridge should register its kenning host (absent on an older server: unknown op).
-  router.register('kenning_host_info', () => ({ available: !!deps.kenningHost?.() }));
-  router.register('kenning_spawn', async (args, caller) => {
-    const host = deps.kenningHost?.();
-    if (!host?.spawn) throw new Error('kenning is not available on this wherever server');
+  // @shipmates/pi in the terminal already checked ownership for a stop (D31).
+  // Whether the bridge should register its shipmates host (absent on an older server: unknown op).
+  router.register('shipmates_host_info', () => ({ available: !!deps.shipmatesHost?.() }));
+  router.register('shipmates_spawn', async (args, caller) => {
+    const host = deps.shipmatesHost?.();
+    if (!host?.spawn) throw new Error('shipmates is not available on this wherever server');
     const req = args as Partial<SpawnRequest> | null;
-    if (!req || typeof req.spawnId !== 'string' || typeof req.folder !== 'string') throw new Error('kenning_spawn needs a spawn request');
+    if (!req || typeof req.spawnId !== 'string' || typeof req.folder !== 'string') throw new Error('shipmates_spawn needs a spawn request');
     if (req.owner !== caller.sessionFile) throw new Error('a CLI session can only spawn sessions it owns itself');
     return host.spawn(req as SpawnRequest);
   });
-  router.register('kenning_stop', async (args, caller) => {
-    const host = deps.kenningHost?.();
+  router.register('shipmates_stop', async (args, caller) => {
+    const host = deps.shipmatesHost?.();
     if (!host?.stop) return { outcome: 'not-mine' };
     const a = args as { sessionFile?: unknown; by?: unknown } | null;
-    if (!a || typeof a.sessionFile !== 'string') throw new Error('kenning_stop needs a sessionFile');
+    if (!a || typeof a.sessionFile !== 'string') throw new Error('shipmates_stop needs a sessionFile');
     if (a.by !== caller.sessionFile) throw new Error('a CLI session can only stop on its own behalf');
     return { outcome: await host.stop(a.sessionFile, { by: caller.sessionFile }) };
   });

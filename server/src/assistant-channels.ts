@@ -73,14 +73,14 @@ export interface ChannelContext {
   abortTurn(): Promise<{ aborted: boolean }>;
   /**
    * A reply to a message this channel sent for a notification (a Telegram reply
-   * to a kenning question: `ref` is one of the `refs` its `notify` returned).
+   * to a shipmates question: `ref` is one of the `refs` its `notify` returned).
    * `handled: true` = it answered something (send `reply` back); `handled:
    * false` = treat the message as an ordinary one. Never throws.
    */
   onNotificationReply?(reply: ChannelNotificationReply): Promise<ChannelNotificationReplyResult>;
 }
 
-/** A user's reply to a notification message (kenning's attention inbox, wherever ADR 0023). */
+/** A user's reply to a notification message (shipmates' attention inbox, wherever ADR 0023). */
 export interface ChannelNotificationReply {
   channel: string;
   /** `<channel>:<channel-side id>` of the message replied to, as `notify` returned it in `refs`. */
@@ -90,7 +90,7 @@ export interface ChannelNotificationReply {
 
 export type ChannelNotificationReplyResult = { handled: false } | { handled: true; reply: string };
 
-/** Who answers notification replies (the kenning inbox; none = every reply is an ordinary message). */
+/** Who answers notification replies (the shipmates inbox; none = every reply is an ordinary message). */
 export type NotificationReplyHandler = (reply: ChannelNotificationReply) => ChannelNotificationReplyResult | Promise<ChannelNotificationReplyResult>;
 
 /**
@@ -112,7 +112,7 @@ export interface ChannelNotification {
   files?: ChannelFile[];
   /**
    * The notification asks the user something, and a reply to it answers
-   * (`onNotificationReply`, a kenning question). `options` are its fixed
+   * (`onNotificationReply`, a shipmates question). `options` are its fixed
    * answers: a channel that can offers them as one-tap choices (Telegram
    * buttons), delivered as a reply with the option's text. A channel without
    * replies (Web Push) ignores it.
@@ -413,7 +413,7 @@ export class ChannelDispatcher {
     );
   }
 
-  /** Who answers a reply to a notification (the kenning inbox, set in index.ts). */
+  /** Who answers a reply to a notification (the shipmates inbox, set in index.ts). */
   setNotificationReplyHandler(handler: NotificationReplyHandler | null): void {
     this.notificationReplies = handler;
   }

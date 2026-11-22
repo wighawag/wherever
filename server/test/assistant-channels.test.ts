@@ -94,7 +94,7 @@ class FakeEvents implements ChannelPoolPort {
 const note: ChannelNotification = { title: 'Done', body: 'CI is green', source: 'app', navigate: 'sess-1' };
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
-describe('replies to a notification (the kenning inbox)', () => {
+describe('replies to a notification (the shipmates inbox)', () => {
   it('reach the handler with the channel\'s own name; without one, or when it throws, they are ordinary messages', async () => {
     const tg = new FakeChannel('telegram');
     const d = new ChannelDispatcher({ controller: { send: async () => {} }, pool: new FakeEvents(), channels: [tg] });

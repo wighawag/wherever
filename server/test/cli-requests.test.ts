@@ -83,15 +83,15 @@ describe('CLI request router', () => {
   });
 });
 
-describe('CLI request router: kenning host ops (ADR 0024)', () => {
+describe('CLI request router: shipmates host ops (ADR 0024)', () => {
   const caller = { sessionFile: '/s/owner.jsonl', sessionId: 'o', cwd: '/w' };
   const call = (router: CliRequestRouter, op: string, args?: unknown) => router.handle({ type: 'cli_request', id: 'r', op, args }, caller);
 
-  it('kenning_host_info says whether the bridge should register its host', async () => {
-    const off = createCliRequestRouter({ assistantInfo: () => ({ assistantFolder: null }), kenningHost: () => null });
-    expect(await call(off, 'kenning_host_info')).toEqual({ type: 'cli_response', id: 'r', ok: true, result: { available: false } });
-    const on = createCliRequestRouter({ assistantInfo: () => ({ assistantFolder: null }), kenningHost: () => ({}) });
-    expect(await call(on, 'kenning_host_info')).toMatchObject({ ok: true, result: { available: true } });
+  it('shipmates_host_info says whether the bridge should register its host', async () => {
+    const off = createCliRequestRouter({ assistantInfo: () => ({ assistantFolder: null }), shipmatesHost: () => null });
+    expect(await call(off, 'shipmates_host_info')).toEqual({ type: 'cli_response', id: 'r', ok: true, result: { available: false } });
+    const on = createCliRequestRouter({ assistantInfo: () => ({ assistantFolder: null }), shipmatesHost: () => ({}) });
+    expect(await call(on, 'shipmates_host_info')).toMatchObject({ ok: true, result: { available: true } });
   });
 
   it('spawn and stop act only on behalf of the REGISTERED session', async () => {
@@ -99,7 +99,7 @@ describe('CLI request router: kenning host ops (ADR 0024)', () => {
     const stopped: unknown[] = [];
     const router = createCliRequestRouter({
       assistantInfo: () => ({ assistantFolder: null }),
-      kenningHost: () => ({
+      shipmatesHost: () => ({
         spawn: async (req) => {
           spawned.push(req);
           return { sessionFile: '/s/child.jsonl' };
@@ -111,18 +111,18 @@ describe('CLI request router: kenning host ops (ADR 0024)', () => {
       }),
     });
     const req = { spawnId: 'sp_1', owner: '/s/owner.jsonl', folder: '/w/lane', title: 'lane' };
-    expect(await call(router, 'kenning_spawn', req)).toMatchObject({ ok: true, result: { sessionFile: '/s/child.jsonl' } });
-    expect(await call(router, 'kenning_spawn', { ...req, owner: '/s/someone-else.jsonl' })).toMatchObject({ ok: false, error: expect.stringMatching(/only spawn sessions it owns itself/) });
+    expect(await call(router, 'shipmates_spawn', req)).toMatchObject({ ok: true, result: { sessionFile: '/s/child.jsonl' } });
+    expect(await call(router, 'shipmates_spawn', { ...req, owner: '/s/someone-else.jsonl' })).toMatchObject({ ok: false, error: expect.stringMatching(/only spawn sessions it owns itself/) });
     expect(spawned).toEqual([req]);
 
-    expect(await call(router, 'kenning_stop', { sessionFile: '/s/child.jsonl', by: '/s/owner.jsonl' })).toMatchObject({ ok: true, result: { outcome: 'stopped' } });
-    expect(await call(router, 'kenning_stop', { sessionFile: '/s/child.jsonl', by: '/s/other.jsonl' })).toMatchObject({ ok: false });
+    expect(await call(router, 'shipmates_stop', { sessionFile: '/s/child.jsonl', by: '/s/owner.jsonl' })).toMatchObject({ ok: true, result: { outcome: 'stopped' } });
+    expect(await call(router, 'shipmates_stop', { sessionFile: '/s/child.jsonl', by: '/s/other.jsonl' })).toMatchObject({ ok: false });
     expect(stopped).toEqual([['/s/child.jsonl', { by: '/s/owner.jsonl' }]]);
   });
 
-  it('without kenning: spawn is refused and stop answers not-mine (kenning then falls back)', async () => {
-    const router = createCliRequestRouter({ assistantInfo: () => ({ assistantFolder: null }), kenningHost: () => null });
-    expect(await call(router, 'kenning_spawn', { spawnId: 'sp', owner: '/s/owner.jsonl', folder: '/w' })).toMatchObject({ ok: false });
-    expect(await call(router, 'kenning_stop', { sessionFile: '/s/x.jsonl', by: '/s/owner.jsonl' })).toMatchObject({ ok: true, result: { outcome: 'not-mine' } });
+  it('without shipmates: spawn is refused and stop answers not-mine (shipmates then falls back)', async () => {
+    const router = createCliRequestRouter({ assistantInfo: () => ({ assistantFolder: null }), shipmatesHost: () => null });
+    expect(await call(router, 'shipmates_spawn', { spawnId: 'sp', owner: '/s/owner.jsonl', folder: '/w' })).toMatchObject({ ok: false });
+    expect(await call(router, 'shipmates_stop', { sessionFile: '/s/x.jsonl', by: '/s/owner.jsonl' })).toMatchObject({ ok: true, result: { outcome: 'not-mine' } });
   });
 });

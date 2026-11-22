@@ -143,11 +143,11 @@ export class ReplyRouting {
   }
 
   /**
-   * kenning delivered messages into the session (kenning-delivery.ts). That is
+   * shipmates delivered messages into the session (shipmates-delivery.ts). That is
    * never a user message, so it never takes an entry; but output it CAUSES
    * answers the sending session, not the human, so it must not inherit the
    * destination of the human's last message (a session last spoken to on
-   * Telegram would otherwise answer every kenning wake on Telegram). The
+   * Telegram would otherwise answer every shipmates wake on Telegram). The
    * destination becomes null, as for a message with no origin, when:
    *  - `message`: a delivery as a message_end (a wake, or what
    *    `before_agent_start` attached) in a run with no user message yet: the
@@ -159,7 +159,7 @@ export class ReplyRouting {
    *    came from `turn_end` (urgent), mid-answer: kept.
    * The next user message sets the destination again, as always.
    */
-  kenningDelivered(as: 'message' | 'entry'): void {
+  shipmatesDelivered(as: 'message' | 'entry'): void {
     if (as === 'message' ? !this.userInRun : !this.inRun) this.current = null;
   }
 

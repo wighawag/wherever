@@ -263,7 +263,7 @@ test("an active twin round-trips through cli_request and returns the server's re
   answer = (req) =>
     req.op === "assistant_info"
       ? { type: "cli_response", id: req.id, ok: true, result: { assistantFolder: folder, timezone: "UTC" } }
-      : req.op === "kenning_host_info"
+      : req.op === "shipmates_host_info"
         ? { type: "cli_response", id: req.id, ok: true, result: { available: false } }
         : req.op === "notify"
         ? { type: "cli_response", id: req.id, ok: false, error: "no channel could deliver the notification" }

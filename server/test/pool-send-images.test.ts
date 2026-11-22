@@ -135,7 +135,7 @@ describe('pool send with images (server sessions)', () => {
       expect(opts.images).toBeUndefined();
     }
     expect(spy.mock.calls[0]![1]).toMatchObject({ expandPromptTemplates: false, source: 'extension' });
-    // `extension` for "/" text too: `interactive` would make kenning take it for typed in a terminal (ADR 0023).
+    // `extension` for "/" text too: `interactive` would make shipmates take it for typed in a terminal (ADR 0023).
     expect(spy.mock.calls[2]![1]).toMatchObject({ expandPromptTemplates: true, source: 'extension' });
     expect(lastUserContent(fake.requests().at(-1)).some((p) => p.type === 'image')).toBe(false);
     spy.mockRestore();

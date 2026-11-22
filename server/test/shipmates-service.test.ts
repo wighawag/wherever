@@ -2,22 +2,22 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openKenning, type Kenning } from 'kenning';
+import { openShipmates, type Shipmates } from 'shipmates';
 import {
-  KENNING_NOTIFIED_FILE,
-  KenningService,
-  kenningNotification,
-  kenningStateDir,
+  SHIPMATES_NOTIFIED_FILE,
+  ShipmatesService,
+  shipmatesNotification,
+  shipmatesStateDir,
   sessionIdOf,
-  type KenningNotification,
-  type KenningSnapshot,
-} from '../src/kenning-service.ts';
+  type ShipmatesNotification,
+  type ShipmatesSnapshot,
+} from '../src/shipmates-service.ts';
 
 /**
- * wherever's kenning host half (kenning-service.ts): the inbox and presence
+ * wherever's shipmates host half (shipmates-service.ts): the inbox and presence
  * snapshot pushed to dashboards, the web answer as a human act, and blocking
  * items pushed ONCE (recorded in wherever's state dir), a channel reply
- * answering the item it notified. Against the REAL kenning core on a temp
+ * answering the item it notified. Against the REAL shipmates core on a temp
  * state dir; no pi.
  */
 
@@ -29,17 +29,17 @@ afterEach(() => {
 const quiet = { log() {}, warn() {}, error() {} };
 
 function dirs() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-kenning-svc-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-shipmates-svc-'));
   cleanups.push(() => fs.rmSync(root, { recursive: true, force: true }));
-  return { root, kenningDir: path.join(root, 'kenning'), stateDir: path.join(root, 'wherever-state') };
+  return { root, shipmatesDir: path.join(root, 'shipmates'), stateDir: path.join(root, 'wherever-state') };
 }
 
-function service(d: ReturnType<typeof dirs>, extra: Partial<ConstructorParameters<typeof KenningService>[0]> = {}) {
-  const updates: KenningSnapshot[] = [];
-  const svc = new KenningService({
+function service(d: ReturnType<typeof dirs>, extra: Partial<ConstructorParameters<typeof ShipmatesService>[0]> = {}) {
+  const updates: ShipmatesSnapshot[] = [];
+  const svc = new ShipmatesService({
     enabled: true,
     whereverStateDir: d.stateDir,
-    kenningStateDir: d.kenningDir,
+    shipmatesStateDir: d.shipmatesDir,
     onUpdate: (s) => updates.push(s),
     throttleMs: 0,
     pollMs: 20,
@@ -51,8 +51,8 @@ function service(d: ReturnType<typeof dirs>, extra: Partial<ConstructorParameter
   return { svc, updates };
 }
 
-function db(d: ReturnType<typeof dirs>): Kenning {
-  const k = openKenning({ stateDir: d.kenningDir });
+function db(d: ReturnType<typeof dirs>): Shipmates {
+  const k = openShipmates({ stateDir: d.shipmatesDir });
   cleanups.push(() => k.close());
   return k;
 }
@@ -67,21 +67,21 @@ async function until(cond: () => boolean, ms = 3000) {
 
 const SESSION = (root: string) => path.join(root, 'sessions', '2026-11-18T10-00-00-000Z_0b7c5e7a-1111-4222-8333-944455556666.jsonl');
 
-describe('KenningService', () => {
-  it('stays off (and writes nothing) until kenning\'s database exists, then opens it', async () => {
+describe('ShipmatesService', () => {
+  it('stays off (and writes nothing) until shipmates\'s database exists, then opens it', async () => {
     const d = dirs();
     const { svc, updates } = service(d);
     svc.start();
     expect(svc.available).toBe(false);
     expect(svc.snapshot()).toEqual({ available: false, inbox: [], presence: [], archives: [] });
-    expect(fs.existsSync(d.kenningDir)).toBe(false);
+    expect(fs.existsSync(d.shipmatesDir)).toBe(false);
     expect(svc.answer('h_x', 'yes', 'web')).toMatchObject({ ok: false });
 
-    const k = db(d); // kenning-pi (or the CLI) creates it
+    const k = db(d); // @shipmates/pi (or the CLI) creates it
     k.register({ sessionFile: SESSION(d.root), sessionId: '0b7c5e7a-1111-4222-8333-944455556666', cwd: '/home/u/lane' });
     await until(() => svc.available && updates.length > 0);
     expect(updates.at(-1)!.available).toBe(true);
-    expect(fs.existsSync(path.join(d.stateDir, KENNING_NOTIFIED_FILE))).toBe(false);
+    expect(fs.existsSync(path.join(d.stateDir, SHIPMATES_NOTIFIED_FILE))).toBe(false);
   });
 
   it('`enabled: false` never opens it', () => {
@@ -151,8 +151,8 @@ describe('KenningService', () => {
     const blocking = k.humanAsk({ from: file, question: 'Approve the MIT license?', blocking: true });
     k.humanAsk({ from: file, question: 'Not urgent: which name do you prefer?' });
 
-    const pushed: KenningNotification[] = [];
-    const notifier = async (n: KenningNotification) => {
+    const pushed: ShipmatesNotification[] = [];
+    const notifier = async (n: ShipmatesNotification) => {
       pushed.push(n);
       return { delivered: true, refs: [`telegram:42:${100 + pushed.length}`] };
     };
@@ -160,7 +160,7 @@ describe('KenningService', () => {
     first.svc.start();
     await first.svc.ready();
     first.svc.setNotifier(notifier);
-    await until(() => fs.existsSync(path.join(d.stateDir, KENNING_NOTIFIED_FILE)));
+    await until(() => fs.existsSync(path.join(d.stateDir, SHIPMATES_NOTIFIED_FILE)));
     expect(pushed).toEqual([
       { itemId: blocking.id, options: [], title: 'Question for you', body: expect.stringContaining('Approve the MIT license?'), source: 'lane', navigate: 'sid-1' },
     ]);
@@ -205,35 +205,35 @@ describe('KenningService', () => {
     k.update(file, { status: 'x' });
     await new Promise((r) => setTimeout(r, 100));
     expect(calls).toBe(1);
-    expect(fs.existsSync(path.join(d.stateDir, KENNING_NOTIFIED_FILE))).toBe(false);
+    expect(fs.existsSync(path.join(d.stateDir, SHIPMATES_NOTIFIED_FILE))).toBe(false);
     // The user pairs Telegram; the next change after the window delivers it, once.
     deliver = true;
     await new Promise((r) => setTimeout(r, 300));
     k.update(file, { status: 'y' });
-    await until(() => fs.existsSync(path.join(d.stateDir, KENNING_NOTIFIED_FILE)));
+    await until(() => fs.existsSync(path.join(d.stateDir, SHIPMATES_NOTIFIED_FILE)));
     expect(calls).toBe(2);
     k.update(file, { status: 'z' });
     await new Promise((r) => setTimeout(r, 400));
     expect(calls).toBe(2);
   });
 
-  it("computes kenning's state dir exactly as kenning does, without loading it", async () => {
-    const { defaultStateDir } = await import('kenning');
-    const saved = { K: process.env.KENNING_STATE_DIR, X: process.env.XDG_STATE_HOME };
+  it("computes shipmates' state dir exactly as shipmates does, without loading it", async () => {
+    const { defaultStateDir } = await import('shipmates');
+    const saved = { K: process.env.SHIPMATES_STATE_DIR, X: process.env.XDG_STATE_HOME };
     const set = (key: string, v: string | undefined) => (v === undefined ? delete process.env[key] : (process.env[key] = v));
     try {
       for (const [k, x] of [['/k', '/x'], [undefined, '/x'], [undefined, undefined]] as const) {
-        set('KENNING_STATE_DIR', k);
+        set('SHIPMATES_STATE_DIR', k);
         set('XDG_STATE_HOME', x);
-        expect(kenningStateDir()).toBe(defaultStateDir());
+        expect(shipmatesStateDir()).toBe(defaultStateDir());
       }
     } finally {
-      set('KENNING_STATE_DIR', saved.K);
+      set('SHIPMATES_STATE_DIR', saved.K);
       set('XDG_STATE_HOME', saved.X);
     }
   });
 
-  it('a cascaded delete hides the owner and its subtree as one batch, undoable; purged only once kenning says the window passed', async () => {
+  it('a cascaded delete hides the owner and its subtree as one batch, undoable; purged only once shipmates says the window passed', async () => {
     const d = dirs();
     const k = db(d);
     const owner = SESSION(d.root);
@@ -242,7 +242,7 @@ describe('KenningService', () => {
     k.recordOwnership({ session: child, owner, folder: '/w/a', via: 'host' });
     k.recordOwnership({ session: grandchild, owner: child, folder: '/w/b', via: 'host' });
     let kNow = Date.now();
-    const { svc, updates } = service(d, { kenningNow: () => kNow });
+    const { svc, updates } = service(d, { shipmatesNow: () => kNow });
     svc.start();
     await svc.ready();
     expect(svc.ownsSessions(owner)).toBe(true);
@@ -261,7 +261,7 @@ describe('KenningService', () => {
     expect(svc.isArchived(child)).toBe(false);
     await until(() => updates.at(-1)?.archives.length === 0);
 
-    // Deleted again, then 8 days pass (kenning's clock): purged, and the batch forgotten.
+    // Deleted again, then 8 days pass (shipmates' clock): purged, and the batch forgotten.
     kNow = Date.now() - 8 * 86_400_000;
     const b = svc.deleteCascade(owner)!;
     kNow = Date.now();
@@ -270,13 +270,13 @@ describe('KenningService', () => {
     expect(removed.sort()).toEqual([owner, child, grandchild].sort());
     expect(svc.snapshot().archives).toEqual([]);
     // Recorded in wherever's state dir, so a restart still knows the batch until then.
-    expect(fs.existsSync(path.join(d.stateDir, 'kenning-archives.json'))).toBe(true);
+    expect(fs.existsSync(path.join(d.stateDir, 'shipmates-archives.json'))).toBe(true);
   });
 
   it('builds the notification and the session id from pure parts', () => {
     expect(sessionIdOf('/s/2026-11-18T10-00-00-000Z_0b7c5e7a-1111-4222-8333-944455556666.jsonl', null)).toBe('0b7c5e7a-1111-4222-8333-944455556666');
     expect(sessionIdOf('/s/other.jsonl', null)).toBeNull();
-    const n = kenningNotification(
+    const n = shipmatesNotification(
       { id: 'h_1', session: '/s/other.jsonl', question: 'Which?', options: ['a', 'b'], blocking: true, onBehalfOf: [], state: 'open', answer: null, answerChannel: null, createdAt: 0 },
       null,
     );

@@ -1,29 +1,29 @@
 /**
- * A kenning delivery as a chat card: what the server's `kenning` message (and
- * the live `kenning_delivery` frame) carries, turned into who sent what.
+ * A shipmates delivery as a chat card: what the server's `shipmates` message (and
+ * the live `shipmates_delivery` frame) carries, turned into who sent what.
  *
- * `details` (kenning-pi `session.ts` `payload()`) gives, per delivered
+ * `details` (@shipmates/pi `session.ts` `payload()`) gives, per delivered
  * message, its id, the sender's label and its origin, but not its KIND (`tell`,
- * `ask`, `answer`, `spawn`). The kind is only in kenning's formatted text
- * (kenning-pi `format.ts` `formatDelivery`), one header line per message:
+ * `ask`, `answer`, `spawn`). The kind is only in shipmates' formatted text
+ * (@shipmates/pi `format.ts` `formatDelivery`), one header line per message:
  *
  *   --- <id> · from <label> · origin: <origin> · <kind>[ · ...]
  *
- * followed by that message's body, and a closing `---` line before kenning's
+ * followed by that message's body, and a closing `---` line before shipmates'
  * trailing instructions. So the header of each id in `details` is found by its
  * id (a body that happens to contain a `--- ` line is never taken for one), the
  * kind is the part after `origin: `, and a body runs to the next header or to
- * the LAST `---` line. A delivery from another kenning version that does not
+ * the LAST `---` line. A delivery from another shipmates version that does not
  * match still shows its senders and origins, with the whole text as the body.
  */
 
-export interface KenningDeliveryDetails {
+export interface ShipmatesDeliveryDetails {
 	ids: string[];
 	from: string[];
 	origins: string[];
 }
 
-export interface KenningCardItem {
+export interface ShipmatesCardItem {
 	id: string | null;
 	from: string;
 	origin: string;
@@ -32,8 +32,8 @@ export interface KenningCardItem {
 	body: string;
 }
 
-export interface KenningCard {
-	items: KenningCardItem[];
+export interface ShipmatesCard {
+	items: ShipmatesCardItem[];
 	/** The distinct senders, in order. */
 	senders: string[];
 	/** The distinct origins, in order. */
@@ -52,10 +52,10 @@ function distinct(xs: string[]): string[] {
 	return [...new Set(xs.filter((x) => x))];
 }
 
-export function describeKenningDelivery(
+export function describeShipmatesDelivery(
 	content: string,
-	details: KenningDeliveryDetails,
-): KenningCard {
+	details: ShipmatesDeliveryDetails,
+): ShipmatesCard {
 	const lines = content.split('\n');
 	const headers = details.ids.map((id) =>
 		id ? lines.findIndex((l) => l.startsWith(`--- ${id} · `)) : -1,
@@ -69,7 +69,7 @@ export function describeKenningDelivery(
 	}
 	const found = headers.filter((h) => h >= 0).sort((a, b) => a - b);
 
-	const items: KenningCardItem[] = details.ids.map((id, i) => {
+	const items: ShipmatesCardItem[] = details.ids.map((id, i) => {
 		const h = headers[i];
 		const from = details.from[i] ?? '';
 		const origin = details.origins[i] ?? '';
@@ -89,7 +89,7 @@ export function describeKenningDelivery(
 	});
 
 	// Nothing matched (no ids, or a format this card does not know): one item
-	// with what `details` says and the text as kenning wrote it.
+	// with what `details` says and the text as shipmates wrote it.
 	if (!items.some((it) => it.body)) {
 		const first = items[0];
 		items.splice(0, items.length, {
@@ -110,7 +110,7 @@ export function describeKenningDelivery(
 	};
 }
 
-/** The badge for an origin (kenning ADR 0003): who stands behind the words. */
+/** The badge for an origin (shipmates ADR 0003): who stands behind the words. */
 export function originBadge(origin: string): {
 	label: string;
 	tone: 'agent' | 'human' | 'relayed' | 'other';
@@ -130,7 +130,7 @@ export interface ListedSessionName {
 }
 
 /**
- * A sender as a person reads it. kenning labels a session by its role, else by
+ * A sender as a person reads it. shipmates labels a session by its role, else by
  * its transcript path (`labelOf`), which says nothing at a glance: a listed
  * session is named the way the sidebar names it (its name, else its first
  * message), and an unlisted path is "another session". A role stays as is.

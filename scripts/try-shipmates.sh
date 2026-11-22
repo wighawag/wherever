@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Try the kenning integration on a SECOND wherever, fully isolated from the one
-# you use every day (its config, state, pi agent dir, sessions, kenning database
+# Try the shipmates integration on a SECOND wherever, fully isolated from the one
+# you use every day (its config, state, pi agent dir, sessions, shipmates database
 # and assistant folder all live under $ROOT), before releasing it.
 #
-#   scripts/try-kenning.sh setup    build this checkout and prepare $ROOT
-#   scripts/try-kenning.sh start    start the test server (background)
-#   scripts/try-kenning.sh pi       a terminal pi bridged to the test server
-#   scripts/try-kenning.sh status   is it up, and where to open it
-#   scripts/try-kenning.sh stop     stop the test server (its whole process group)
-#   scripts/try-kenning.sh clean    stop, then delete $ROOT (asks first)
+#   scripts/try-shipmates.sh setup    build this checkout and prepare $ROOT
+#   scripts/try-shipmates.sh start    start the test server (background)
+#   scripts/try-shipmates.sh pi       a terminal pi bridged to the test server
+#   scripts/try-shipmates.sh status   is it up, and where to open it
+#   scripts/try-shipmates.sh stop     stop the test server (its whole process group)
+#   scripts/try-shipmates.sh clean    stop, then delete $ROOT (asks first)
 #
 # Settings (environment):
 #   ROOT                 default ~/wherever-test
@@ -32,10 +32,10 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ROOT="${ROOT:-$HOME/wherever-test}"
 PORT="${PORT:-31416}"
 REAL_AGENT_DIR="${REAL_AGENT_DIR:-$HOME/.pi/agent}"
-KENNING_PI="npm:kenning-pi@0.1.0"
+SHIPMATES_PI="npm:@shipmates/pi@0.3.0"
 
-die() { echo "try-kenning: $*" >&2; exit 1; }
-note() { echo "try-kenning: $*"; }
+die() { echo "try-shipmates: $*" >&2; exit 1; }
+note() { echo "try-shipmates: $*"; }
 
 # Everything the test server and the test terminal pi see. The PI_REMOTE_*,
 # WHEREVER_TOKEN* and Telegram variables are cleared first: a shell started
@@ -47,7 +47,7 @@ test_env() {
     WHEREVER_CONFIG_DIR="$ROOT/config"
     WHEREVER_STATE_DIR="$ROOT/state"
     PI_CODING_AGENT_DIR="$ROOT/agent"
-    KENNING_STATE_DIR="$ROOT/kenning"
+    SHIPMATES_STATE_DIR="$ROOT/shipmates"
   )
   [[ -f "$ROOT/token" ]] && env+=(WHEREVER_TOKEN_FILE="$ROOT/token")
   [[ -n "${TELEGRAM_TOKEN_FILE:-}" ]] && env+=(WHEREVER_TELEGRAM_TOKEN_FILE="$TELEGRAM_TOKEN_FILE")
@@ -84,7 +84,7 @@ cmd_setup() {
   if [[ -n "${TELEGRAM_TOKEN_FILE:-}" ]]; then
     [[ -s "$TELEGRAM_TOKEN_FILE" ]] || die "TELEGRAM_TOKEN_FILE=$TELEGRAM_TOKEN_FILE is missing or empty"
   fi
-  mkdir -p "$ROOT"/{config,state,agent,kenning,assistant} "$ROOT"/work/{lead,docs,orchestrator,lanes,terminal}
+  mkdir -p "$ROOT"/{config,state,agent,shipmates,assistant} "$ROOT"/work/{lead,docs,orchestrator,lanes,terminal}
   chmod 700 "$ROOT"
 
   note "building this checkout ($(git -C "$REPO" rev-parse --short HEAD)) with nix"
@@ -131,14 +131,14 @@ cmd_setup() {
     fs.writeFileSync(e.OUT, JSON.stringify(c, null, 2), { mode: 0o600 });
   '
 
-  note "installing $KENNING_PI into the test agent dir"
-  run_in_test_env timeout 600 pi install "$KENNING_PI"
+  note "installing $SHIPMATES_PI into the test agent dir"
+  run_in_test_env timeout 600 pi install "$SHIPMATES_PI"
 
-  note "ready. Next: scripts/try-kenning.sh start"
+  note "ready. Next: scripts/try-shipmates.sh start"
 }
 
 cmd_start() {
-  [[ -x "$ROOT/result/bin/wherever" ]] || die "not set up: run scripts/try-kenning.sh setup"
+  [[ -x "$ROOT/result/bin/wherever" ]] || die "not set up: run scripts/try-shipmates.sh setup"
   running && die "already running (process group $(server_pgid))"
   port_in_use && die "port $PORT is in use (ss -ltn); pick another with PORT=..."
   warn_if_inside_wherever
@@ -159,7 +159,7 @@ cmd_start() {
 }
 
 cmd_pi() {
-  [[ -f "$ROOT/agent/settings.json" ]] || die "not set up: run scripts/try-kenning.sh setup"
+  [[ -f "$ROOT/agent/settings.json" ]] || die "not set up: run scripts/try-shipmates.sh setup"
   running || note "WARNING: the test server is not running; the bridge will keep retrying"
   cd "$ROOT/work/terminal"
   local -a env=()
@@ -198,7 +198,7 @@ cmd_stop() {
 cmd_clean() {
   cmd_stop
   [[ -d "$ROOT" ]] || { note "nothing to delete"; return; }
-  read -r -p "Delete $ROOT (test sessions, state, kenning database)? [y/N] " yes
+  read -r -p "Delete $ROOT (test sessions, state, shipmates database)? [y/N] " yes
   [[ "$yes" == "y" || "$yes" == "Y" ]] || { note "kept $ROOT"; return; }
   rm -rf -- "$ROOT"
   note "deleted $ROOT"

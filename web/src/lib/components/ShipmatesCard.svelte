@@ -1,25 +1,25 @@
 <script lang="ts">
-	// One kenning delivery in the chat: messages other sessions (or the human,
+	// One shipmates delivery in the chat: messages other sessions (or the human,
 	// through one) sent into this session. Never a user message, so no fork, no
 	// edit, no delivery state; the text the agent read stays one click away.
 	import type {ChatMessage} from '@wherever-dev/client';
 	import {
-		describeKenningDelivery,
+		describeShipmatesDelivery,
 		originBadge,
 		senderName,
-	} from '$lib/core/kenning-delivery';
+	} from '$lib/core/shipmates-delivery';
 	import {sessionFolders, readOnlySessionFolders} from '$lib/session-store';
 
 	let {msg}: {msg: ChatMessage} = $props();
 
 	const card = $derived(
-		describeKenningDelivery(
+		describeShipmatesDelivery(
 			msg.content,
-			msg.kenning ?? {ids: [], from: [], origins: []},
+			msg.shipmates ?? {ids: [], from: [], origins: []},
 		),
 	);
 
-	// Senders named the way the sidebar names sessions (kenning labels a session
+	// Senders named the way the sidebar names sessions (shipmates labels a session
 	// without a role by its transcript path).
 	const listed = $derived(
 		new Map(
@@ -38,7 +38,7 @@
 	} as const;
 </script>
 
-<div class="chat-selectable flex flex-col gap-2" data-kenning-card>
+<div class="chat-selectable flex flex-col gap-2" data-shipmates-card>
 	<div
 		class="flex flex-wrap items-center gap-1.5 text-xs font-medium text-brand-text-muted"
 	>
@@ -71,8 +71,8 @@
 					class="rounded px-1.5 py-0.5 font-mono text-[10px] ring-1 {toneClass[
 						badge.tone
 					]}"
-					title="kenning origin: who stands behind these words"
-					data-kenning-origin={item.origin}>{badge.label}</span
+					title="shipmates origin: who stands behind these words"
+					data-shipmates-origin={item.origin}>{badge.label}</span
 				>
 				{#if item.kind && item.kind !== 'spawn'}
 					<span class="text-brand-text-muted">{item.kind}</span>
