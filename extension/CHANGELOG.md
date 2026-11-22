@@ -1,5 +1,17 @@
 # @wherever-dev/pi
 
+## 0.8.0
+
+### Minor Changes
+
+- 242c77a: In a terminal pi connected to a wherever server that supports it, kenning's `session_spawn` now creates the new session on the server (a sidebar session under its owner) instead of a zellij pane or a headless `pi -p`, and `session_stop` of a session the server runs aborts it there. The bridge registers this only while connected, so kenning falls back to its terminal default otherwise.
+- 242c77a: When the wherever server relays a message a human typed (in the web dashboard or on Telegram) into a terminal session, the bridge now emits `kenning:human-input` `{text, channel}` on the session's event bus right before sending it, so kenning-pi records the turn as the human's own words. The server asks for it with a new `humanInput` field on `cli_message`; messages from scheduled jobs carry no such field and are never marked.
+
+### Patch Changes
+
+- Updated dependencies [242c77a]
+  - @wherever-dev/client@0.10.0
+
 ## 0.7.0
 
 ### Minor Changes

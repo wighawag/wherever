@@ -1,5 +1,31 @@
 # wherever-dev
 
+## 0.26.0
+
+### Minor Changes
+
+- 242c77a: The chat now shows what kenning delivered into a session. A session woken by a message from another session, or a spawned session receiving its owner's first prompt, used to show the agent replying to nothing; each delivery is now a card with its sender, an origin badge (agent, human, human-relayed), its kind, the message text, "First prompt from <owner>" for a spawn, and the full text the agent read one click away. They appear in history and live (a new `kenning_delivery` frame), and are never user messages: no fork point, no reply routing, never sent to Telegram. A client receives them only when it asks (`kenning=1` on the socket URL; `kenningCards: true` in `@wherever-dev/client`, which the web app sets), so older clients see nothing new.
+
+  While kenning's inbox holds questions for you, the tab title starts with "(N) " and the installed app shows N on its icon where the browser supports app badges. This needs no assistant; pushes for blocking questions still do.
+
+- 242c77a: wherever is now a host for [kenning](https://github.com/wighawag/kenning), the sessions-that-know-about-each-other layer whose pi extension (kenning-pi) already runs in server sessions:
+  - **Human input is marked.** Before a web or Telegram message is sent into a session, the server emits `kenning:human-input` on that session's own event bus (server sessions through a per-session inline extension, CLI-bridge sessions through a new `humanInput` field on `cli_message`), so kenning records it as the human's words and another session can receive them as `human-relayed`. Scheduled jobs and anything an agent sends are never marked (ADR 0023). Server sends of `/`-prefixed text now report the `input` source `extension` instead of `interactive`, as CLI-bridge sessions already did, so a scheduled `/`-prompt no longer looks typed.
+  - **The attention inbox on the web.** A "Needs you" sidebar entry with a badge, a panel listing the questions sessions raised with `human_ask`, and a reply box that answers as the human (channel `web`). It is pushed live over the WebSocket (`kenning_update`, throttled like `sessions_updated`); a CLI bridge connection cannot answer.
+  - **Blocking questions reach you.** While the assistant's channels run, each blocking item is sent once through Web Push and Telegram, linking to the asking session; replying to that Telegram message answers it (channel `telegram`). Recorded in `<stateDir>/kenning-notified.json`, so a restart never repeats one.
+  - **Presence in the session list.** Each live session shows its kenning role, state and status line.
+
+  wherever never creates kenning's database: everything stays off until kenning-pi (or the kenning CLI) has made it, and `kenning.enabled: false` in config.json turns it off.
+
+  Requires kenning 0.1.0 (`npm:kenning-pi@0.1.0` in your pi settings for the sessions to use it).
+
+- 242c77a: wherever is now kenning's host for spawning and stopping sessions. When an agent calls kenning's `session_spawn`, the new session is a wherever session in the sidebar, shown under the session that spawned it (with links from the owner to its children, across folders); nothing is sent into it as if typed, and kenning wakes it with the owner's first prompt. `session_stop` aborts only that session's current run. wherever loads a spawned session again when a message waits for it after the pool let it go while idle. Deleting a session that spawned others now hides it and everything it owns as one batch, which you can undo for 7 days from the sidebar; the transcripts are removed only after that. Web and Telegram messages now also close their kenning human-input mark once the send settles, so a message another extension handled can never be taken for a later identical one.
+
+### Patch Changes
+
+- 242c77a: Answering a kenning question from the web inbox or Telegram now reaches a session that is waiting for you even when nobody types into it. With kenning 0.1.0, a session that asked a non-blocking question and then declared it was waiting for you kept the answer pending until you also sent it a message. wherever now requires kenning 0.1.1, which wakes such a session for your answer (install `npm:kenning-pi@0.1.1` in your pi settings).
+- 242c77a: Blocking kenning questions are now easy to answer from Telegram. The message says how ("tap a button below, or swipe this message to reply"), and a question with fixed options (yes / no) shows them as buttons: one tap answers it, the buttons disappear and the bot confirms. Before, only a Telegram reply to the question answered it, and a plain "yes" typed in the chat went to the assistant instead, leaving the question open.
+- 242c77a: A turn that kenning starts in a session (a message from another session waking it, or arriving as it finishes) no longer replies to wherever the human last wrote from. Before, an assistant you last messaged on Telegram answered every report from a session it had spawned on Telegram. Those turns are now silent, like scheduled ones; a delivery that arrives together with your own message, or mid-answer, still replies to you. A turn that needs you uses `human_ask` (the inbox, pushed when blocking) or `assistant_notify`.
+
 ## 0.25.1
 
 ### Patch Changes
