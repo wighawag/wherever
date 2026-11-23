@@ -41,6 +41,7 @@ permissions:
   contents: write
   pull-requests: write
   id-token: write # npm provenance
+  actions: write # delete the Version Packages PR's held runs (below)
 
 jobs:
   release:
@@ -65,6 +66,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Create Release PR or Publish
+        id: changesets
         uses: changesets/action@v1
         with:
           # release:ci builds every package + format-checks, then runs
@@ -75,3 +77,36 @@ jobs:
           version: pnpm changeset version
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The Version Packages PR is opened and updated with GITHUB_TOKEN, so
+      # GitHub creates its `pull_request` runs (test, Nix) in an
+      # approval-required state: they never start, and when the PR is merged
+      # unapproved they end as "failure", a red cross on every release PR
+      # (#114, #116, #117). That PR only bumps versions and changelogs, and the
+      # merged commit is tested on main by the push runs, so those held runs are
+      # deleted instead of approved. They appear a few seconds after the PR
+      # event, hence the short poll. Never fails the release.
+      - name: Delete the Version Packages PR's held runs
+        if: steps.changesets.outputs.pullRequestNumber != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.changesets.outputs.pullRequestNumber }}
+        run: |
+          head=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid -q .headRefOid)
+          branch=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefName -q .headRefName)
+          seen_head=0
+          for _ in $(seq 1 12); do
+            # A held run reads `completed` / `action_required` (older ones: status `action_required`).
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?branch=$branch&event=pull_request&per_page=50" \
+              -q '.workflow_runs[] | select(.status == "action_required" or .conclusion == "action_required") | "\(.id) \(.head_sha) \(.name)"' || true)
+            while read -r id sha name; do
+              [ -n "$id" ] || continue
+              echo "deleting held run $id ($name, ${sha:0:7})"
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/runs/$id" || true
+              if [ "$sha" = "$head" ]; then seen_head=1; fi
+            done <<< "$runs"
+            # The head's runs are created together: one more pass after seeing them, then stop.
+            if [ "$seen_head" = 1 ] && [ -z "$runs" ]; then break; fi
+            sleep 10
+          done
