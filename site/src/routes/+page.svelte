@@ -8,7 +8,7 @@
 	const surfaces = [
 		'Web dashboard',
 		'Installable PWA',
-		'Terminal pi',
+		'Terminal',
 		'Telegram',
 		'Push notifications',
 	];
@@ -37,7 +37,7 @@
 		{
 			title: 'Every session can hand off to it',
 			description:
-				'Any session, in the browser or in a terminal pi, can schedule work for the assistant or notify you through it.',
+				'Any session, in the browser or in a terminal, can schedule work for the assistant or notify you through it.',
 		},
 	];
 
@@ -114,9 +114,9 @@
 			icon: 'star',
 		},
 		{
-			title: 'Your pi, Your Extensions',
+			title: 'Your Agent Stack',
 			description:
-				'Run web sessions on the bundled pi SDK or on the pi you already use in a terminal, with its extensions, skills and built-in MCP support.',
+				'Built on pi: bring your extensions, skills, models and MCP servers, and run sessions on the bundled runtime or on the one you already have installed.',
 			icon: 'puzzle',
 		},
 		{
@@ -148,7 +148,7 @@
 		{
 			title: 'Run it as a Service',
 			description:
-				'Install a background service (systemd on Linux, launchd on macOS) that starts on boot and wires the pi extension in, so a terminal pi bridges in automatically. Or just run it in the foreground with wherever start.',
+				'Install a background service (systemd on Linux, launchd on macOS) that starts on boot and wires in the terminal bridge, so a terminal session, if you use one, is mirrored automatically. Or just run it in the foreground with wherever start.',
 			code: 'wherever install',
 		},
 		{
@@ -166,7 +166,7 @@
 		{
 			title: 'Add Shipmates (optional)',
 			description:
-				'Install the shipmates extension into pi, and wherever lights up presence, the inbox and session spawning on its own.',
+				'Install the shipmates extension, and wherever lights up presence, the inbox and session spawning on its own.',
 			code: 'pi install npm:@shipmates/pi',
 		},
 	];
@@ -275,14 +275,10 @@
 			<p
 				class="mx-auto mb-8 max-w-2xl text-lg text-brand-text-muted sm:text-xl"
 			>
-				A self-hosted home for your <a
-					href="https://pi.dev"
-					target="_blank"
-					rel="noopener noreferrer"
-					class="text-brand-cyan hover:underline">pi</a
-				> coding agents. Drive every session from your phone, keep a personal assistant
-				that remembers and reaches out, and let your sessions work together while
-				they wait for you only when they must.
+				A self-hosted workspace for AI coding agents. Drive every session from
+				your phone, keep a personal assistant that remembers and reaches out,
+				and let your sessions work together while they wait for you only when
+				they must.
 			</p>
 			<div class="mb-10 flex flex-wrap justify-center gap-2">
 				{#each surfaces as surface}
@@ -587,10 +583,10 @@
 			{/each}
 		</div>
 		<p class="mt-8 text-center text-sm text-brand-text-muted">
-			You do not need the pi CLI to use the dashboard: the server runs pi
-			in-process. Install it (and <code class="text-brand-cyan"
+			Nothing else is needed: the server runs the agent sessions itself. If you
+			also work in a pi terminal, add the bridge (<code class="text-brand-cyan"
 				>pi install npm:@wherever-dev/pi</code
-			>) only to mirror a terminal session.
+			>) to mirror those sessions to the dashboard.
 		</p>
 		<div class="mt-12 text-center">
 			<a
