@@ -66,22 +66,16 @@
 
 	const features = [
 		{
+			title: 'All Your Sessions, Anywhere',
+			description:
+				'Every session across your project folders in one sidebar: start new ones, resume or fork old ones, and see at a glance which ones an agent is working in.',
+			icon: 'folder',
+		},
+		{
 			title: 'Session Mirroring & Handover',
 			description:
 				'Terminal and browser stay in sync in real time. Close the terminal and the server keeps the session going headless; open it again and control comes back with nothing lost.',
 			icon: 'mirror',
-		},
-		{
-			title: 'Conversation Mode',
-			description:
-				'Dictate hands-free with the browser or a cloud speech engine, have replies spoken back, and let the mic reopen after each answer. Set per conversation.',
-			icon: 'voice',
-		},
-		{
-			title: 'Search Everything',
-			description:
-				'Full-text search across every conversation you ever had, in every project, and jump straight to the moment something was said. Powered by the memonaut index.',
-			icon: 'search',
 		},
 		{
 			title: 'Made for Flaky Links',
@@ -90,16 +84,16 @@
 			icon: 'signal',
 		},
 		{
+			title: 'Conversation Mode',
+			description:
+				'Dictate hands-free with the browser or a cloud speech engine, have replies spoken back, and let the mic reopen after each answer. Set per conversation.',
+			icon: 'voice',
+		},
+		{
 			title: 'Files Both Ways',
 			description:
 				'Drop screenshots and documents into a message with real upload progress, and download whatever the agent attaches for you, from any device.',
 			icon: 'upload',
-		},
-		{
-			title: 'Git, Remotes & Restore',
-			description:
-				'New folders get a git repo and, by your rules, a GitHub or Codeberg remote. On a fresh machine, a missing folder can be cloned back from the dashboard.',
-			icon: 'git',
 		},
 		{
 			title: 'Shell from the Browser',
@@ -108,10 +102,22 @@
 			icon: 'terminal',
 		},
 		{
+			title: 'Search Everything',
+			description:
+				'Full-text search across every conversation you ever had, in every project, and jump straight to the moment something was said. Powered by the memonaut index.',
+			icon: 'search',
+		},
+		{
 			title: 'Drafts & Stars',
 			description:
 				'Save a message instead of sending it and pick it up later on another device. Star the sessions you need to come back to.',
 			icon: 'star',
+		},
+		{
+			title: 'Git, Remotes & Restore',
+			description:
+				'New folders get a git repo and, by your rules, a GitHub or Codeberg remote. On a fresh machine, a missing folder can be cloned back from the dashboard.',
+			icon: 'git',
 		},
 		{
 			title: 'Your Agent Stack',
@@ -126,15 +132,9 @@
 			icon: 'eye',
 		},
 		{
-			title: 'One Look per Machine',
-			description:
-				'Give each server its own label, accent color and backdrop pattern, so you always know which machine you are driving.',
-			icon: 'palette',
-		},
-		{
 			title: 'Deploy Your Way',
 			description:
-				'A background service on Linux or macOS, a declarative NixOS setup, a token kept out of argv, trusted HTTPS over Tailscale, and a single link that logs a phone in.',
+				'A background service on Linux or macOS, a declarative NixOS setup, a token kept out of argv, trusted HTTPS over Tailscale, a single link that logs a phone in, and a distinct look for each machine.',
 			icon: 'shield',
 		},
 	];
@@ -177,6 +177,8 @@
 
 	function getFeatureIcon(icon: string) {
 		const icons: {[key: string]: string} = {
+			folder:
+				'M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z',
 			mirror: 'M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4',
 			voice:
 				'M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z',
@@ -216,6 +218,11 @@
 			</div>
 			<div class="hidden items-center gap-8 md:flex">
 				<button
+					on:click={() => scrollTo('features')}
+					class="text-brand-text-muted transition-colors hover:text-brand-text"
+					>Features</button
+				>
+				<button
 					on:click={() => scrollTo('assistant')}
 					class="text-brand-text-muted transition-colors hover:text-brand-text"
 					>Assistant</button
@@ -224,11 +231,6 @@
 					on:click={() => scrollTo('shipmates')}
 					class="text-brand-text-muted transition-colors hover:text-brand-text"
 					>Shipmates</button
-				>
-				<button
-					on:click={() => scrollTo('features')}
-					class="text-brand-text-muted transition-colors hover:text-brand-text"
-					>Features</button
 				>
 				<button
 					on:click={() => scrollTo('install')}
@@ -275,10 +277,10 @@
 			<p
 				class="mx-auto mb-8 max-w-2xl text-lg text-brand-text-muted sm:text-xl"
 			>
-				A self-hosted workspace for AI coding agents. Drive every session from
-				your phone, keep a personal assistant that remembers and reaches out,
-				and let your sessions work together while they wait for you only when
-				they must.
+				A self-hosted workspace for AI coding agents. Run it on the machine
+				where your code lives and reach every session from your phone, tablet or
+				laptop. Add a personal assistant and sessions that work together when
+				you want more.
 			</p>
 			<div class="mb-10 flex flex-wrap justify-center gap-2">
 				{#each surfaces as surface}
@@ -310,6 +312,52 @@
 	</div>
 </section>
 
+<!-- Features Section -->
+<section id="features" class="scroll-mt-16 py-24 sm:py-32">
+	<div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+		<div class="mb-16 text-center">
+			<h2 class="mb-4 text-3xl font-bold sm:text-4xl">
+				<span class="gradient-text">Every session, from any device</span>
+			</h2>
+			<p class="mx-auto max-w-2xl text-lg text-brand-text-muted">
+				Start, follow and steer all your agent sessions remotely, across all
+				your projects, from a dashboard built for the phone as much as the
+				desktop.
+			</p>
+		</div>
+		<div class="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
+			{#each features as feature}
+				<div
+					class="group rounded-2xl border border-brand-border bg-brand-surface p-6 transition-all duration-300 hover:border-brand-blue/50 hover:shadow-lg hover:shadow-brand-blue/5"
+				>
+					<div
+						class="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-brand-cyan/20 to-brand-purple/20 transition-transform group-hover:scale-110"
+					>
+						<svg
+							class="h-6 w-6 text-brand-cyan"
+							fill="none"
+							stroke="currentColor"
+							viewBox="0 0 24 24"
+							><path
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								stroke-width="1.5"
+								d={getFeatureIcon(feature.icon)}
+							/></svg
+						>
+					</div>
+					<h3 class="mb-2 text-lg font-semibold text-brand-text">
+						{feature.title}
+					</h3>
+					<p class="text-sm leading-relaxed text-brand-text-muted">
+						{feature.description}
+					</p>
+				</div>
+			{/each}
+		</div>
+	</div>
+</section>
+
 <!-- Assistant Section -->
 <section id="assistant" class="scroll-mt-16 py-24 sm:py-32">
 	<div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -318,15 +366,15 @@
 				<p
 					class="mb-3 text-sm font-semibold tracking-widest text-brand-cyan uppercase"
 				>
-					The assistant
+					The assistant · optional
 				</p>
 				<h2 class="mb-4 text-3xl font-bold sm:text-4xl">
 					<span class="gradient-text">An agent that stays on</span>
 				</h2>
 				<p class="mb-8 text-lg text-brand-text-muted">
-					Beside your project sessions, wherever can run one long-lived
-					assistant with a real shell, real memory and a schedule. It works
-					while you are away and tells you when something matters.
+					Turn it on and, beside your project sessions, wherever runs one
+					long-lived assistant with a real shell, real memory and a schedule. It
+					works while you are away and tells you when something matters.
 				</p>
 				<div class="space-y-5">
 					{#each assistantPoints as point}
@@ -463,7 +511,7 @@
 				<p
 					class="mb-3 text-sm font-semibold tracking-widest text-brand-purple uppercase"
 				>
-					Shipmates
+					Shipmates · optional
 				</p>
 				<h2 class="mb-4 text-3xl font-bold sm:text-4xl">
 					<span class="gradient-text">Sessions that work together</span>
@@ -494,51 +542,6 @@
 					{/each}
 				</div>
 			</div>
-		</div>
-	</div>
-</section>
-
-<!-- Features Section -->
-<section id="features" class="scroll-mt-16 py-24 sm:py-32">
-	<div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-		<div class="mb-16 text-center">
-			<h2 class="mb-4 text-3xl font-bold sm:text-4xl">
-				<span class="gradient-text">Everything you need</span>
-			</h2>
-			<p class="mx-auto max-w-xl text-lg text-brand-text-muted">
-				A complete remote development experience, designed for both desktop and
-				mobile.
-			</p>
-		</div>
-		<div class="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
-			{#each features as feature}
-				<div
-					class="group rounded-2xl border border-brand-border bg-brand-surface p-6 transition-all duration-300 hover:border-brand-blue/50 hover:shadow-lg hover:shadow-brand-blue/5"
-				>
-					<div
-						class="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-brand-cyan/20 to-brand-purple/20 transition-transform group-hover:scale-110"
-					>
-						<svg
-							class="h-6 w-6 text-brand-cyan"
-							fill="none"
-							stroke="currentColor"
-							viewBox="0 0 24 24"
-							><path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="1.5"
-								d={getFeatureIcon(feature.icon)}
-							/></svg
-						>
-					</div>
-					<h3 class="mb-2 text-lg font-semibold text-brand-text">
-						{feature.title}
-					</h3>
-					<p class="text-sm leading-relaxed text-brand-text-muted">
-						{feature.description}
-					</p>
-				</div>
-			{/each}
 		</div>
 	</div>
 </section>

@@ -1,18 +1,18 @@
 # wherever-dev
 
-[Wherever](https://wherever.dev) is a self-hosted workspace for AI coding agents. Install it on the machine where your code lives, open it from your phone, tablet or laptop, and drive every agent session from there. Beside your project sessions it can run a personal assistant that remembers, works on a schedule and reaches you through push notifications and Telegram, and it lets your sessions work together and bring their questions to a single inbox.
+[Wherever](https://wherever.dev) is a self-hosted workspace for AI coding agents. Install it on the machine where your code lives, open it from your phone, tablet or laptop, and work from there: every session across all your projects, live, from any device. When you want more, two optional features build on that: a personal assistant that remembers, works on a schedule and reaches you through push notifications and Telegram, and shipmates, which lets your sessions work together and bring their questions to a single inbox.
 
 This package is the whole thing: the server runs the agent sessions itself and serves the web dashboard.
 
 ## Features
 
-- **The assistant** (opt-in): a long-lived agent with a folder for memory, recurring and one-shot jobs that follow your timezone, background jobs, push notifications, and a private Telegram bot you can chat and swap files with.
-- **Sessions that work together** with [shipmates](https://github.com/wighawag/shipmates): presence in the sidebar, messages between sessions with their provenance, one "Needs you" inbox you can answer from the dashboard or Telegram, and sessions that spawn helper sessions.
 - **Every session from any device**: many concurrent sessions across your folders, a mobile-first installable dashboard that keeps working on weak connections, conversation mode (dictation and spoken replies), `!` shell commands, resumable file uploads and downloads.
 - **Search everything** you ever said in any session, saved drafts, starred sessions.
 - **Projects and machines**: git and remote repository setup on folder creation, restoring missing folders on a new machine, a distinct look per server, read-only views of autonomous agent fleets.
 - **Your agent stack**: built on [pi](https://pi.dev), with your extensions, skills, models and MCP servers; a terminal `pi` can be mirrored live to the dashboard with [`@wherever-dev/pi`](https://www.npmjs.com/package/@wherever-dev/pi).
 - Runs as a background service (systemd or launchd) with token auth and HTTPS.
+- **The assistant** (optional): a long-lived agent with a folder for memory, recurring and one-shot jobs that follow your timezone, background jobs, push notifications, and a private Telegram bot you can chat and swap files with.
+- **Sessions that work together** (optional) with [shipmates](https://github.com/wighawag/shipmates): presence in the sidebar, messages between sessions with their provenance, one "Needs you" inbox you can answer from the dashboard or Telegram, and sessions that spawn helper sessions.
 
 ## Install
 

@@ -2,33 +2,15 @@
 
 **Create & maintain apps from wherever.**
 
-Wherever is a self-hosted workspace for AI coding agents. Install it on the machine where your code lives, open it from your phone, tablet or laptop, and drive every agent session from there. Beside your project sessions it can run a personal **assistant** that remembers, works on a schedule and reaches you through push notifications and Telegram, and it lets your sessions **work together** and bring their questions to a single inbox.
+Wherever is a self-hosted workspace for AI coding agents. Install it on the machine where your code lives, open it from your phone, tablet or laptop, and work from there: every session across all your projects, live, from any device.
+
+When you want more, two optional features build on that: a personal **assistant** that remembers, works on a schedule and reaches you through push notifications and Telegram, and **shipmates**, which lets your sessions work together and bring their questions to a single inbox.
 
 It is one package (`wherever-dev`) with nothing else to install: the agent runs inside the server. Website: [wherever.dev](https://wherever.dev).
 
 ---
 
 ## Features
-
-### 🤖 The assistant: an agent that stays on
-
-Opt-in (set [`assistantFolder`](#configuration-properties)). One long-lived assistant with a real shell, real memory and a schedule.
-
-- **A folder for memory, a session you can reset.** The assistant lives in a folder you choose, seeded with its own `AGENTS.md`. It writes what it learns there, so you can reset its conversation (Reset in the top bar, or `/new`) without it forgetting who you are.
-- **Schedules that follow you.** Agents can add recurring (cron) or one-shot jobs: a morning briefing, "check this in thirty minutes". Times follow your current timezone, so a reminder moves with you when you travel; a job can also be pinned to a place. Jobs live in `schedule.json` in the assistant folder, so you can read and edit them by hand. Runs missed while the server was down are caught up within a grace window.
-- **Long work in the background.** A job can run *inline* (in the assistant conversation, when it is idle) or *isolated* (at once, in its own fresh session, in parallel).
-- **It reaches you, and only you.** `assistant_notify` sends a push notification to every device you subscribed in the settings, and to a private Telegram bot paired with a one-time code shown in the dashboard. Scheduled work is silent unless it decides to tell you.
-- **Talk to it from Telegram.** Messages, photos, albums and documents go to the assistant (images reach the model as images), and files it attaches come back. A message sent while it is working steers the current reply; `stop`, `/new` and `/reset` do what they say. Shell commands (`!`) are refused from Telegram.
-- **Every session can hand off to it.** Any session, in the browser or in a terminal, gets the `assistant_schedule_*`, `assistant_set_timezone` and `assistant_notify` tools.
-
-### 🧭 Shipmates: sessions that work together
-
-When [shipmates](https://github.com/wighawag/shipmates) is installed, your sessions know about each other, and wherever is its host: it puts the whole crew in front of you and brings you their questions, so you stop being the copy-paste relay between them.
-
-- **Presence.** Each live session shows its role, its state (running, waiting for you, waiting on another session) and a one-line status under its row in the sidebar.
-- **Messages with provenance.** Sessions tell and ask each other things. Every delivery appears in the chat as a card with its sender and whether the words came from an agent, from you, or were relayed from you.
-- **One "🙋 Needs you" inbox.** Questions any session raises land in one panel, with a count on the tab title and on the installed app's icon. Answer from the dashboard. With the assistant on, every question is also pushed to your devices and to Telegram, where you can tap an option button or reply to the message; a question answered elsewhere is marked as closed there.
-- **Sessions that spawn sessions.** An agent can start helper sessions. They appear in the sidebar under their owner, and deleting an owner takes its whole subtree with it, with Undo for 7 days.
 
 ### 📱 Your sessions, from any device
 
@@ -63,6 +45,26 @@ When [shipmates](https://github.com/wighawag/shipmates) is installed, your sessi
 - A background service on Linux (systemd) or macOS (launchd), or a [declarative NixOS setup](docs/deployment-nixos.md).
 - Token auth with the token kept out of the command line (`WHEREVER_TOKEN`, `WHEREVER_TOKEN_FILE`), HTTPS out of the box, trusted certificates over Tailscale or Tunnet, unix socket serving.
 - A single link (`https://host:31415/#token=...`) logs a phone in, and the token is cleared from the address bar.
+
+### 🤖 The assistant (optional): an agent that stays on
+
+Off until you set [`assistantFolder`](#configuration-properties). One long-lived assistant with a real shell, real memory and a schedule.
+
+- **A folder for memory, a session you can reset.** The assistant lives in a folder you choose, seeded with its own `AGENTS.md`. It writes what it learns there, so you can reset its conversation (Reset in the top bar, or `/new`) without it forgetting who you are.
+- **Schedules that follow you.** Agents can add recurring (cron) or one-shot jobs: a morning briefing, "check this in thirty minutes". Times follow your current timezone, so a reminder moves with you when you travel; a job can also be pinned to a place. Jobs live in `schedule.json` in the assistant folder, so you can read and edit them by hand. Runs missed while the server was down are caught up within a grace window.
+- **Long work in the background.** A job can run *inline* (in the assistant conversation, when it is idle) or *isolated* (at once, in its own fresh session, in parallel).
+- **It reaches you, and only you.** `assistant_notify` sends a push notification to every device you subscribed in the settings, and to a private Telegram bot paired with a one-time code shown in the dashboard. Scheduled work is silent unless it decides to tell you.
+- **Talk to it from Telegram.** Messages, photos, albums and documents go to the assistant (images reach the model as images), and files it attaches come back. A message sent while it is working steers the current reply; `stop`, `/new` and `/reset` do what they say. Shell commands (`!`) are refused from Telegram.
+- **Every session can hand off to it.** Any session, in the browser or in a terminal, gets the `assistant_schedule_*`, `assistant_set_timezone` and `assistant_notify` tools.
+
+### 🧭 Shipmates (optional): sessions that work together
+
+When [shipmates](https://github.com/wighawag/shipmates) is installed, your sessions know about each other, and wherever is its host: it puts the whole crew in front of you and brings you their questions, so you stop being the copy-paste relay between them.
+
+- **Presence.** Each live session shows its role, its state (running, waiting for you, waiting on another session) and a one-line status under its row in the sidebar.
+- **Messages with provenance.** Sessions tell and ask each other things. Every delivery appears in the chat as a card with its sender and whether the words came from an agent, from you, or were relayed from you.
+- **One "🙋 Needs you" inbox.** Questions any session raises land in one panel, with a count on the tab title and on the installed app's icon. Answer from the dashboard. With the assistant on, every question is also pushed to your devices and to Telegram, where you can tap an option button or reply to the message; a question answered elsewhere is marked as closed there.
+- **Sessions that spawn sessions.** An agent can start helper sessions. They appear in the sidebar under their owner, and deleting an owner takes its whole subtree with it, with Undo for 7 days.
 
 ---
 
@@ -511,7 +513,7 @@ At start the server logs which file it reads and whether it was found, e.g. `[wh
   On a sessions directory that has been accumulating for months (the author's is 2.0 GB / ~3,800 transcripts), these two are the difference between every cold listing pass touching the whole archive and it touching only what you still use. The server prints a one-line hint at startup when it lists more than 1,000 sessions with neither limit set.
 
 - **`assistantFolder`** (string, Default: unset = the assistant is off):
-  The home and memory of the [assistant](#-the-assistant-an-agent-that-stays-on). Tilde is expanded. On start the server creates the folder, takes a lock on it (`.assistant.lock`: a second server pointed at the same folder logs why and leaves its assistant off) and seeds `AGENTS.md`, `jobs/AGENTS.md` and `.gitignore` once, never overwriting them. Its jobs are in `<assistantFolder>/schedule.json`; isolated jobs run in `<assistantFolder>/jobs/`. Read at start: restart the server after changing it.
+  The home and memory of the [assistant](#-the-assistant-optional-an-agent-that-stays-on). Tilde is expanded. On start the server creates the folder, takes a lock on it (`.assistant.lock`: a second server pointed at the same folder logs why and leaves its assistant off) and seeds `AGENTS.md`, `jobs/AGENTS.md` and `.gitignore` once, never overwriting them. Its jobs are in `<assistantFolder>/schedule.json`; isolated jobs run in `<assistantFolder>/jobs/`. Read at start: restart the server after changing it.
 
 - **`assistantScheduleGraceMinutes`** (number, Default: `60`):
   When the server was down at a job's run time, the latest missed run still fires once on start if it is at most this old; older runs are skipped.
@@ -525,7 +527,7 @@ At start the server logs which file it reads and whether it was found, e.g. `[wh
   The URL you reach this server at (e.g. behind a reverse proxy or on your tailnet), used for the session links the assistant's channels send out.
 
 - **`shipmates`** (object, optional):
-  - `enabled` (boolean, Default: `true`): show [shipmates](#-shipmates-sessions-that-work-together) presence, inbox and spawned sessions. Even when enabled nothing happens until shipmates' own database exists (created by `@shipmates/pi` or the shipmates CLI); wherever never creates it.
+  - `enabled` (boolean, Default: `true`): show [shipmates](#-shipmates-optional-sessions-that-work-together) presence, inbox and spawned sessions. Even when enabled nothing happens until shipmates' own database exists (created by `@shipmates/pi` or the shipmates CLI); wherever never creates it.
 
 - **`assistantTelegram`** (object, optional):
   The assistant's Telegram channel (only while `assistantFolder` is set and this server holds the assistant folder lock). See `CONTEXT.md` for the full behaviour.
