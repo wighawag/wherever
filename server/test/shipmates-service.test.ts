@@ -558,6 +558,35 @@ describe('ShipmatesService', () => {
     expect(fs.existsSync(path.join(d.stateDir, 'shipmates-archives.json'))).toBe(true);
   });
 
+  it('ownedSubtree: the transitive owned sessions across folders, normalized, without the root, unbound spawns or delete-hidden members', async () => {
+    const d = dirs();
+    const k = db(d);
+    const owner = SESSION(d.root);
+    const child = path.join(d.root, 'wt-a', 'sessions', 'child.jsonl');
+    // Recorded un-normalized: answered like the listing's `path` (path.resolve).
+    const grandchildRaw = path.join(d.root, 'wt-b', 'x', '..', 'sessions', 'grandchild.jsonl');
+    const grandchild = path.resolve(grandchildRaw);
+    const deleted = path.join(d.root, 'sessions', 'deleted.jsonl');
+    const deletedChild = path.join(d.root, 'sessions', 'deleted-child.jsonl');
+    k.recordOwnership({ session: child, owner, folder: '/w/a', via: 'host' });
+    k.recordOwnership({ session: grandchildRaw, owner: child, folder: '/w/b', via: 'host' });
+    k.recordOwnership({ session: deleted, owner, folder: '/w/a', via: 'host' });
+    k.recordOwnership({ session: deletedChild, owner: deleted, folder: '/w/a', via: 'host' });
+    k.beginSpawn({ owner, folder: '/w/c', via: 'host' }); // never came up: no session
+    k.archive(deleted, { kind: 'deleted', by: 'web' });
+    const { svc } = service(d);
+    svc.start();
+    await svc.ready();
+    expect(svc.ownedSubtree(owner).sort()).toEqual([child, grandchild].sort());
+    expect(svc.ownedSubtree(child)).toEqual([grandchild]);
+    expect(svc.ownedSubtree(grandchild)).toEqual([]);
+
+    // Without shipmates: nothing owned.
+    const off = service(dirs(), { enabled: false }).svc;
+    off.start();
+    expect(off.ownedSubtree(owner)).toEqual([]);
+  });
+
   it('builds the notification and the session id from pure parts', () => {
     expect(sessionIdOf('/s/2026-11-18T10-00-00-000Z_0b7c5e7a-1111-4222-8333-944455556666.jsonl', null)).toBe('0b7c5e7a-1111-4222-8333-944455556666');
     expect(sessionIdOf('/s/other.jsonl', null)).toBeNull();

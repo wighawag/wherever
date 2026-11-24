@@ -7,6 +7,7 @@
 	import ChatMessageList from '$lib/components/ChatMessageList.svelte';
 	import ChatInput from '$lib/components/ChatInput.svelte';
 	import SessionBrowser from '$lib/components/SessionBrowser.svelte';
+	import CloseCascadePrompt from '$lib/components/CloseCascadePrompt.svelte';
 	import ConversationSearch from '$lib/components/ConversationSearch.svelte';
 	import ShipmatesInbox from '$lib/components/ShipmatesInbox.svelte';
 	import {
@@ -70,6 +71,7 @@
 		readOnlySessionFolders,
 		setSessionStarred,
 		setSessionClosed,
+		closeSession,
 		assistantStatusStore,
 		isAssistantSession,
 		shipmatesStore,
@@ -1054,10 +1056,12 @@
 			{#if sessionInfo.sessionFile && !readOnly}
 				<button
 					type="button"
-					onclick={() =>
-						setSessionClosed(sessionInfo.sessionFile!, !currentClosed).catch(
-							() => {},
-						)}
+					onclick={() => {
+						// A close asks about owned sessions and shows the sidebar's undo banner.
+						if (currentClosed)
+							setSessionClosed(sessionInfo.sessionFile!, false).catch(() => {});
+						else void closeSession(sessionInfo.sessionFile!);
+					}}
 					class="flex flex-shrink-0 items-center justify-center rounded border px-2 py-1 text-sm transition-colors {currentClosed
 						? 'border-brand-blue/50 bg-brand-blue/10 text-brand-blue hover:bg-brand-blue/20'
 						: 'border-brand-border bg-brand-surface-2 text-brand-text-muted hover:bg-brand-surface-3 hover:text-brand-text'}"
@@ -1269,6 +1273,9 @@
 
 	<!-- Sudo password prompt for `!sudo ...` commands -->
 	<SudoPasswordDialog />
+
+	<!-- "Also close the N sessions it owns?" (sidebar and top-bar close) -->
+	<CloseCascadePrompt />
 
 	<!-- Overlay for mobile sidebar -->
 	{#if sidebarOpen}

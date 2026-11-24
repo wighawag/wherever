@@ -465,6 +465,29 @@ export class ShipmatesService {
     }
   }
 
+  /**
+   * Every session this one owns, transitively (its children's children too,
+   * wherever they live), for a cascading close (ADR 0025). Normalized like the
+   * listing's `path`; the root itself, spawns that never came up and members a
+   * cascaded delete hides are left out. `[]` without shipmates.
+   */
+  ownedSubtree(sessionFile: string): string[] {
+    const k = this.shipmates;
+    if (!k) return [];
+    const root = normalizeSessionFile(sessionFile);
+    const out = new Set<string>();
+    try {
+      for (const o of k.ownedBy(sessionFile, { transitive: true })) {
+        if (!o.session || o.archived) continue;
+        const f = normalizeSessionFile(o.session);
+        if (f !== root) out.add(f);
+      }
+    } catch {
+      return [];
+    }
+    return [...out];
+  }
+
   // ------------------------------------------------------- cascaded delete
 
   private archives = new Map<string, ShipmatesArchiveView>();

@@ -13,6 +13,10 @@
 		setCurrentSession,
 		setSessionStarred,
 		setSessionClosed,
+		closeSession,
+		closeBannerStore,
+		undoLastClose,
+		dismissCloseBanner,
 		shipmatesStore,
 		type ModelInfo,
 		type FolderWithSessions,
@@ -23,6 +27,7 @@
 		presenceLine,
 	} from '$lib/core/shipmates';
 	import {undoShipmatesDelete} from '$lib/wherever';
+	import {closeBannerText} from '$lib/core/close-flow';
 	// The Live strip's rows (unit-tested in core). Closed-agnostic on purpose.
 	import {liveSessions} from '$lib/core/live-sessions';
 	import LiveStrip from './LiveStrip.svelte';
@@ -163,9 +168,12 @@
 	}
 
 	function toggleClosed(sessionPath: string, closed: boolean) {
-		// Optimistic in the store; a refusal is rolled back there and logged.
-		setSessionClosed(sessionPath, closed).catch(() => {});
+		// A close asks about owned sessions (N from the server) and shows the undo
+		// banner; a reopen is direct. Optimistic in the store, rolled back there.
+		if (closed) void closeSession(sessionPath);
+		else setSessionClosed(sessionPath, false).catch(() => {});
 	}
+	let undoingClose = $state(false);
 
 	function isFolderExpanded(folderPath: string): boolean {
 		if (searchQuery) {
@@ -490,6 +498,36 @@
 </script>
 
 <div class="flex h-full flex-col">
+	{#if !readOnly && $closeBannerStore}
+		<!-- The latest close (single or cascading), undoable as one batch (ADR 0025). -->
+		{@const c = $closeBannerStore}
+		<div class="border-b border-brand-border/50 p-2">
+			<div class="flex items-center gap-2 text-[10px] text-brand-text-muted">
+				<span class="min-w-0 flex-1 truncate" title={c.sessions.join('\n')}
+					>{closeBannerText(sessionLabel(c.root), c.owned)}</span
+				>
+				<button
+					type="button"
+					disabled={undoingClose}
+					onclick={async () => {
+						undoingClose = true;
+						await undoLastClose();
+						undoingClose = false;
+					}}
+					class="rounded border border-brand-border bg-brand-surface-2 px-1.5 py-0.5 text-brand-text hover:bg-brand-surface-3 disabled:opacity-50"
+					title="Reopen everything this close took, and restore any star it removed"
+					>Undo</button
+				>
+				<button
+					type="button"
+					onclick={dismissCloseBanner}
+					class="px-1 text-brand-text-muted hover:text-brand-text"
+					title="Dismiss"
+					aria-label="Dismiss">✕</button
+				>
+			</div>
+		</div>
+	{/if}
 	{#if !readOnly && $shipmatesStore.archives.length}
 		<!-- shipmates (D24): a delete that took the sessions a session owns, undoable for 7 days. -->
 		<div class="space-y-1 border-b border-brand-border/50 p-2">
