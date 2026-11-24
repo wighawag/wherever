@@ -1264,6 +1264,13 @@ export class SessionPool {
    * must apply the same starred retention exemption.
    */
   private getStarred: () => ReadonlySet<string>;
+  /**
+   * Source of the closed session paths (the closed-sessions store, wired by
+   * index.ts). Only MARKS sessions `closed: true` in the listing: unlike stars,
+   * closed sessions are never retention-exempt (ADR 0025), so this never feeds
+   * the scan's `keep`.
+   */
+  private getClosed: () => ReadonlySet<string>;
   /** Bound on extension `session_shutdown` before dispose (see extension-lifecycle.ts). */
   private extensionShutdownTimeoutMs: number;
   /** When a stuck `session_start` gets logged (see extension-lifecycle.ts). */
@@ -1302,9 +1309,11 @@ export class SessionPool {
       extensionShutdownTimeoutMs?: number;
       extensionBindWarnAfterMs?: number;
       getStarred?: () => ReadonlySet<string>;
+      getClosed?: () => ReadonlySet<string>;
     } = {},
   ) {
     this.getStarred = options.getStarred ?? (() => new Set());
+    this.getClosed = options.getClosed ?? (() => new Set());
     // Before any extension can load: tells an in-process CLI bridge it must not
     // connect (defence in depth behind withoutCliBridgeExtension).
     markWhereverServerProcess();
@@ -2489,10 +2498,12 @@ export class SessionPool {
    */
   /**
    * Starred sessions (from the injected `getStarred`) are marked `starred: true`
-   * and exempt from retention.
+   * and exempt from retention. Closed sessions (from `getClosed`) are marked
+   * `closed: true` and still listed (the client hides them), but are NOT exempt.
    */
   async listSessions(view: 'default' | 'readonly' = 'default'): Promise<FolderWithSessions[]> {
     const starred = this.getStarred();
+    const closed = this.getClosed();
     const cfg = getWhereverConfig().sessions;
     const isIgnored = makeIgnoreMatcher(cfg?.ignore);
     const isReadOnly = makeIgnoreMatcher(cfg?.readOnly);
@@ -2515,7 +2526,7 @@ export class SessionPool {
         ...(starred.size > 0 ? { keep: (f: string) => starred.has(f) } : {}),
       },
     );
-    const folders = this.buildFolders(infos, view === 'readonly' ? isReadOnly : undefined, starred);
+    const folders = this.buildFolders(infos, view === 'readonly' ? isReadOnly : undefined, starred, closed);
     await annotateFolderExistence(folders);
     return folders;
   }
@@ -2572,6 +2583,7 @@ export class SessionPool {
     diskSessions: DiskSessionInfo[],
     isReadOnly?: (cwd: string) => boolean,
     starred: ReadonlySet<string> = new Set(),
+    closed: ReadonlySet<string> = new Set(),
   ): FolderWithSessions[] {
     const folderMap = new Map<string, FolderSessionInfo[]>();
 
@@ -2616,6 +2628,7 @@ export class SessionPool {
         clientCount: active ? active.clients.size : 0,
         ...(s.parentSessionPath ? { parentSessionPath: normalizeSessionFile(s.parentSessionPath) } : {}),
         ...(starred.has(sessionPath) ? { starred: true } : {}),
+        ...(closed.has(sessionPath) ? { closed: true } : {}),
       });
     }
 

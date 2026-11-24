@@ -157,3 +157,63 @@ describe('setSessionWorking', () => {
 		unsub();
 	});
 });
+
+describe('setSessionClosed', () => {
+	const row = (path: string, extra: Record<string, unknown> = {}) => ({
+		path,
+		id: path,
+		created: '',
+		modified: '',
+		messageCount: 0,
+		firstMessage: '',
+		isActive: false,
+		clientCount: 0,
+		...extra,
+	});
+
+	it('closes optimistically, clearing the star, and answers the batch', async () => {
+		const {sessionFolders, setSessionClosed} =
+			await import('./session-store.js');
+		sessionFolders.set({
+			folders: [
+				{path: '/p', name: 'p', sessions: [row('/a', {starred: true})]},
+			],
+			activeSessions: [],
+			currentSession: null,
+			loading: false,
+		});
+		(globalThis as any).fetch = vi.fn(async () => ({
+			ok: true,
+			json: async () => ({batch: 'c_1', sessions: ['/a']}),
+		}));
+		const pending = setSessionClosed('/a', true);
+		const s = get(sessionFolders).folders[0].sessions[0];
+		expect(s.closed).toBe(true);
+		expect(s.starred).toBeUndefined();
+		await expect(pending).resolves.toEqual({batch: 'c_1', sessions: ['/a']});
+	});
+
+	it('rolls back both flags when the server refuses', async () => {
+		const {sessionFolders, setSessionClosed} =
+			await import('./session-store.js');
+		sessionFolders.set({
+			folders: [
+				{path: '/p', name: 'p', sessions: [row('/a', {starred: true})]},
+			],
+			activeSessions: [],
+			currentSession: null,
+			loading: false,
+		});
+		(globalThis as any).fetch = vi.fn(async () => ({
+			ok: false,
+			status: 500,
+			json: async () => ({error: 'nope'}),
+		}));
+		const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+		await expect(setSessionClosed('/a', true)).rejects.toThrow('nope');
+		err.mockRestore();
+		const s = get(sessionFolders).folders[0].sessions[0];
+		expect(s.closed).toBeUndefined();
+		expect(s.starred).toBe(true);
+	});
+});

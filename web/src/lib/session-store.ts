@@ -34,6 +34,9 @@ export interface SessionInfo {
 	// True when the user starred it ("come back to this"). Server-side, so a
 	// star set on one device shows on every other.
 	starred?: boolean;
+	// True when the user closed it (done with it, not deleted). Server-side;
+	// `/sessions` always returns closed sessions and the client hides them.
+	closed?: boolean;
 	// The session that spawned this one through shipmates (`session_spawn`), when
 	// the server has shipmates. Owner and child may be in different folders.
 	ownerSessionPath?: string;
@@ -305,6 +308,89 @@ export async function setSessionStarred(
 			patchStarred(readOnlySessionFolders, sessionFile, prevReadOnly);
 		}
 		console.error('Failed to update star:', err);
+		throw err;
+	}
+}
+
+// Patch one session's `closed` and `starred` flags in a folders store, in place.
+// `next` gets the current flags and returns the new ones. Returns the values
+// they had before (undefined when the session is not in this store), so a
+// failed request can restore exactly those.
+type ClosedFlags = {closed: boolean; starred: boolean};
+function patchClosed(
+	store: typeof sessionFolders,
+	sessionFile: string,
+	next: (prev: ClosedFlags) => ClosedFlags,
+): ClosedFlags | undefined {
+	let previous: ClosedFlags | undefined;
+	store.update((s) => ({
+		...s,
+		folders: s.folders.map((f) =>
+			f.sessions.some((x) => x.path === sessionFile)
+				? {
+						...f,
+						sessions: f.sessions.map((x) => {
+							if (x.path !== sessionFile) return x;
+							const prev = {closed: !!x.closed, starred: !!x.starred};
+							previous = prev;
+							const flags = next(prev);
+							return {
+								...x,
+								closed: flags.closed || undefined,
+								starred: flags.starred || undefined,
+							};
+						}),
+					}
+				: f,
+		),
+	}));
+	return previous;
+}
+
+/**
+ * Close or reopen a session (POST /sessions/close). OPTIMISTIC with rollback,
+ * like `setSessionStarred`. Close and star are exclusive, so an optimistic
+ * close also clears `starred` locally (the server does the same), and a
+ * refusal restores both flags. Resolves to the server's answer: every close
+ * carries a fresh `batch` id (for undo), a reopen `batch: null`, and
+ * `sessions` lists the sessions it changed.
+ */
+export async function setSessionClosed(
+	sessionFile: string,
+	closed: boolean,
+): Promise<{batch: string | null; sessions: string[]}> {
+	const optimistic = (prev: ClosedFlags): ClosedFlags => ({
+		closed,
+		starred: closed ? false : prev.starred,
+	});
+	const prevMain = patchClosed(sessionFolders, sessionFile, optimistic);
+	const prevReadOnly = patchClosed(
+		readOnlySessionFolders,
+		sessionFile,
+		optimistic,
+	);
+	try {
+		const baseUrl = getBaseUrl();
+		const token = getToken();
+		const url = `${baseUrl}/sessions/close${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+		const res = await fetch(url, {
+			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
+			body: JSON.stringify({sessionFile, closed}),
+		});
+		if (!res.ok) {
+			const errData = await res.json().catch(() => ({}));
+			throw new Error(
+				errData.error || `Close failed with status ${res.status}`,
+			);
+		}
+		return (await res.json()) as {batch: string | null; sessions: string[]};
+	} catch (err) {
+		if (prevMain !== undefined)
+			patchClosed(sessionFolders, sessionFile, () => prevMain);
+		if (prevReadOnly !== undefined)
+			patchClosed(readOnlySessionFolders, sessionFile, () => prevReadOnly);
+		console.error('Failed to update closed state:', err);
 		throw err;
 	}
 }

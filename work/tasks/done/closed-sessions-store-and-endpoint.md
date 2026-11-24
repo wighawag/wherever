@@ -41,3 +41,14 @@ The server side of "close a session" for ONE session (no cascade, no auto-reopen
 > FIRST, check this task against current reality (launch snapshot, may have DRIFTED). If a premise no longer holds, route to needs-attention with the discrepancy (WORK-CONTRACT.md "Drift is a needs-attention signal").
 >
 > RECORD non-obvious in-scope decisions (exact cap numbers, the refusal shape at the cap, how `unstarred` is represented) in `work/notes/observations/closed-sessions-store-and-endpoint-decisions.md` and end your final report with a `## Decisions` block linking it. Targeted `CONTEXT.md` edits only. Never write em dashes.
+
+## Decisions
+
+Recorded in `work/notes/observations/closed-sessions-store-and-endpoint-decisions.md`:
+1. The cap is 20,000 entries and 8 MiB. The byte limit also acts as the read guard: a file found above it is treated as corrupt.
+2. A refusal at the cap answers HTTP 409; a corrupt store stays 500, as with stars. The sessions being closed in the same request are never pruned.
+3. `unstarred: true` is stored only when the close actually removed a star; otherwise the key is left out.
+4. Closing an already-closed session gets a fresh batch id but `sessions: []`, and the stored entry keeps its original batch. The undo and cascade tasks rely on this shape.
+5. The listing gets the closed set through a `getClosed` option on the pool, next to `getStarred`, and it never affects cleanup.
+6. Reopening on star is best effort, so a corrupt closed store doesn't block starring.
+7. The module is named `session-closed.ts`, beside `session-stars.ts`.
