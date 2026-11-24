@@ -83,6 +83,9 @@ interface Fixture {
   forkFile: string;
   hiddenFile: string;
   fleetFile: string;
+  /** Present only with `memonautPrivate`: a session in a memonaut `private` folder. */
+  privateFile?: string;
+  privateCwd: string;
   env: Record<string, string>;
 }
 
@@ -94,7 +97,11 @@ interface Fixture {
  *  - `fleetCwd`: a project in `sessions.readOnly` (the separate read-only page).
  * Every session contains the same needle, so any leak is a visible failure.
  */
-async function makeFixture(opts?: { skipIndex?: boolean }): Promise<Fixture> {
+async function makeFixture(opts?: {
+  skipIndex?: boolean;
+  /** Also write a session in a folder memonaut's config marks `private`. */
+  memonautPrivate?: boolean;
+}): Promise<Fixture> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-search-'));
   const sessionsRoot = path.join(root, 'sessions');
   const memonautConfigDir = path.join(root, 'memonaut-config');
@@ -107,6 +114,7 @@ async function makeFixture(opts?: { skipIndex?: boolean }): Promise<Fixture> {
   const visibleCwd = path.join(root, 'projects', 'alpha');
   const hiddenCwd = path.join(root, 'projects', 'hidden');
   const fleetCwd = path.join(root, 'projects', 'fleet');
+  const privateCwd = path.join(root, 'projects', 'private');
 
   const parentFile = writeSession(sessionsRoot, {
     uuid: '00000000-0000-4000-8000-00000000aaaa',
@@ -147,9 +155,25 @@ async function makeFixture(opts?: { skipIndex?: boolean }): Promise<Fixture> {
     entries: [{ id: 'dddd0001', text: 'flamingo protocol run by the autonomous fleet' }],
   });
 
+  const privateFile = opts?.memonautPrivate
+    ? writeSession(sessionsRoot, {
+        uuid: '00000000-0000-4000-8000-00000000ffff',
+        cwd: privateCwd,
+        started: '2026-02-06T10:00:00.000Z',
+        entries: [{ id: 'ffff0001', text: 'flamingo protocol in a private folder' }],
+      })
+    : undefined;
+
   fs.writeFileSync(
     path.join(memonautConfigDir, 'config.json'),
-    JSON.stringify({ sources: [{ id: 'pi', kind: 'pi', root: sessionsRoot }] }, null, 2),
+    JSON.stringify(
+      {
+        sources: [{ id: 'pi', kind: 'pi', root: sessionsRoot }],
+        ...(opts?.memonautPrivate ? { private: [privateCwd, `${privateCwd}/**`] } : {}),
+      },
+      null,
+      2,
+    ),
   );
 
   const env: Record<string, string> = {
@@ -177,8 +201,25 @@ async function makeFixture(opts?: { skipIndex?: boolean }): Promise<Fixture> {
     forkFile,
     hiddenFile,
     fleetFile,
+    privateFile,
+    privateCwd,
     env,
   };
+}
+
+/**
+ * Close sessions the way the store does it: `closed-sessions.json` in the
+ * server's STATE dir. The harness blanks `WHEREVER_STATE_DIR`, so the state dir
+ * is the fixture's throwaway `WHEREVER_CONFIG_DIR`, never the real one.
+ */
+function writeClosed(fixture: Fixture, files: string[]): void {
+  fs.writeFileSync(
+    path.join(fixture.whereverConfigDir, 'closed-sessions.json'),
+    JSON.stringify({
+      version: 1,
+      closed: files.map((sessionFile, i) => ({ sessionFile, closedAt: 1000 + i, batch: 'c_test' })),
+    }),
+  );
 }
 
 /** Write the server-side wherever config (auto-sync off: no child indexers here). */
@@ -210,6 +251,7 @@ interface SearchResponseShape {
       after: number;
       isRoot: boolean;
       readOnly: boolean;
+      closed: boolean;
     }>;
     threadTotal: number;
   }>;
@@ -222,10 +264,12 @@ async function search(
   h: Harness,
   query: string,
   view?: 'default' | 'readonly',
+  includeClosed?: boolean,
 ): Promise<SearchResponseShape> {
   const url =
     `http://127.0.0.1:${h.port}/search?q=${encodeURIComponent(query)}` +
-    (view ? `&view=${view}` : '');
+    (view ? `&view=${view}` : '') +
+    (includeClosed ? '&includeClosed=1' : '');
   const res = await fetch(url);
   expect(res.status).toBe(200);
   return (await res.json()) as SearchResponseShape;
@@ -436,6 +480,106 @@ describe('conversation search', () => {
     const paths = second.hits.flatMap((hit) => hit.threads.map((t) => t.sessionPath));
     expect(paths).toContain(lateFile);
   }, 90_000);
+
+  it('drops closed sessions by default and returns them flagged with includeClosed=1', async () => {
+    const fixture = await makeFixture();
+    cleanupDirs.push(fixture.root);
+    writeWhereverConfig(fixture, {});
+    // The parent is closed; its fork (which carries the same shared entry) is not.
+    writeClosed(fixture, [fixture.parentFile]);
+    // The operator's real store: the ambient state dir (production sets one),
+    // else ~/.wherever.
+    const realState = path.join(
+      process.env.WHEREVER_STATE_DIR?.trim() || path.join(os.homedir(), '.wherever'),
+      'closed-sessions.json',
+    );
+    const realBefore = fs.existsSync(realState) ? fs.readFileSync(realState, 'utf8') : null;
+
+    harness = await startHarness({ env: fixture.env });
+
+    const byDefault = await search(harness, '"flamingo protocol"');
+    expect(byDefault.status).toBe('ok');
+    const defaultPaths = byDefault.hits.flatMap((hit) => hit.threads.map((t) => t.sessionPath));
+    expect(defaultPaths).not.toContain(fixture.parentFile);
+    // The open fork survives, and the shared hit counts only it.
+    const shared = byDefault.hits.find((hit) =>
+      hit.threads.some((t) => t.sessionPath === fixture.forkFile),
+    );
+    expect(shared).toBeDefined();
+    expect(shared!.threadTotal).toBe(1);
+    expect(shared!.threads.every((t) => t.closed === false)).toBe(true);
+
+    const included = await search(harness, '"flamingo protocol"', undefined, true);
+    const sharedAll = included.hits.find((hit) =>
+      hit.threads.some((t) => t.sessionPath === fixture.parentFile),
+    );
+    expect(sharedAll).toBeDefined();
+    expect(sharedAll!.threadTotal).toBe(2);
+    const parent = sharedAll!.threads.find((t) => t.sessionPath === fixture.parentFile)!;
+    const fork = sharedAll!.threads.find((t) => t.sessionPath === fixture.forkFile)!;
+    expect(parent.closed).toBe(true);
+    expect(fork.closed).toBe(false);
+
+    // The real state dir was never touched.
+    const realAfter = fs.existsSync(realState) ? fs.readFileSync(realState, 'utf8') : null;
+    expect(realAfter).toBe(realBefore);
+  }, 60_000);
+
+  it('applies the closed rule on view=readonly too', async () => {
+    const fixture = await makeFixture();
+    cleanupDirs.push(fixture.root);
+    writeWhereverConfig(fixture, { readOnly: [`${fixture.fleetCwd}/**`] });
+    writeClosed(fixture, [fixture.fleetFile]);
+
+    harness = await startHarness({ env: fixture.env });
+
+    const byDefault = await search(harness, 'flamingo', 'readonly');
+    const paths = byDefault.hits.flatMap((hit) => hit.threads.map((t) => t.sessionPath));
+    expect(paths).not.toContain(fixture.fleetFile);
+    expect(byDefault.hiddenHits).toBeGreaterThan(0);
+
+    const included = await search(harness, 'flamingo', 'readonly', true);
+    const fleet = included.hits
+      .flatMap((hit) => hit.threads)
+      .find((t) => t.sessionPath === fixture.fleetFile);
+    expect(fleet).toMatchObject({ readOnly: true, closed: true });
+  }, 60_000);
+
+  it('keeps sessions.ignore, sessions.readOnly and memonaut private intact under includeClosed=1', async () => {
+    const fixture = await makeFixture({ memonautPrivate: true });
+    cleanupDirs.push(fixture.root);
+    writeWhereverConfig(fixture, {
+      ignore: [`${fixture.hiddenCwd}/**`],
+      readOnly: [`${fixture.fleetCwd}/**`],
+    });
+    // Close EVERY session, hidden ones included: including closed sessions must
+    // never become a way around the other rules.
+    writeClosed(fixture, [
+      fixture.parentFile,
+      fixture.forkFile,
+      fixture.hiddenFile,
+      fixture.fleetFile,
+      fixture.privateFile!,
+    ]);
+
+    harness = await startHarness({ env: fixture.env });
+
+    const main = await search(harness, 'flamingo', undefined, true);
+    const mainPaths = main.hits.flatMap((hit) => hit.threads.map((t) => t.sessionPath));
+    expect(mainPaths).toContain(fixture.parentFile);
+    expect(mainPaths).not.toContain(fixture.hiddenFile);
+    expect(mainPaths).not.toContain(fixture.fleetFile);
+    expect(mainPaths).not.toContain(fixture.privateFile);
+    expect(JSON.stringify(main.hits)).not.toContain('nobody should see');
+    expect(JSON.stringify(main.hits)).not.toContain('private folder');
+
+    const readonly = await search(harness, 'flamingo', 'readonly', true);
+    const roPaths = readonly.hits.flatMap((hit) => hit.threads.map((t) => t.sessionPath));
+    expect(roPaths).toContain(fixture.fleetFile);
+    expect(roPaths).not.toContain(fixture.parentFile);
+    expect(roPaths).not.toContain(fixture.hiddenFile);
+    expect(roPaths).not.toContain(fixture.privateFile);
+  }, 60_000);
 
   it('treats an empty query as an empty result, not an error', async () => {
     const fixture = await makeFixture();
