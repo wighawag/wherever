@@ -27,6 +27,14 @@ import { resolveTelegramToken, takeTelegramTokenEnv, type TelegramTokenEnv } fro
 import { DEFAULT_GRACE_MS } from './assistant-schedule.js';
 import { createCliRequestRouter, assistantInfoChangedFrame, type AssistantInfo, type CliRequestRouter } from './cli-requests.js';
 import { readStarredSet, setSessionStarred, validateStarInput, forgetStar } from './session-stars.js';
+import {
+  readClosedSet,
+  closeSessions,
+  reopenSessions,
+  validateCloseInput,
+  forgetClosed,
+  ClosedCapError,
+} from './session-closed.js';
 import { piSdkInfo } from './pi-sdk.js';
 import { searchConversations } from './conversation-search.js';
 import { matchRemoteRepoRule, resolveRemoteCandidates } from './remote-candidates.js';
@@ -1201,7 +1209,7 @@ async function main(): Promise<void> {
     `[wherever] config: ${configPath} ` +
       (fs.existsSync(configPath) ? '(found)' : '(not found, using built-in defaults)'),
   );
-  const sessionPool = new SessionPool(idleTimeout, { getStarred: readStarredSet });
+  const sessionPool = new SessionPool(idleTimeout, { getStarred: readStarredSet, getClosed: readClosedSet });
   await sessionPool.initialize();
 
   // The assistant folder (opt-in via `assistantFolder`, see assistant-folder.ts):
@@ -1490,6 +1498,7 @@ async function main(): Promise<void> {
       if (tracked) void sessionPool.destroySession(tracked.sessionFile, 'deleted');
       if (sessionPool.isSessionFile(file) && fs.existsSync(file)) fs.unlinkSync(file);
       forgetStar(file);
+      forgetClosed(file);
       shipmatesHost.forget(file);
     });
     if (n) {
@@ -2059,10 +2068,76 @@ async function main(): Promise<void> {
       }
       try {
         const stars = setSessionStarred(resolved, parsed.starred);
+        // Star and close are exclusive (ADR 0025): starring reopens. The star
+        // write is authoritative; clearing the close flag is best effort.
+        if (parsed.starred) {
+          try {
+            reopenSessions([resolved]);
+          } catch (err) {
+            console.error('[wherever] star: could not reopen the session:', (err as Error).message);
+          }
+        }
         broadcastSessionsUpdated();
         sendJSON(res, 200, { starred: stars });
       } catch (err) {
         sendJSON(res, 500, { error: (err as Error).message || 'Failed to update star' });
+      }
+      return;
+    }
+
+    // --- Closed sessions ("done with this", ADR 0025) ------------------------
+    // Hide a session from the list and from search without touching its
+    // transcript. Server-side like stars; `/sessions` reports `closed: true`
+    // and still returns the session (the client hides it). An explicit boolean,
+    // so a retried request is idempotent. Every close answers a fresh `batch`
+    // (even for one session, for undo) and the `sessions` it newly closed; a
+    // reopen answers `batch: null` and the sessions it reopened.
+    if (pathname === '/sessions/close' && req.method === 'POST') {
+      let parsed: any;
+      try {
+        parsed = JSON.parse((await readBody(req)) || '{}');
+      } catch {
+        sendJSON(res, 400, { error: 'Invalid request' });
+        return;
+      }
+      const invalid = validateCloseInput(parsed);
+      if (invalid) {
+        sendJSON(res, 400, { error: invalid });
+        return;
+      }
+      const resolved = path.resolve(parsed.sessionFile);
+      // Same check as the star endpoint: only paths inside the sessions dir.
+      if (!sessionPool.isSessionFile(resolved)) {
+        sendJSON(res, 400, { error: 'Invalid session file: not a session in the sessions directory' });
+        return;
+      }
+      try {
+        if (!parsed.closed) {
+          const sessions = reopenSessions([resolved]);
+          broadcastSessionsUpdated();
+          sendJSON(res, 200, { batch: null, sessions });
+          return;
+        }
+        // Star and close are exclusive: the close records whether it removed a
+        // star (`unstarred`, for undo), then clears it. The close write is
+        // authoritative; clearing the star is best effort, so a broken stars
+        // file (read as "no stars") cannot block closing.
+        const starred = readStarredSet();
+        const result = closeSessions([resolved], { unstarred: (f) => starred.has(f) });
+        for (const f of [resolved]) {
+          if (!starred.has(f)) continue;
+          try {
+            setSessionStarred(f, false);
+          } catch (err) {
+            console.error('[wherever] close: could not clear the star:', (err as Error).message);
+          }
+        }
+        broadcastSessionsUpdated();
+        sendJSON(res, 200, result);
+      } catch (err) {
+        sendJSON(res, err instanceof ClosedCapError ? 409 : 500, {
+          error: (err as Error).message || 'Failed to update closed sessions',
+        });
       }
       return;
     }
@@ -2704,8 +2779,9 @@ async function main(): Promise<void> {
         if (fs.existsSync(resolved)) {
           fs.unlinkSync(resolved);
         }
-        // A deleted session's star would otherwise linger in the store forever.
+        // A deleted session's star and close flag would otherwise linger forever.
         forgetStar(resolved);
+        forgetClosed(resolved);
 
         // Tell all connected clients the list changed. Throttled: deleting a
         // whole folder fires one DELETE per session in parallel, and each one

@@ -71,6 +71,12 @@ export interface FolderSessionInfo {
    * server-side in `starred-sessions.json`, see server/src/session-stars.ts.
    */
   starred?: boolean;
+  /**
+   * True when the user closed this session (done with it, not deleted). Stored
+   * server-side in `closed-sessions.json`, see server/src/session-closed.ts.
+   * `/sessions` always returns closed sessions; the client hides them.
+   */
+  closed?: boolean;
 }
 
 export interface FolderWithSessions {
