@@ -35,3 +35,11 @@ Server: add `waitingOnSession: string | null` (normalized session path, the same
 > FIRST, check this task against current reality (it is a launch snapshot and may have DRIFTED). If shipmates already exposes the waited-on session, use it and say so; if `waitingOn` semantics differ from the above, route to needs-attention with the discrepancy.
 >
 > RECORD non-obvious in-scope decisions in `work/notes/observations/live-strip-names-the-session-waited-on-decisions.md` and end your final report with a `## Decisions` block linking it. Targeted `CONTEXT.md` edits only. Never write em dashes.
+
+## Decisions
+
+These are recorded in `work/notes/observations/live-strip-names-the-session-waited-on-decisions.md`:
+1. **Badge:** the "waiting on X" text replaces the badge text instead of sitting in a second span next to it. The folder list's presence line is unchanged and still says "waiting on a session".
+2. **Label:** the waited-on session is named by its first role, else its name, else its first message, else the fallback. "Empty session" is not used, and the sidebar's `sessionLabel` is not used because it falls back to labels of hidden sessions.
+3. **Listing:** "the current listing" means the whole unfiltered listing, so a session hidden only by the filter box is still named.
+4. **Lookup errors:** the server catches errors per session, so one bad question can't blank the snapshot.

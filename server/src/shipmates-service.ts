@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AttentionItem, Shipmates, Presence } from 'shipmates';
+import type { AttentionItem, Shipmates, Presence, Question } from 'shipmates';
 
 /**
  * wherever as a shipmates HOST (shipmates' spec "Architecture", D20; wherever ADR
@@ -51,7 +51,10 @@ export interface ShipmatesPresenceView {
   roles: string[];
   state: Presence['state'];
   status: string | null;
+  /** Raw from shipmates: a question id (`waiting-for-session`) or an inbox item id (`waiting-for-human`). */
   waitingOn: string | null;
+  /** The session a `waiting-for-session` presence waits on (normalized file), null when unknown or another state. */
+  waitingOnSession: string | null;
 }
 
 /** What a dashboard gets (`shipmates_update`). `available` false = no shipmates database (or off). */
@@ -139,7 +142,7 @@ export function inboxItemView(item: AttentionItem, presence: Presence | null): S
   };
 }
 
-export function presenceView(p: Presence): ShipmatesPresenceView {
+export function presenceView(p: Presence, waitingOnSession: string | null = null): ShipmatesPresenceView {
   return {
     sessionFile: normalizeSessionFile(p.sessionFile),
     sessionId: p.sessionId,
@@ -147,7 +150,32 @@ export function presenceView(p: Presence): ShipmatesPresenceView {
     state: p.state,
     status: p.status,
     waitingOn: p.waitingOn,
+    waitingOnSession,
   };
+}
+
+/**
+ * The session a `waiting-for-session` presence waits on, normalized like the
+ * listing's `path`: @shipmates/pi's `session_wait` sets `waitingOn` to the id of
+ * the QUESTION it waits for, whose `to` is what `send()` resolved (a session
+ * file, or a role, then its current holder). Null for every other state, a
+ * missing question, or a role nobody holds. Never throws: it runs inside
+ * `snapshot()`, whose catch would empty the whole inbox and presence. Never
+ * calls shipmates' `resolve()`, which throws (`ambiguous`, `not-found`).
+ */
+export function waitingOnSessionOf(
+  k: { question(id: string): Pick<Question, 'to'> | null; roleHolder(role: string): string | null },
+  p: Pick<Presence, 'state' | 'waitingOn'>,
+): string | null {
+  if (p.state !== 'waiting-for-session' || !p.waitingOn) return null;
+  try {
+    const q = k.question(p.waitingOn);
+    if (!q) return null;
+    const file = q.to.kind === 'session' ? q.to.target : k.roleHolder(q.to.target);
+    return file ? normalizeSessionFile(file) : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -362,7 +390,7 @@ export class ShipmatesService {
       const live = k.list();
       const bySession = new Map(live.map((p) => [p.sessionFile, p]));
       const inbox = k.inbox().map((item) => inboxItemView(item, bySession.get(item.session) ?? k.presence(item.session)));
-      return { available: true, inbox, presence: live.map(presenceView), archives: this.archiveViews() };
+      return { available: true, inbox, presence: live.map((p) => presenceView(p, waitingOnSessionOf(k, p))), archives: this.archiveViews() };
     } catch (err) {
       this.log.warn(`[wherever] shipmates: reading the inbox failed: ${(err as Error).message}`);
       return { available: true, inbox: [], presence: [], archives: this.archiveViews() };

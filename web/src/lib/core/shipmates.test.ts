@@ -20,6 +20,7 @@ const presence = (p: Partial<ShipmatesPresence> = {}): ShipmatesPresence => ({
 	state: 'idle',
 	status: null,
 	waitingOn: null,
+	waitingOnSession: null,
 	...p,
 });
 
@@ -75,6 +76,34 @@ describe('shipmates on the web', () => {
 			parseShipmatesUpdate({available: true, archives: [archive, {batch: 5}]})
 				.archives,
 		).toEqual([archive]);
+	});
+
+	it('carries waitingOnSession, and reads it as null from an older server or when malformed', () => {
+		const old = {
+			...presence({sessionFile: '/s/old.jsonl'}),
+		} as Partial<ShipmatesPresence>;
+		delete old.waitingOnSession;
+		const {presence: got} = parseShipmatesUpdate({
+			available: true,
+			presence: [
+				presence({
+					state: 'waiting-for-session',
+					waitingOn: 'q_1',
+					waitingOnSession: '/s/b.jsonl',
+				}),
+				old,
+				presence({
+					sessionFile: '/s/bad.jsonl',
+					waitingOnSession: 7 as unknown as string,
+				}),
+			],
+		});
+		expect(got.map((p) => p.waitingOnSession)).toEqual([
+			'/s/b.jsonl',
+			null,
+			null,
+		]);
+		expect(got[1]).toEqual(presence({sessionFile: '/s/old.jsonl'}));
 	});
 
 	it('the presence line: roles, a state worth saying, the status; nothing for a plain idle session', () => {

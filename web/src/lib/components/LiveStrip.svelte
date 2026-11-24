@@ -10,7 +10,7 @@
 		type LiveSessionRow,
 		type LiveState,
 	} from '$lib/core/live-sessions';
-	import {stateLabel, type ShipmatesPresence} from '$lib/core/shipmates';
+	import type {ShipmatesPresence} from '$lib/core/shipmates';
 	import type {SessionInfo} from '$lib/session-store';
 
 	let {
@@ -99,9 +99,9 @@
 							>{row.folderName}</span
 						>
 						<span
-							class="shrink-0 rounded border px-1 text-[10px] {BADGE_CLASS[
+							class="max-w-[40%] shrink-0 truncate rounded border px-1 text-[10px] {BADGE_CLASS[
 								row.state
-							]}">{stateLabel(row.state)}</span
+							]}">{row.stateText}</span
 						>
 						{#if status}
 							<span class="min-w-0 truncate text-[10px] text-brand-text-muted"

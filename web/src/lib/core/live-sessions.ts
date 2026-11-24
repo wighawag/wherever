@@ -7,7 +7,11 @@
  * Also home of the sidebar's filter rule and row label, so the folder list and
  * the strip match and name sessions the same way.
  */
-import type {ShipmatesPresence, ShipmatesSessionState} from './shipmates';
+import {
+	stateLabel,
+	type ShipmatesPresence,
+	type ShipmatesSessionState,
+} from './shipmates';
 
 /** The fields of a listed session (`SessionInfo`) these helpers read. */
 export interface LiveSessionLike {
@@ -70,6 +74,8 @@ export interface LiveSessionRow<S extends LiveSessionLike = LiveSessionLike> {
 	folderName: string;
 	state: LiveState;
 	label: string;
+	/** The state badge's text: "waiting on <session>" for a waiting-for-session row, else the state label. */
+	stateText: string;
 }
 
 const NEED_RANK: Record<LiveState, number> = {
@@ -81,6 +87,28 @@ const NEED_RANK: Record<LiveState, number> = {
 function modifiedTime(s: LiveSessionLike): number {
 	const t = new Date(s.modified).getTime();
 	return Number.isNaN(t) ? 0 : t;
+}
+
+/**
+ * "waiting on <label>" for the session a row waits on (the presence's
+ * `waitingOnSession`), named like the strip names its rows: its first role,
+ * else its name, else its first-message preview. Only a session in the
+ * CURRENT listing is named, so the strip never reveals one the listing hides
+ * (unlike the sidebar's `sessionLabel`, which remembers labels of sessions
+ * listed earlier). Anything else: "waiting on a session".
+ */
+export function waitingOnText(
+	waitingOnSession: string | null | undefined,
+	listed: Map<string, Pick<LiveSessionLike, 'name' | 'firstMessage'>>,
+	presence: Map<string, ShipmatesPresence>,
+): string {
+	const target = waitingOnSession ? listed.get(waitingOnSession) : undefined;
+	const label =
+		target &&
+		(presence.get(waitingOnSession!)?.roles[0] ||
+			target.name ||
+			truncateLabel(target.firstMessage || ''));
+	return `waiting on ${label || 'a session'}`;
 }
 
 /**
@@ -96,6 +124,10 @@ export function liveSessions<S extends LiveSessionLike>(
 	query: string,
 ): LiveSessionRow<S>[] {
 	const rows: LiveSessionRow<S>[] = [];
+	// The whole listing, not just what the filter shows: a filtered-out session is still listed.
+	const listed = new Map<string, S>();
+	for (const folder of folders)
+		for (const s of folder.sessions) listed.set(s.path, s);
 	for (const folder of folders) {
 		for (const session of folder.sessions) {
 			if (!sessionMatchesFilter(session, folder.name, query)) continue;
@@ -107,6 +139,10 @@ export function liveSessions<S extends LiveSessionLike>(
 				folderName: folder.name,
 				state,
 				label: p?.roles[0] || sessionListLabel(session),
+				stateText:
+					state === 'waiting-for-session'
+						? waitingOnText(p?.waitingOnSession, listed, presence)
+						: stateLabel(state),
 			});
 		}
 	}
