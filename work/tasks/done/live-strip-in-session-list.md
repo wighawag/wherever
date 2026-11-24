@@ -49,3 +49,14 @@ sessionLiveState(session, presence):
 > RECORD non-obvious in-scope decisions in `work/notes/observations/live-strip-in-session-list-decisions.md` and end your final report with a `## Decisions` block written as the done-record section, linking that file.
 >
 > `CONTEXT.md` is long: targeted edits only; check `git diff --stat -- CONTEXT.md` before finishing. Never write em dashes.
+
+## Decisions
+
+Recorded in `work/notes/observations/live-strip-in-session-list-decisions.md`:
+1. **Placement:** the strip sits outside the scroll area, between the filter box and the folders, so it stays visible while you scroll. The alternative was putting it inside the scroll area, where it would scroll away.
+2. **Status text:** a row shows only the presence's own `status`. The full presence line would repeat the role and state, which the row already shows as label and badge.
+3. **Badge colours:** "waiting for you" is amber, "running" is brand blue and "waiting on a session" is brand purple. I didn't use emerald for running because emerald is already the folder row's "active" dot.
+4. **Extra prop:** `LiveStrip` takes a `presence` prop besides `rows`, `currentSession`, `onOpen` and `labelOf`. This keeps the row shape exactly `{session, folderName, state, label}` for the by-owner view to reuse.
+5. **"+N more":** expanding isn't remembered. Only the collapsed state is stored in `localStorage`.
+6. **Label and filter helpers:** both live in core now. The folder rows' inline label markup was left as it is. The filter treats a missing `firstMessage` as empty instead of throwing, which gives the same result on any valid listing.
+7. **Ties:** an unparsable `modified` sorts as oldest, and equal keys keep listing order.
