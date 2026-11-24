@@ -24,16 +24,33 @@
  *    and has no visible descendant is pruned, a kept closed node is dimmed
  *    context, and a group with nothing visible disappears. (Not the folder
  *    view's flat `pruneForkTree`, which works on depth-ordered rows.)
+ * 8. The summary (`summary`, `hasWaitingForHuman`) is counted over the nodes
+ *    still VISIBLE after rule 7 (a closed node kept only as context is not
+ *    counted), one `sessionLiveState` per session, and BEFORE the filter: it
+ *    describes the whole orchestration, not the rows the filter leaves.
+ * 9. The sidebar filter (`sessionMatchesFilter`, the folder view's rule) runs
+ *    after rule 7, so only a visible node can match. A matching node is kept
+ *    with its ancestors (non-matching ones are dimmed context, `matched`
+ *    false); its non-matching descendants are dropped, as in the folder view;
+ *    a group with no match disappears. `hasMatch` is true only while a filter
+ *    is set and the group holds a match: it is what forces the group open
+ *    (`ownerGroupExpanded`). Group order stays the rule 5 order of the whole
+ *    group, so typing a filter never reshuffles the groups it keeps.
  *
  * Siblings are ordered like the fork tree: by the most recent `modified` in
  * their (kept) subtree, then their own `modified`, then path.
  */
 import type {ForkTreeNodeInput} from './fork-tree';
+import {sessionLiveState, sessionMatchesFilter} from './live-sessions';
+import {stateLabel, type ShipmatesPresence} from './shipmates';
 
 /** The fields of a listed session (`SessionInfo`) the tree reads. */
 export interface OwnerTreeSessionInput extends ForkTreeNodeInput {
 	ownerSessionPath?: string;
 	closed?: boolean;
+	name?: string;
+	firstMessage?: string;
+	isWorking?: boolean;
 }
 
 /** How a nested node hangs from the node above it; null on a group's root. */
@@ -49,17 +66,40 @@ export interface OwnerTreeNode<S extends OwnerTreeSessionInput> {
 	edge: OwnerTreeEdge | null;
 	/** Rule 2: its owner is set but not in the listing. */
 	ownerNotListed: boolean;
+	/**
+	 * Rule 9: visible and matching the filter (every visible node when the
+	 * filter is empty). False on a node kept only as context: render it dimmed.
+	 */
+	matched: boolean;
+}
+
+/** A group's members by live state (rule 8). */
+export interface OwnerGroupSummary {
+	sessions: number;
+	running: number;
+	waitingForHuman: number;
+	waitingForSession: number;
+	idle: number;
 }
 
 export interface OwnerGroup<S extends OwnerTreeSessionInput> {
 	root: OwnerTreeNode<S>;
-	/** The most recent `modified` among the group's kept nodes. */
+	/** The most recent `modified` among the group's kept nodes (before the filter). */
 	latestActivity: string;
+	summary: OwnerGroupSummary;
+	/** `summary.waitingForHuman > 0`: the head is highlighted, even collapsed. */
+	hasWaitingForHuman: boolean;
+	/** A filter is set and the group holds a match (rule 9). */
+	hasMatch: boolean;
 }
 
 export interface OwnerTreeOptions<S> {
 	/** Whether a session is shown on its own (closed + "Show closed", `isSessionShown`). */
 	isVisible: (session: S) => boolean;
+	/** The sidebar filter text; empty (or omitted) matches everything. */
+	filter?: string;
+	/** shipmates presence by session path, for the summary's live states. */
+	presence?: ReadonlyMap<string, Pick<ShipmatesPresence, 'state'>>;
 }
 
 /** Recency order: `modified` desc, then path. */
@@ -77,7 +117,7 @@ function byRecency(a: {modified: string; path: string}, b: typeof a): number {
  */
 export function ownerTree<S extends OwnerTreeSessionInput>(
 	folders: readonly {name: string; sessions: readonly S[]}[],
-	{isVisible}: OwnerTreeOptions<S>,
+	{isVisible, filter = '', presence}: OwnerTreeOptions<S>,
 ): OwnerGroup<S>[] {
 	const byPath = new Map<string, {session: S; folderName: string}>();
 	for (const f of folders)
@@ -128,6 +168,7 @@ export function ownerTree<S extends OwnerTreeSessionInput>(
 			closed: !!session.closed,
 			edge: isRoot ? null : (parentOf.get(session.path)?.edge ?? null),
 			ownerNotListed: notListed.has(session.path),
+			matched: false,
 		};
 	};
 	const all = [...byPath.values()].map((e) => e.session).sort(byRecency);
@@ -155,6 +196,50 @@ export function ownerTree<S extends OwnerTreeSessionInput>(
 			if (c.latest.localeCompare(latest) > 0) latest = c.latest;
 		return {node: {...node, children: kept.map((c) => c.node)}, latest};
 	};
+	// Rule 8: count the visible nodes of a closed-pruned group.
+	const summarize = (root: OwnerTreeNode<S>): OwnerGroupSummary => {
+		const sum: OwnerGroupSummary = {
+			sessions: 0,
+			running: 0,
+			waitingForHuman: 0,
+			waitingForSession: 0,
+			idle: 0,
+		};
+		const walk = (node: OwnerTreeNode<S>) => {
+			if (isVisible(node.session)) {
+				sum.sessions++;
+				const state = sessionLiveState(
+					node.session,
+					presence?.get(node.session.path),
+				);
+				if (state === 'waiting-for-human') sum.waitingForHuman++;
+				else if (state === 'waiting-for-session') sum.waitingForSession++;
+				else if (state === 'running') sum.running++;
+				else sum.idle++;
+			}
+			node.children.forEach(walk);
+		};
+		walk(root);
+		return sum;
+	};
+	// Rule 9: mark matches, keep their ancestors, drop the rest.
+	const matchPrune = (node: OwnerTreeNode<S>): OwnerTreeNode<S> | null => {
+		const matched =
+			isVisible(node.session) &&
+			sessionMatchesFilter(
+				{
+					name: node.session.name,
+					firstMessage: node.session.firstMessage ?? '',
+				},
+				node.folderName,
+				filter,
+			);
+		const kept = node.children
+			.map(matchPrune)
+			.filter((c): c is OwnerTreeNode<S> => c !== null);
+		if (!matched && !kept.length) return null;
+		return {...node, matched, children: kept};
+	};
 	return roots
 		.map(prune)
 		.filter((g): g is NonNullable<typeof g> => g !== null)
@@ -163,7 +248,98 @@ export function ownerTree<S extends OwnerTreeSessionInput>(
 				b.latest.localeCompare(a.latest) ||
 				a.node.session.path.localeCompare(b.node.session.path),
 		)
-		.map(({node, latest}) => ({root: node, latestActivity: latest}));
+		.flatMap(({node, latest}) => {
+			const filtered = matchPrune(node);
+			if (!filtered) return [];
+			const summary = summarize(node);
+			return [
+				{
+					root: filtered,
+					latestActivity: latest,
+					summary,
+					hasWaitingForHuman: summary.waitingForHuman > 0,
+					// A group matchPrune keeps holds a match by construction.
+					hasMatch: !!filter,
+				},
+			];
+		});
+}
+
+/**
+ * A collapsed group's summary: "5 sessions · 2 running · 1 waiting for you ·
+ * 1 waiting on a session". Zero counts are left out, and so is idle (the
+ * rest of the sessions).
+ */
+export function ownerGroupSummaryText(summary: OwnerGroupSummary): string {
+	const parts = [
+		`${summary.sessions} ${summary.sessions === 1 ? 'session' : 'sessions'}`,
+	];
+	if (summary.running)
+		parts.push(`${summary.running} ${stateLabel('running')}`);
+	if (summary.waitingForHuman)
+		parts.push(`${summary.waitingForHuman} ${stateLabel('waiting-for-human')}`);
+	if (summary.waitingForSession)
+		parts.push(
+			`${summary.waitingForSession} ${stateLabel('waiting-for-session')}`,
+		);
+	return parts.join(' · ');
+}
+
+/**
+ * Where the collapsed By-owner groups are remembered on this device: a JSON
+ * array of the root session paths of the collapsed groups (a group is
+ * expanded unless listed).
+ */
+export const OWNER_GROUPS_COLLAPSED_KEY = 'wherever-owner-groups-collapsed';
+
+/** The saved collapsed groups; anything unreadable is none. */
+export function parseCollapsedGroups(
+	raw: string | null | undefined,
+): Set<string> {
+	if (!raw) return new Set();
+	try {
+		const value: unknown = JSON.parse(raw);
+		if (!Array.isArray(value)) return new Set();
+		return new Set(value.filter((v): v is string => typeof v === 'string'));
+	} catch {
+		return new Set();
+	}
+}
+
+/**
+ * The value to save: the collapsed groups whose root is still listed, so the
+ * entry does not grow forever with deleted sessions.
+ */
+export function serializeCollapsedGroups(
+	collapsed: ReadonlySet<string>,
+	listed: ReadonlySet<string>,
+): string {
+	return JSON.stringify([...collapsed].filter((p) => listed.has(p)));
+}
+
+/** Collapse an expanded group or expand a collapsed one (a new set). */
+export function toggleCollapsedGroup(
+	collapsed: ReadonlySet<string>,
+	rootPath: string,
+): Set<string> {
+	const next = new Set(collapsed);
+	if (next.has(rootPath)) next.delete(rootPath);
+	else next.add(rootPath);
+	return next;
+}
+
+/**
+ * Whether a group renders expanded: it is not saved collapsed, OR the filter
+ * is set and the group holds a match (the analogue of the folder view showing
+ * folders open while filtering). The saved state is only read, so typing a
+ * filter never changes it; clearing the filter restores it.
+ */
+export function ownerGroupExpanded(
+	group: Pick<OwnerGroup<OwnerTreeSessionInput>, 'hasMatch'>,
+	collapsed: ReadonlySet<string>,
+	rootPath: string,
+): boolean {
+	return group.hasMatch || !collapsed.has(rootPath);
 }
 
 /** A group's nodes depth-first, with their depth (the rows to render). */

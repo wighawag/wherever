@@ -37,3 +37,15 @@ On top of the "By owner" view:
 > FIRST, check this task against current reality (launch snapshot, may have DRIFTED); use the helpers under the names that actually landed.
 >
 > RECORD non-obvious in-scope decisions in `work/notes/observations/by-owner-view-collapse-summary-filter-decisions.md` and end your final report with a `## Decisions` block linking it. Targeted `CONTEXT.md` edits only. Never write em dashes.
+
+## Decisions
+
+These are recorded in `work/notes/observations/by-owner-view-collapse-summary-filter-decisions.md`, with the code-level rules in the `owner-tree.ts` module JSDoc (rules 8 and 9):
+1. `hasMatch` is false when the filter is empty. It means "this group holds a filter match", which is what forces the group open.
+2. With an empty filter every visible node counts as `matched`. Rows are dimmed when `!matched && !closed`, so a closed context row still shows as closed.
+3. Non-matching children of a match are hidden, as in the folder view. The spec only asked to keep ancestors.
+4. The summary and the amber highlight count the whole group, not just the filtered rows. Groups keep their whole-group order while filtering.
+5. The summary text leaves out idle and zero counts, in the order running, waiting for you, waiting on a session.
+6. Collapsed state is one `localStorage` key holding a JSON array of root paths. Groups start expanded, and the list is pruned to listed sessions on save.
+7. Only a group with children can collapse. A group of one gets no chevron, but its head still turns amber.
+8. While the filter forces a group open, its chevron is disabled rather than using a search-only override like the folder view's `searchExpanded`.

@@ -40,11 +40,17 @@
 	// The "By owner" layout: one tree per orchestration across folders, and the
 	// toggle's state (unit-tested in core).
 	import {
+		OWNER_GROUPS_COLLAPSED_KEY,
 		SESSION_LIST_VIEW_KEY,
+		ownerGroupExpanded,
 		ownerGroupRows,
+		ownerGroupSummaryText,
 		ownerRowHint,
 		ownerTree,
+		parseCollapsedGroups,
 		parseSessionListView,
+		serializeCollapsedGroups,
+		toggleCollapsedGroup,
 		sessionListViewState,
 		type SessionListView,
 	} from '$lib/core/owner-tree';
@@ -156,13 +162,41 @@
 			// No storage (private mode): the choice just is not remembered.
 		}
 	}
-	// The filter does not apply to "By owner" yet (task
-	// `by-owner-view-collapse-summary-filter`); the folder view filters as before.
+	// "By owner" with the sidebar filter (matches plus their ancestors as dimmed
+	// context) and each group's live-state summary.
 	let ownerGroups = $derived(
 		viewState.view === 'owner'
-			? ownerTree(folders, {isVisible: (s) => isSessionShown(s, showClosed)})
+			? ownerTree(folders, {
+					isVisible: (s) => isSessionShown(s, showClosed),
+					filter: searchQuery,
+					presence,
+				})
 			: [],
 	);
+	// Collapsed By-owner groups (by root path, remembered on this device). A
+	// group holding a filter match shows expanded while filtering; that never
+	// writes this set.
+	function readCollapsedGroups(): Set<string> {
+		try {
+			return parseCollapsedGroups(
+				localStorage.getItem(OWNER_GROUPS_COLLAPSED_KEY),
+			);
+		} catch {
+			return new Set();
+		}
+	}
+	let collapsedGroups = $state<Set<string>>(readCollapsedGroups());
+	function toggleGroup(rootPath: string) {
+		collapsedGroups = toggleCollapsedGroup(collapsedGroups, rootPath);
+		try {
+			localStorage.setItem(
+				OWNER_GROUPS_COLLAPSED_KEY,
+				serializeCollapsedGroups(collapsedGroups, new Set(byPath.keys())),
+			);
+		} catch {
+			// No storage (private mode): the state just is not remembered.
+		}
+	}
 	let undoing = $state<Record<string, boolean>>({});
 	// Labels of every session this sidebar has listed, kept after a cascaded
 	// delete hides them, so the undo banner can still name what it took.
@@ -872,37 +906,95 @@
 		{#if viewState.view === 'owner'}
 			{#if ownerGroups.length === 0}
 				<div class="p-4 text-center text-sm text-brand-text-muted">
-					{loading ? 'Loading sessions...' : 'No sessions found'}
+					{loading
+						? 'Loading sessions...'
+						: searchQuery
+							? 'No sessions match your filter'
+							: 'No sessions found'}
 				</div>
 			{/if}
 			{#each ownerGroups as group (group.root.session.path)}
-				<div class="border-b border-brand-border/50 px-3 py-1.5">
-					{#each ownerGroupRows(group) as { node, depth } (node.session.path)}
-						<SessionRow
-							session={node.session}
-							{depth}
-							current={currentSession === node.session.path}
-							{readOnly}
-							closed={node.closed}
-							rowTitle={node.closed
-								? showClosed
-									? 'Closed'
-									: 'Closed (shown because a session under it is open)'
-								: undefined}
-							nestKind={node.edge ?? 'fork'}
-							presence={presence.get(node.session.path)}
-							ownerHint={ownerRowHint(node, sessionLabel)}
-							folderTag={node.folderName}
-							showOwned={false}
-							confirmingDelete={confirmingDelete === node.session.path}
-							onOpen={handleSessionClick}
-							onStar={toggleStar}
-							onToggleClosed={toggleClosed}
-							onAskDelete={(path) => (confirmingDelete = path)}
-							onCancelDelete={() => (confirmingDelete = null)}
-							onDelete={handleDeleteSession}
-						/>
+				{@const rootPath = group.root.session.path}
+				{@const groupRows = ownerGroupRows(group)}
+				{@const collapsible = group.root.children.length > 0}
+				{@const groupExpanded = ownerGroupExpanded(
+					group,
+					collapsedGroups,
+					rootPath,
+				)}
+				<div
+					class="border-b border-brand-border/50 py-1.5 pr-3 {group.hasWaitingForHuman
+						? 'border-l-2 border-l-amber-400/70 pl-2.5'
+						: 'pl-3'}"
+				>
+					{#each groupRows as { node, depth } (node.session.path)}
+						{#if depth === 0 || groupExpanded}
+							<div class="flex items-center">
+								{#if depth === 0 && collapsible}
+									<button
+										type="button"
+										onclick={() => toggleGroup(rootPath)}
+										disabled={group.hasMatch}
+										class="flex-shrink-0 px-0.5 text-[10px] text-brand-text-muted transition-transform hover:text-brand-text disabled:cursor-default disabled:opacity-60 {groupExpanded
+											? 'rotate-90'
+											: ''}"
+										title={group.hasMatch
+											? 'Shown expanded while the filter matches in it'
+											: groupExpanded
+												? 'Collapse group'
+												: 'Expand group'}
+										aria-label={groupExpanded
+											? 'Collapse group'
+											: 'Expand group'}
+										aria-expanded={groupExpanded}
+									>
+										▶
+									</button>
+								{/if}
+								<div class="min-w-0 flex-1">
+									<SessionRow
+										session={node.session}
+										{depth}
+										current={currentSession === node.session.path}
+										{readOnly}
+										closed={node.closed}
+										dimmed={!node.matched && !node.closed}
+										rowTitle={node.closed
+											? showClosed
+												? 'Closed'
+												: 'Closed (shown because a session under it is open)'
+											: !node.matched
+												? 'Shown because a session under it matches the filter'
+												: undefined}
+										nestKind={node.edge ?? 'fork'}
+										presence={presence.get(node.session.path)}
+										ownerHint={ownerRowHint(node, sessionLabel)}
+										folderTag={node.folderName}
+										showOwned={false}
+										confirmingDelete={confirmingDelete === node.session.path}
+										onOpen={handleSessionClick}
+										onStar={toggleStar}
+										onToggleClosed={toggleClosed}
+										onAskDelete={(path) => (confirmingDelete = path)}
+										onCancelDelete={() => (confirmingDelete = null)}
+										onDelete={handleDeleteSession}
+									/>
+								</div>
+							</div>
+						{/if}
 					{/each}
+					{#if collapsible && !groupExpanded}
+						<button
+							type="button"
+							onclick={() => toggleGroup(rootPath)}
+							class="ml-4 block truncate text-left text-[10px] {group.hasWaitingForHuman
+								? 'text-amber-400'
+								: 'text-brand-text-muted'} hover:underline"
+							title="Expand group"
+						>
+							{ownerGroupSummaryText(group.summary)}
+						</button>
+					{/if}
 				</div>
 			{/each}
 		{:else if loading && filteredFolders.length === 0}
