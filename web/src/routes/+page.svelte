@@ -69,6 +69,7 @@
 		sessionFolders,
 		readOnlySessionFolders,
 		setSessionStarred,
+		setSessionClosed,
 		assistantStatusStore,
 		isAssistantSession,
 		shipmatesStore,
@@ -301,19 +302,22 @@
 	let wasSessionActive = $state(false);
 	let currentSessionId = $derived(sessionInfo.sessionId);
 
-	// Is the open session starred? Read from the session LISTS (the star lives on
-	// the listing, server-side), checking both the main and the read-only list.
-	let currentStarred = $derived.by(() => {
+	// Is the open session starred / closed? Read from the session LISTS (both
+	// flags live on the listing, server-side), checking the main and the
+	// read-only list.
+	let currentListed = $derived.by(() => {
 		const file = sessionInfo.sessionFile;
-		if (!file) return false;
+		if (!file) return undefined;
 		for (const store of [$sessionFolders, $readOnlySessionFolders]) {
 			for (const folder of store.folders) {
 				const hit = folder.sessions.find((s) => s.path === file);
-				if (hit) return !!hit.starred;
+				if (hit) return hit;
 			}
 		}
-		return false;
+		return undefined;
 	});
+	let currentStarred = $derived(!!currentListed?.starred);
+	let currentClosed = $derived(!!currentListed?.closed);
 
 	// Update hash when sessionId changes, only if connected to prevent clearing on reload
 	$effect(() => {
@@ -1041,6 +1045,29 @@
 					aria-pressed={currentStarred}
 				>
 					{currentStarred ? '★' : '☆'}
+				</button>
+			{/if}
+
+			<!-- Close the open session ("done with this": hidden from the list, not
+			     deleted), or reopen it. Not for a read-only session, which has no
+			     close control in its list either. -->
+			{#if sessionInfo.sessionFile && !readOnly}
+				<button
+					type="button"
+					onclick={() =>
+						setSessionClosed(sessionInfo.sessionFile!, !currentClosed).catch(
+							() => {},
+						)}
+					class="flex flex-shrink-0 items-center justify-center rounded border px-2 py-1 text-sm transition-colors {currentClosed
+						? 'border-brand-blue/50 bg-brand-blue/10 text-brand-blue hover:bg-brand-blue/20'
+						: 'border-brand-border bg-brand-surface-2 text-brand-text-muted hover:bg-brand-surface-3 hover:text-brand-text'}"
+					title={currentClosed
+						? 'Closed. Click to reopen.'
+						: 'Close this session: done with it (hidden from the list, not deleted)'}
+					aria-label={currentClosed ? 'Reopen session' : 'Close session'}
+					aria-pressed={currentClosed}
+				>
+					{currentClosed ? '↺' : '⊘'}
 				</button>
 			{/if}
 

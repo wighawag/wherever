@@ -12,6 +12,7 @@
 		autocompletePath,
 		setCurrentSession,
 		setSessionStarred,
+		setSessionClosed,
 		shipmatesStore,
 		type ModelInfo,
 		type FolderWithSessions,
@@ -22,11 +23,18 @@
 		presenceLine,
 	} from '$lib/core/shipmates';
 	import {undoShipmatesDelete} from '$lib/wherever';
-	// The sidebar filter rule and the Live strip's rows (unit-tested in core).
-	import {liveSessions, sessionMatchesFilter} from '$lib/core/live-sessions';
+	// The Live strip's rows (unit-tested in core). Closed-agnostic on purpose.
+	import {liveSessions} from '$lib/core/live-sessions';
 	import LiveStrip from './LiveStrip.svelte';
-	// Fork-hierarchy flattening + recency ordering (unit-tested in core).
-	import {buildForkTree} from '$lib/core/fork-tree.js';
+	// The folder list: text filter, fork tree, closed sessions hidden unless
+	// "Show closed" (unit-tested in core).
+	import {
+		SHOW_CLOSED_KEY,
+		folderListView,
+		shownSessions,
+		type FolderListEntry,
+	} from '$lib/core/closed-sessions';
+	import type {SessionInfo} from '$lib/session-store';
 	// shipmates presence (role, state, status line) by session file, the listing's `path`.
 	let presence = $derived(presenceByFile($shipmatesStore.presence));
 
@@ -79,7 +87,29 @@
 	let confirmingDelete = $state<string | null>(null);
 	let confirmingDeleteFolder = $state<string | null>(null);
 	let searchQuery = $state('');
-	let filteredFolders = $state<FolderWithSessions[]>([]);
+	let filteredFolders = $state<
+		FolderListEntry<FolderWithSessions, SessionInfo>[]
+	>([]);
+	// "Show closed" (main list only, remembered on this device). The read-only
+	// page has no close control, so it lists closed sessions (dimmed) always.
+	function readShowClosed(): boolean {
+		try {
+			return localStorage.getItem(SHOW_CLOSED_KEY) === '1';
+		} catch {
+			return false;
+		}
+	}
+	let showClosedSetting = $state(readShowClosed());
+	let showClosed = $derived(readOnly || showClosedSetting);
+	function toggleShowClosed() {
+		showClosedSetting = !showClosedSetting;
+		try {
+			if (showClosedSetting) localStorage.setItem(SHOW_CLOSED_KEY, '1');
+			else localStorage.removeItem(SHOW_CLOSED_KEY);
+		} catch {
+			// No storage (private mode): the setting just is not remembered.
+		}
+	}
 	// shipmates ownership (`session_spawn`): every listed session by path, and the
 	// sessions each owner spawned (they may be in other folders, e.g. a worktree).
 	let allListed = $derived(folders.flatMap((f) => f.sessions));
@@ -123,26 +153,18 @@
 
 	$effect(() => {
 		const q = searchQuery;
-		const foldersArr = folders;
-		if (!q) {
-			filteredFolders = foldersArr;
-			searchExpanded = {};
-		} else {
-			filteredFolders = foldersArr
-				.map((folder) => ({
-					...folder,
-					sessions: folder.sessions.filter(
-						(s: (typeof folder)['sessions'][number]) =>
-							sessionMatchesFilter(s, folder.name, q),
-					),
-				}))
-				.filter((folder) => folder.sessions.length > 0);
-		}
+		filteredFolders = folderListView(folders, q, showClosed);
+		if (!q) searchExpanded = {};
 	});
 
 	function toggleStar(sessionPath: string, starred: boolean) {
 		// Optimistic in the store; a refusal is rolled back there and logged.
 		setSessionStarred(sessionPath, starred).catch(() => {});
+	}
+
+	function toggleClosed(sessionPath: string, closed: boolean) {
+		// Optimistic in the store; a refusal is rolled back there and logged.
+		setSessionClosed(sessionPath, closed).catch(() => {});
 	}
 
 	function isFolderExpanded(folderPath: string): boolean {
@@ -182,16 +204,20 @@
 		}
 	}
 
-	async function handleDeleteAllFolderSessions(folder: FolderWithSessions) {
+	// Deletes the sessions the folder SHOWS (its rows), never closed sessions
+	// hidden by "Show closed" being off.
+	async function handleDeleteAllFolderSessions(
+		folder: FolderListEntry<FolderWithSessions, SessionInfo>,
+	) {
 		try {
-			const sessionPaths = folder.sessions.map((s) => s.path);
+			const sessionPaths = folder.rows.map((r) => r.session.path);
 			if (currentSession && sessionPaths.includes(currentSession)) {
 				if (typeof window !== 'undefined') {
 					window.location.hash = '';
 				}
 				leaveSession();
 			}
-			await Promise.all(folder.sessions.map((s) => deleteSession(s.path)));
+			await Promise.all(sessionPaths.map((p) => deleteSession(p)));
 			if (confirmingDeleteFolder === folder.path) {
 				confirmingDeleteFolder = null;
 			}
@@ -509,6 +535,20 @@
 				<span class={loading ? 'animate-spin' : ''}>↻</span>
 			</button>
 		</div>
+		{#if !readOnly}
+			<label
+				class="mt-1.5 flex cursor-pointer items-center gap-1.5 px-1 text-[10px] text-brand-text-muted select-none hover:text-brand-text"
+				title="List closed sessions too (dimmed), so you can reopen them"
+			>
+				<input
+					type="checkbox"
+					checked={showClosedSetting}
+					onchange={toggleShowClosed}
+					class="h-3 w-3 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
+				/>
+				Show closed
+			</label>
+		{/if}
 		{#if onSearchAll && searchQuery.trim().length >= 2}
 			<!-- The box above only filters this list (names + first-message previews).
 			     This is the way over to full-text search across every message. -->
@@ -787,7 +827,7 @@
 							</div>
 						</div>
 						<span class="text-xs text-brand-text-muted"
-							>{folder.sessions.length}</span
+							>{folder.shownCount}</span
 						>
 					</button>
 
@@ -843,7 +883,7 @@
 								</div>
 							{/if}
 
-							{#each buildForkTree(folder.sessions) as { session, depth } (session.path)}
+							{#each folder.rows as { session, depth } (session.path)}
 								<div
 									style={depth > 0 ? `margin-left: ${depth * 0.85}rem` : ''}
 									class="group flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-brand-surface-3/30 {depth >
@@ -851,7 +891,12 @@
 										? 'border-l border-brand-border/60 pl-2'
 										: ''} {currentSession === session.path
 										? 'bg-brand-surface-3'
-										: ''}"
+										: ''} {session.closed ? 'opacity-50' : ''}"
+									title={session.closed
+										? showClosed
+											? 'Closed'
+											: 'Closed (shown because a fork of it is open)'
+										: undefined}
 								>
 									{#if depth > 0}
 										<span
@@ -894,6 +939,12 @@
 										{/if}
 										<div class="min-w-0 flex-1">
 											<div class="truncate text-xs text-brand-text">
+												{#if session.closed}
+													<span
+														class="mr-1 rounded border border-brand-border px-1 text-[9px] tracking-wide text-brand-text-muted uppercase"
+														>Closed</span
+													>
+												{/if}
 												{session.name ||
 													truncate(session.firstMessage) ||
 													'Empty session'}
@@ -951,6 +1002,28 @@
 										{session.starred ? '★' : '☆'}
 									</button>
 
+									<!-- Close / Reopen (main list only, like delete). Always shown on a
+									     closed row (its Reopen action), on hover otherwise. -->
+									{#if !readOnly}
+										<button
+											onclick={(e) => {
+												e.stopPropagation();
+												toggleClosed(session.path, !session.closed);
+											}}
+											class="flex-shrink-0 p-1 text-xs focus:outline-none {session.closed
+												? 'text-brand-text hover:text-brand-blue'
+												: 'text-brand-text-muted transition-opacity hover:text-brand-text md:opacity-0 md:group-hover:opacity-100'}"
+											title={session.closed
+												? 'Reopen: list it again'
+												: 'Close: done with it (hidden, not deleted)'}
+											aria-label={session.closed
+												? 'Reopen session'
+												: 'Close session'}
+										>
+											{session.closed ? '↺' : '⊘'}
+										</button>
+									{/if}
+
 									<!-- Delete button with confirm state (hidden in read-only mode) -->
 									{#if !readOnly}
 										<div class="flex-shrink-0">
@@ -994,7 +1067,11 @@
 										</div>
 									{/if}
 								</div>
-								{#if owned.get(session.path)?.length}
+								{@const ownedShown = shownSessions(
+									owned.get(session.path) ?? [],
+									showClosed,
+								)}
+								{#if ownedShown.length}
 									<!-- shipmates: the sessions this one spawned, wherever they live. -->
 									<div
 										class="mb-1 ml-6 flex flex-wrap gap-1"
@@ -1002,7 +1079,7 @@
 											? `margin-left: ${depth * 0.85 + 1.5}rem`
 											: ''}
 									>
-										{#each owned.get(session.path) ?? [] as child (child.path)}
+										{#each ownedShown as child (child.path)}
 											<a
 												href="#{encodeURIComponent(child.id)}"
 												onclick={(e) => {
@@ -1011,8 +1088,12 @@
 														handleSessionClick(child.path);
 													}
 												}}
-												class="max-w-[12rem] truncate rounded bg-brand-surface-3/60 px-1.5 py-0.5 text-[10px] text-brand-text no-underline hover:bg-brand-surface-3"
-												title="Spawned by this session: {child.path}"
+												class="max-w-[12rem] truncate rounded bg-brand-surface-3/60 px-1.5 py-0.5 text-[10px] text-brand-text no-underline hover:bg-brand-surface-3 {child.closed
+													? 'opacity-50'
+													: ''}"
+												title="{child.closed
+													? 'Closed. '
+													: ''}Spawned by this session: {child.path}"
 												>↳ {child.name ||
 													truncate(child.firstMessage) ||
 													'session'}</a
