@@ -18,6 +18,10 @@ The web side of closing ONE session (cascade and undo are a later task).
 - **Fork tree:** build the tree over the FULL folder (`buildForkTree` unchanged), then prune closed rows that have no visible descendant, and render the remaining closed rows as dimmed context. Filtering closed rows out first would turn their open children into roots.
 - **Live strip:** `liveSessions` computes over the full listing, closed included, so a closed session that is working still appears in the strip.
 
+## Requeue 2026-11-24
+
+Prior run finished the build and committed (3288380) but the post-commit fetch hit a transient SSH 'Permission denied (publickey)'. The work is complete on this branch: verify it against the acceptance criteria, fix only what is missing, and let the gate run.
+
 ## Acceptance criteria
 
 - [ ] Pure helpers (unit-tested): visibility given `closed` and the toggle; folder hiding; fork-tree pruning that keeps a closed ancestor of an open child as dimmed context and drops a closed leaf.
