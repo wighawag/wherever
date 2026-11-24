@@ -3,7 +3,7 @@
 // Closing hides a session from the sidebar and from search; the transcript on
 // disk is never touched (ADR 0025). It is a wherever flag, not shipmates'
 // archive marker, so it works without shipmates and a closed session can be
-// woken (any activity reopens it, a later task).
+// woken (any activity reopens it: session-auto-reopen.ts).
 //
 // Built like the starred-sessions store (session-stars.ts): server-side so a
 // close on the phone shows on the laptop, keyed by the NORMALIZED session file
@@ -18,8 +18,8 @@
 //   prunes entries whose transcript no longer exists, and if that is not enough
 //   it REFUSES the close (`ClosedCapError`). An entry for an existing transcript
 //   is never dropped to make room.
-// - **An in-memory set** for the per-event check of the auto-reopen task
-//   (`isSessionClosed`). It is loaded lazily from disk on first use and keyed by
+// - **An in-memory set** for the per-event check of the auto-reopen
+//   (`isSessionClosed`, and `closedAtOf` for its inbox rule). It is loaded lazily from disk on first use and keyed by
 //   the resolved file path, because the state dir is re-read from
 //   `WHEREVER_STATE_DIR` on every call (a plain module-level set would leak
 //   between tests that point it elsewhere). Every mutation refreshes it.
@@ -261,10 +261,14 @@ export function writeClosed(list: ClosedSession[]): void {
 // --- In-memory set ----------------------------------------------------------
 
 /** Keyed by the resolved file path, so a changed `WHEREVER_STATE_DIR` reloads. */
-let cache: { file: string; set: Set<string> } | null = null;
+let cache: { file: string; set: Set<string>; closedAt: Map<string, number> } | null = null;
 
 function remember(list: ClosedSession[]): void {
-  cache = { file: getClosedPath(), set: new Set(list.map((s) => s.sessionFile)) };
+  cache = {
+    file: getClosedPath(),
+    set: new Set(list.map((s) => s.sessionFile)),
+    closedAt: new Map(list.map((s) => [s.sessionFile, s.closedAt])),
+  };
 }
 
 /**
@@ -288,6 +292,17 @@ export function readClosedSet(): ReadonlySet<string> {
 /** True when `sessionFile` is closed. Cheap (the in-memory set); never throws. */
 export function isSessionClosed(sessionFile: string): boolean {
   return readClosedSet().has(normalizeSessionFile(sessionFile));
+}
+
+/**
+ * When `sessionFile` was closed (epoch ms), or undefined when it is not closed.
+ * Same in-memory source and failure mode as `isSessionClosed` (the inbox rule
+ * of the auto-reopen compares it with an item's `createdAt`).
+ */
+export function closedAtOf(sessionFile: string): number | undefined {
+  const file = normalizeSessionFile(sessionFile);
+  if (!readClosedSet().has(file)) return undefined;
+  return cache?.closedAt.get(file);
 }
 
 // --- Mutations --------------------------------------------------------------

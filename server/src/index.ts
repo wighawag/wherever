@@ -35,6 +35,7 @@ import {
   forgetClosed,
   ClosedCapError,
 } from './session-closed.js';
+import { createAutoReopen } from './session-auto-reopen.js';
 import { piSdkInfo } from './pi-sdk.js';
 import { searchConversations } from './conversation-search.js';
 import { matchRemoteRepoRule, resolveRemoteCandidates } from './remote-candidates.js';
@@ -1475,10 +1476,21 @@ async function main(): Promise<void> {
     onSpawned: () => broadcastSessionsUpdated(),
   });
   const unregisterShipmatesHost = shipmatesEnabled ? registerShipmatesHost(shipmatesHost) : () => {};
+  // A closed session reopens itself on new activity (session-auto-reopen.ts,
+  // ADR 0025): agent events through `subscribeEvents` (below, beside
+  // `onEvent`), inbox items on every shipmates change. Every reopen re-lists.
+  const autoReopen = createAutoReopen({ onReopened: () => broadcastSessionsUpdated() });
   const shipmates = new ShipmatesService({
     enabled: shipmatesEnabled,
-    // Wake an evicted child of ours when a message waits for it (D29's rule).
-    onShipmatesChange: () => shipmatesHost.wakeEvicted(),
+    onShipmatesChange: () => {
+      // Wake an evicted child of ours when a message waits for it (D29's rule).
+      try {
+        shipmatesHost.wakeEvicted();
+      } finally {
+        // A closed session with an open item newer than its close reopens.
+        autoReopen.onInbox(() => shipmates.snapshot().inbox);
+      }
+    },
     whereverStateDir: getWhereverStateDir(),
     // The same knob @shipmates/pi reads (its shared.ts), so one setting speeds up both.
     pollMs: Number(process.env.SHIPMATES_POLL_MS) || undefined,
@@ -1969,6 +1981,9 @@ async function main(): Promise<void> {
   }
 
   sessionPool.onEvent = broadcastAgentEvent;
+  // Not from `broadcastAgentEvent`: pi's subscribe callback calls it without a
+  // try/catch, while `subscribeEvents` isolates a failing listener.
+  sessionPool.subscribeEvents((file, event) => autoReopen.onEvent(file, event));
 
   // DELETE is used only by Web Push's `/push/subscription`, so it is advertised
   // only while those routes exist: with the assistant off (or Web Push disabled)
