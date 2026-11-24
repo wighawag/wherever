@@ -74,8 +74,8 @@ importers:
         specifier: 1.4.0
         version: 1.4.0(@aws-sdk/credential-provider-node@3.972.88)(@smithy/signature-v4@5.7.4)(supports-color@5.5.0)(ws@8.20.1)(zod@4.4.3)
       memonaut:
-        specifier: ^0.4.0
-        version: 0.4.0
+        specifier: ^0.5.0
+        version: 0.5.0
       semver:
         specifier: ^7.7.0
         version: 7.8.0
@@ -3020,8 +3020,8 @@ packages:
     resolution: {integrity: sha512-dq+qelQ9akHpcOl/gUVRTxVIOkAJ1wR3QAvb4RsVjS8oVoFjDGTc679wJYmUmknUF5HwMLOgb5O+a3KxfWapPQ==}
     engines: {node: '>= 0.6'}
 
-  memonaut@0.4.0:
-    resolution: {integrity: sha512-Pset9LxpqC9g2lcF3X3xFD4gJu29htOemMZR55foTAfkHR9WcDaY98/zvbTM/J/+RweKjXYnkM75UcJFXft5YA==}
+  memonaut@0.5.0:
+    resolution: {integrity: sha512-F38qVmxSS4//+b2TKIm1a2nQYGMTBF/sYCcVFbB1847G2G4XO9Yo15L5shq4kZgwuyRw74BXW1pcgbUMnO4Xhg==}
     engines: {node: '>=22.5.0'}
     hasBin: true
 
@@ -6878,7 +6878,7 @@ snapshots:
 
   media-typer@0.3.0: {}
 
-  memonaut@0.4.0: {}
+  memonaut@0.5.0: {}
 
   merge2@1.4.1: {}
 

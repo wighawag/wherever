@@ -2,6 +2,7 @@ import {writable, get} from 'svelte/store';
 import {defaultAppearance, type AppearanceInfo} from '$lib/theme';
 import {adoptTokenFromUrlOnce} from '$lib/core/token-adoption';
 import {searchRequestParams} from '$lib/core/search-request';
+import type {SearchSort} from '$lib/core/search-sort';
 import type {TelegramStatus} from '$lib/core/telegram-settings';
 import {
 	emptyShipmatesState,
@@ -609,7 +610,7 @@ let searchAbort: AbortController | null = null;
 export async function searchConversations(
 	query: string,
 	view: 'default' | 'readonly' = 'default',
-	opts: {includeClosed?: boolean; since?: string} = {},
+	opts: {includeClosed?: boolean; since?: string; sort?: SearchSort} = {},
 ): Promise<SearchResponse | null> {
 	searchAbort?.abort();
 	const controller = new AbortController();
@@ -622,6 +623,7 @@ export async function searchConversations(
 			view,
 			includeClosed: opts.includeClosed,
 			since: opts.since,
+			sort: opts.sort,
 			token,
 		});
 		const res = await fetch(`${baseUrl}/search?${params.toString()}`, {

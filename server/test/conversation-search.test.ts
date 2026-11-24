@@ -102,7 +102,7 @@ async function makeFixture(opts?: {
   /** Also write a session in a folder memonaut's config marks `private`. */
   memonautPrivate?: boolean;
   /** Extra sessions written before the index is built. */
-  extraSessions?: (dirs: { visibleCwd: string }) => FixtureSession[];
+  extraSessions?: (dirs: { visibleCwd: string; hiddenCwd: string }) => FixtureSession[];
 }): Promise<Fixture & { extraFiles: string[] }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-search-'));
   const sessionsRoot = path.join(root, 'sessions');
@@ -166,7 +166,7 @@ async function makeFixture(opts?: {
       })
     : undefined;
 
-  const extraFiles = (opts?.extraSessions?.({ visibleCwd }) ?? []).map((session) =>
+  const extraFiles = (opts?.extraSessions?.({ visibleCwd, hiddenCwd }) ?? []).map((session) =>
     writeSession(sessionsRoot, session),
   );
 
@@ -310,6 +310,73 @@ const recentSession = ({ visibleCwd }: { visibleCwd: string }): FixtureSession[]
     ],
   },
 ];
+
+/**
+ * The sort fixture, on a word (`pelican`) the default fixture never says:
+ *  - `dense`: an OLD session (2026-01-15) repeating it many times, so it wins
+ *    on relevance (memonaut's recency boost is at most 1.25x);
+ *  - `sparse`: a NEW session (2026-03-01) mentioning it once.
+ * At `limit=1`, relevance (and memonaut 0.4, which ignores `order`) returns
+ * `dense`; only an order applied BEFORE the limit returns `sparse`.
+ */
+const pelicanSessions = ({ visibleCwd }: { visibleCwd: string }): FixtureSession[] => [
+  {
+    uuid: '00000000-0000-4000-8000-0000000022aa',
+    cwd: visibleCwd,
+    started: '2026-01-15T10:00:00.000Z',
+    entries: [
+      {
+        id: '22aa0001',
+        text: Array.from({ length: 30 }, () => 'pelican').join(' '),
+        ts: '2026-01-15T10:00:00.000Z',
+      },
+    ],
+  },
+  {
+    uuid: '00000000-0000-4000-8000-0000000022bb',
+    cwd: visibleCwd,
+    started: '2026-03-01T10:00:00.000Z',
+    entries: [
+      {
+        id: '22bb0001',
+        text: 'a long rambling note about many unrelated things, the weather, lunch, trains, and finally one pelican',
+        ts: '2026-03-01T10:00:00.000Z',
+      },
+    ],
+  },
+];
+
+/**
+ * The over-fetch fixture, on a word (`heron`) the default fixture never says,
+ * one separate session (so one fork family) per match, newest first:
+ *  - 03-05 in `hiddenCwd` (sessions.ignore) and 03-04 in `visibleCwd` but
+ *    CLOSED: the two newest, both hidden by default;
+ *  - 03-03, 03-02, 03-01 visible;
+ *  - 02-20 in `hiddenCwd` again: hidden, but BELOW any cut of 2 or 3.
+ * Returned in that order, so the test can index into them by name.
+ */
+const heronSessions = ({
+  visibleCwd,
+  hiddenCwd,
+}: {
+  visibleCwd: string;
+  hiddenCwd: string;
+}): FixtureSession[] => {
+  const one = (n: string, cwd: string, day: string): FixtureSession => ({
+    uuid: `00000000-0000-4000-8000-0000000033${n}`,
+    cwd,
+    started: `${day}T10:00:00.000Z`,
+    entries: [{ id: `33${n}0001`, text: `a heron was seen ${n}`, ts: `${day}T10:00:00.000Z` }],
+  });
+  return [
+    one('aa', hiddenCwd, '2026-03-05'),
+    one('bb', visibleCwd, '2026-03-04'),
+    one('cc', visibleCwd, '2026-03-03'),
+    one('dd', visibleCwd, '2026-03-02'),
+    one('ee', visibleCwd, '2026-03-01'),
+    one('ff', hiddenCwd, '2026-02-20'),
+  ];
+};
 
 let harness: Harness | undefined;
 let cleanupDirs: string[] = [];
@@ -755,6 +822,157 @@ describe('conversation search', () => {
       expect(body.hiddenHits).toBeGreaterThan(0);
 
       const included = await searchParams(harness, { q: 'flamingo', since, includeClosed: '1' });
+      const recent = included.hits
+        .flatMap((hit) => hit.threads)
+        .find((t) => t.sessionPath === recentFile);
+      expect(recent).toMatchObject({ closed: true });
+      expect(hitPaths(included)).not.toContain(fixture.hiddenFile);
+      expect(hitPaths(included)).not.toContain(fixture.fleetFile);
+    }, 60_000);
+  });
+
+  describe('sort (Relevance / Newest)', () => {
+    it('sort=recent orders by matched-entry ts BEFORE the limit (fails on memonaut 0.4)', async () => {
+      const fixture = await makeFixture({ extraSessions: pelicanSessions });
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, {});
+      const [denseFile, sparseFile] = fixture.extraFiles;
+
+      harness = await startHarness({ env: fixture.env });
+
+      // Relevance at limit=1: the dense old match wins, so the recent one is cut.
+      const relevance = await searchParams(harness, { q: 'pelican', limit: '1' });
+      expect(relevance.status).toBe('ok');
+      expect(hitPaths(relevance)).toEqual([denseFile]);
+
+      // Newest at the SAME limit: the recent low-relevance match is the answer.
+      const recent = await searchParams(harness, { q: 'pelican', limit: '1', sort: 'recent' });
+      expect(recent.status).toBe('ok');
+      expect(hitPaths(recent)).toEqual([sparseFile]);
+
+      // With room for both, they come back by entry ts, newest first.
+      const both = await searchParams(harness, { q: 'pelican', limit: '5', sort: 'recent' });
+      expect(hitPaths(both)).toEqual([sparseFile, denseFile]);
+      const ts = both.hits.map((hit) => (hit as { ts?: string | null }).ts ?? '');
+      expect([...ts].sort().reverse()).toEqual(ts);
+    }, 60_000);
+
+    it('treats an absent or empty sort as relevance, with unchanged output', async () => {
+      const fixture = await makeFixture({ extraSessions: pelicanSessions });
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, {});
+
+      harness = await startHarness({ env: fixture.env });
+
+      const absent = await searchParams(harness, { q: 'pelican', limit: '1' });
+      const empty = await searchParams(harness, { q: 'pelican', limit: '1', sort: '' });
+      const relevance = await searchParams(harness, { q: 'pelican', limit: '1', sort: 'relevance' });
+      expect(absent.status).toBe('ok');
+      expect(hitPaths(absent)).toEqual([fixture.extraFiles[0]]);
+      // `score` carries memonaut's clock-based recency nudge, so it drifts in the
+      // last digits between two requests; everything else must be identical.
+      const stable = (body: SearchResponseShape) => ({
+        ...body,
+        hits: body.hits.map((hit) => ({ ...hit, score: undefined })),
+      });
+      expect(stable(empty)).toEqual(stable(absent));
+      expect(stable(relevance)).toEqual(stable(absent));
+    }, 60_000);
+
+    it('answers status:error on an unknown sort', async () => {
+      const fixture = await makeFixture();
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, {});
+
+      harness = await startHarness({ env: fixture.env });
+      const body = await searchParams(harness, { q: 'flamingo', sort: 'newest' });
+      expect(body.status).toBe('error');
+      expect(body.hits).toEqual([]);
+      expect(body.message).toContain('sort');
+    }, 60_000);
+
+    it('answers ok for an empty query even with an unknown sort', async () => {
+      const fixture = await makeFixture();
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, {});
+
+      harness = await startHarness({ env: fixture.env });
+      const body = await searchParams(harness, { q: '  ', sort: 'garbage' });
+      expect(body.status).toBe('ok');
+      expect(body.hits).toEqual([]);
+    }, 60_000);
+
+    it('answers error, not not-indexed, for an unknown sort with no index', async () => {
+      const fixture = await makeFixture({ skipIndex: true });
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, {});
+
+      harness = await startHarness({ env: fixture.env });
+      const body = await searchParams(harness, { q: 'flamingo', sort: 'garbage' });
+      expect(body.status).toBe('error');
+      expect(fs.existsSync(fixture.dbPath)).toBe(false);
+    }, 60_000);
+
+    it('over-fetches under sort=recent: fills the page past hidden and closed newest matches', async () => {
+      const fixture = await makeFixture({ extraSessions: heronSessions });
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, { ignore: [`${fixture.hiddenCwd}/**`] });
+      const [hidden1, closed, v3, v2, v1, hidden2] = fixture.extraFiles;
+      writeClosed(fixture, [closed]);
+
+      harness = await startHarness({ env: fixture.env });
+
+      // The two newest memonaut results are hidden / closed; a plain limit=2
+      // would return nothing visible. The page still fills from the over-fetch.
+      const body = await searchParams(harness, { q: 'heron', limit: '2', sort: 'recent' });
+      expect(body.status).toBe('ok');
+      expect(hitPaths(body)).toEqual([v3, v2]);
+      // Only the hidden results ABOVE the cut are counted: not the 02-20 one.
+      expect(body.hiddenHits).toBe(2);
+      expect(hitPaths(body)).not.toContain(hidden1);
+      expect(hitPaths(body)).not.toContain(closed);
+      expect(hitPaths(body)).not.toContain(hidden2);
+      expect(hitPaths(body)).not.toContain(v1);
+
+      // includeClosed=1: the closed thread is kept, flagged, in its ts slot.
+      const included = await searchParams(harness, {
+        q: 'heron',
+        limit: '2',
+        sort: 'recent',
+        includeClosed: '1',
+      });
+      expect(hitPaths(included)).toEqual([closed, v3]);
+      expect(included.hits[0].threads[0].closed).toBe(true);
+      expect(included.hits[1].threads[0].closed).toBe(false);
+      expect(included.hiddenHits).toBe(1);
+      expect(hitPaths(included)).not.toContain(hidden1);
+    }, 60_000);
+
+    it('still drops hidden, read-only and closed threads under sort=recent', async () => {
+      const fixture = await makeFixture({ extraSessions: recentSession });
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, {
+        ignore: [`${fixture.hiddenCwd}/**`],
+        readOnly: [`${fixture.fleetCwd}/**`],
+      });
+      const [recentFile] = fixture.extraFiles;
+      writeClosed(fixture, [recentFile]);
+
+      harness = await startHarness({ env: fixture.env });
+
+      const body = await searchParams(harness, { q: 'flamingo', sort: 'recent' });
+      expect(body.status).toBe('ok');
+      expect(hitPaths(body)).toContain(fixture.parentFile);
+      expect(hitPaths(body)).not.toContain(fixture.hiddenFile);
+      expect(hitPaths(body)).not.toContain(fixture.fleetFile);
+      expect(hitPaths(body)).not.toContain(recentFile);
+      expect(JSON.stringify(body.hits)).not.toContain('nobody should see');
+
+      const included = await searchParams(harness, {
+        q: 'flamingo',
+        sort: 'recent',
+        includeClosed: '1',
+      });
       const recent = included.hits
         .flatMap((hit) => hit.threads)
         .find((t) => t.sessionPath === recentFile);

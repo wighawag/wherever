@@ -18,7 +18,9 @@
 	 *    both views); included ones render dimmed. The date range (Any time by
 	 *    default, also remembered and shared) bounds when the MATCHED MESSAGE
 	 *    was said; its window is computed per request, so it moves with the
-	 *    clock.
+	 *    clock. The sort (Relevance by default, or Newest: by when the matched
+	 *    message was said, newest first, ordered server-side BEFORE the result
+	 *    limit) is remembered and shared the same way.
 	 */
 	import {untrack} from 'svelte';
 	import {
@@ -51,6 +53,12 @@
 		rangeToSince,
 		type SearchRange,
 	} from '$lib/core/search-range.js';
+	import {
+		SEARCH_SORTS,
+		readSearchSort,
+		writeSearchSort,
+		type SearchSort,
+	} from '$lib/core/search-sort.js';
 
 	function settingStorage(): Storage | undefined {
 		try {
@@ -83,6 +91,7 @@
 	let expandedThreads = $state<Record<string, boolean>>({});
 	let includeClosed = $state(readIncludeClosed(settingStorage()));
 	let range = $state<SearchRange>(readSearchRange(settingStorage()));
+	let sort = $state<SearchSort>(readSearchSort(settingStorage()));
 
 	let currentSession = $derived($activeSessionInfo.sessionFile);
 	let loadingSession = $derived($isLoadingSession);
@@ -125,7 +134,7 @@
 			text.trim(),
 			readOnly ? 'readonly' : 'default',
 			// The window is computed NOW, at request time, never cached.
-			{includeClosed, since: rangeToSince(range, Date.now())},
+			{includeClosed, since: rangeToSince(range, Date.now()), sort},
 		);
 		// null = superseded by a newer query; keep what is on screen.
 		if (response === null) return;
@@ -156,7 +165,14 @@
 		rerunNow();
 	}
 
-	// A setting changed (Include closed, date range): re-run the current query at
+	function changeSort(next: SearchSort) {
+		if (next === sort) return;
+		sort = next;
+		writeSearchSort(settingStorage(), sort);
+		rerunNow();
+	}
+
+	// A setting changed (Include closed, date range, sort): re-run the current query at
 	// once, like a submit. A pending debounce is cleared so it cannot fire
 	// afterwards, and the request goes through the store's abort/supersede path
 	// like any other, so an in-flight request with the old setting is aborted.
@@ -276,6 +292,27 @@
 					{/each}
 				</select>
 			</label>
+			<div
+				role="group"
+				aria-label="Sort results"
+				class="flex overflow-hidden rounded border border-brand-border text-[10px]"
+			>
+				{#each SEARCH_SORTS as option (option.value)}
+					<button
+						type="button"
+						aria-pressed={sort === option.value}
+						onclick={() => changeSort(option.value)}
+						title={option.value === 'recent'
+							? 'Newest matches first, by when the message was said'
+							: 'Best matches first'}
+						class="px-1.5 py-0.5 transition-colors {sort === option.value
+							? 'bg-brand-blue/30 text-brand-text'
+							: 'bg-brand-surface-2 text-brand-text-muted hover:text-brand-text'}"
+					>
+						{option.label}
+					</button>
+				{/each}
+			</div>
 		</div>
 	</div>
 
