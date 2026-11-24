@@ -47,3 +47,14 @@ Prior run finished the build and committed (3288380) but the post-commit fetch h
 > FIRST, check this task against current reality (launch snapshot, may have DRIFTED). If the strip or the store landed differently, adapt to what landed or route to needs-attention if a premise broke.
 >
 > RECORD non-obvious in-scope decisions in `work/notes/observations/closed-sessions-in-the-sidebar-decisions.md` and end your final report with a `## Decisions` block linking it. Targeted `CONTEXT.md` edits only. Never write em dashes.
+
+## Decisions
+
+All recorded in `work/notes/observations/closed-sessions-in-the-sidebar-decisions.md`:
+1. **Order:** the text filter runs first, then the fork tree is built, then closed rows are pruned. So with a query typed, a closed session that matches can still show as dimmed context above an open fork that matches.
+2. **Folder count:** counts only shown sessions, not dimmed context rows.
+3. **Read-only page:** always lists closed sessions dimmed and has no close control.
+4. **Top bar:** no close toggle for a read-only session.
+5. **"Delete All" changed:** it now deletes only the sessions the folder shows, never closed ones hidden by the toggle. Before, with no filter typed, it deleted every session in the folder.
+6. **Look:** ⊘ for Close and ↺ for Reopen, and the toggle is a checkbox.
+7. **Storage value:** the "Show closed" setting is stored as `'1'` when on and removed when off, the same way the Live strip's collapsed state is.

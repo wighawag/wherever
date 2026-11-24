@@ -1,5 +1,5 @@
 import {describe, it, expect} from 'vitest';
-import {buildForkTree} from './fork-tree.js';
+import {buildForkTree, pruneForkTree} from './fork-tree.js';
 
 // Regression: the sidebar ordered fork groups by the ROOT session's own
 // `modified`, so a session forked days ago and worked on all morning sat far
@@ -89,5 +89,66 @@ describe('buildForkTree', () => {
 			'/y.jsonl',
 			'/z.jsonl',
 		]);
+	});
+});
+
+describe('pruneForkTree', () => {
+	// Closed sessions: build over the FULL folder, then drop hidden rows that
+	// have no shown descendant. Filtering first would make open children roots.
+	const closed = new Set<string>();
+	const shown = (x: S) => !closed.has(x.path);
+
+	it('keeps a closed parent of an open child as context, at its depth', () => {
+		closed.clear();
+		closed.add('/a.jsonl');
+		const rows = pruneForkTree(
+			buildForkTree([
+				s('/a.jsonl', '2026-01-01T00:00:00Z'),
+				s('/b.jsonl', '2026-01-02T00:00:00Z', '/a.jsonl'),
+			]),
+			shown,
+		);
+		expect(flat(rows)).toEqual(['/a.jsonl', '  /b.jsonl']);
+	});
+
+	it('keeps a closed grandparent when only the grandchild is shown', () => {
+		closed.clear();
+		closed.add('/a.jsonl');
+		closed.add('/b.jsonl');
+		const rows = pruneForkTree(
+			buildForkTree([
+				s('/a.jsonl', '2026-01-01T00:00:00Z'),
+				s('/b.jsonl', '2026-01-02T00:00:00Z', '/a.jsonl'),
+				s('/c.jsonl', '2026-01-03T00:00:00Z', '/b.jsonl'),
+			]),
+			shown,
+		);
+		expect(flat(rows)).toEqual(['/a.jsonl', '  /b.jsonl', '    /c.jsonl']);
+	});
+
+	it('drops a closed leaf and a fully closed subtree', () => {
+		closed.clear();
+		closed.add('/b.jsonl');
+		closed.add('/x.jsonl');
+		closed.add('/y.jsonl');
+		const rows = pruneForkTree(
+			buildForkTree([
+				s('/a.jsonl', '2026-01-01T00:00:00Z'),
+				s('/b.jsonl', '2026-01-02T00:00:00Z', '/a.jsonl'),
+				s('/x.jsonl', '2026-01-03T00:00:00Z'),
+				s('/y.jsonl', '2026-01-04T00:00:00Z', '/x.jsonl'),
+			]),
+			shown,
+		);
+		expect(flat(rows)).toEqual(['/a.jsonl']);
+	});
+
+	it('keeps every row when all are shown', () => {
+		closed.clear();
+		const tree = buildForkTree([
+			s('/a.jsonl', '2026-01-01T00:00:00Z'),
+			s('/b.jsonl', '2026-01-02T00:00:00Z', '/a.jsonl'),
+		]);
+		expect(pruneForkTree(tree, shown)).toEqual(tree);
 	});
 });

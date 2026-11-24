@@ -346,3 +346,29 @@ describe('LIVE_STRIP_CAP', () => {
 		expect(LIVE_STRIP_CAP).toBe(6);
 	});
 });
+
+describe('liveSessions and closed sessions', () => {
+	// The strip is closed-agnostic: a working session shows even while closed.
+	const closedWorking = {
+		...session({path: '/s/c.jsonl', name: 'deploy', isWorking: true}),
+		closed: true,
+	};
+
+	it('includes a closed session that is working', () => {
+		const rows = liveSessions(
+			[{name: 'proj', sessions: [closedWorking]}],
+			new Map(),
+			'',
+		);
+		expect(rows.map((r) => r.session.path)).toEqual(['/s/c.jsonl']);
+	});
+
+	it('includes it with a query typed that matches it', () => {
+		const rows = liveSessions(
+			[{name: 'proj', sessions: [closedWorking]}],
+			new Map(),
+			'depl',
+		);
+		expect(rows.map((r) => r.session.path)).toEqual(['/s/c.jsonl']);
+	});
+});

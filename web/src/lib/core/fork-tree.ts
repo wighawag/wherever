@@ -92,3 +92,31 @@ export function buildForkTree<T extends ForkTreeNodeInput>(
 		if (!visited.has(s.path)) out.push({session: s, depth: 0});
 	return out;
 }
+
+/**
+ * Drop the rows of a built tree that are not shown and have no shown
+ * descendant (closed sessions while "Show closed" is off). A hidden row with a
+ * shown descendant stays, at its depth, as context, so an open fork of a closed
+ * session keeps its place in the tree. Prune AFTER `buildForkTree` over the full
+ * folder: filtering hidden sessions out first would turn their children into
+ * roots. Relies on the depth-first order: a row's descendants are the rows
+ * that follow it with a greater depth.
+ */
+export function pruneForkTree<T extends ForkTreeNodeInput>(
+	rows: readonly ForkTreeRow<T>[],
+	shown: (session: T) => boolean,
+): ForkTreeRow<T>[] {
+	const keep = new Array<boolean>(rows.length).fill(false);
+	// Walk backwards, carrying for each depth whether a shown row sits in the
+	// subtree currently being closed at that depth.
+	const shownBelow: boolean[] = [];
+	for (let i = rows.length - 1; i >= 0; i--) {
+		const d = rows[i].depth;
+		const below = shownBelow.slice(d + 1).some(Boolean);
+		shownBelow.length = d + 1;
+		const k = shown(rows[i].session) || below;
+		keep[i] = k;
+		shownBelow[d] = (shownBelow[d] ?? false) || k;
+	}
+	return rows.filter((_, i) => keep[i]);
+}
