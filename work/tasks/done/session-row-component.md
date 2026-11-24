@@ -39,3 +39,14 @@ The component receives what it needs as props, including:
 > FIRST, check this task against current reality (launch snapshot, may have DRIFTED): the row may have gained or lost elements since this was written; extract what is there. If the row is already a component, close the task as done-by-drift with a note.
 >
 > RECORD non-obvious in-scope decisions (prop names, what stayed in the parent) in `work/notes/observations/session-row-component-decisions.md` and end your final report with a `## Decisions` block linking it. Never write em dashes.
+
+## Decisions
+
+Recorded in `work/notes/observations/session-row-component-decisions.md`:
+- **Delete confirmation stays in the parent:** `SessionBrowser` still holds which row is confirming, so only one row can be in that state at a time, as today.
+- **Close cascade stays in the parent and store:** the row only calls `onToggleClosed`.
+- **The parent filters the chips:** it passes in the owned sessions to show, and the row does no closed-session filtering of its own.
+- **The parent words the row's closed tooltip** (`rowTitle`), because the text depends on whether "Show closed" is on.
+- **The "spawned by" line appears only when `ownerHint` is non-empty**, so the By-owner task can pass "(not listed)".
+- **New tooltip text for the `spawned` marker:** "Spawned by the session above". The folder view never uses it, so the By-owner task can reword it.
+- **The other prop names** (`onOpen`, `onStar`, `onToggleClosed`, `onAskDelete`, `onCancelDelete`, `onDelete`, `nestKind`, `showOwned`) are listed in the note.

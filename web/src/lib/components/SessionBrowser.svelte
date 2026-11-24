@@ -21,16 +21,13 @@
 		type ModelInfo,
 		type FolderWithSessions,
 	} from '$lib/session-store';
-	import {
-		ownedChildren,
-		presenceByFile,
-		presenceLine,
-	} from '$lib/core/shipmates';
+	import {ownedChildren, presenceByFile} from '$lib/core/shipmates';
 	import {undoShipmatesDelete} from '$lib/wherever';
 	import {closeBannerText} from '$lib/core/close-flow';
 	// The Live strip's rows (unit-tested in core). Closed-agnostic on purpose.
 	import {liveSessions} from '$lib/core/live-sessions';
 	import LiveStrip from './LiveStrip.svelte';
+	import SessionRow from './SessionRow.svelte';
 	// The folder list: text filter, fork tree, closed sessions hidden unless
 	// "Show closed" (unit-tested in core).
 	import {
@@ -481,17 +478,6 @@
 		}
 	}
 
-	function formatRelative(timeStr: string): string {
-		const diff = Date.now() - new Date(timeStr).getTime();
-		const mins = Math.floor(diff / 60000);
-		if (mins < 1) return 'just now';
-		if (mins < 60) return `${mins}m ago`;
-		const hours = Math.floor(mins / 60);
-		if (hours < 24) return `${hours}h ago`;
-		const days = Math.floor(hours / 24);
-		return `${days}d ago`;
-	}
-
 	function truncate(text: string, max: number = 40): string {
 		return text.length > max ? text.slice(0, max) + '...' : text;
 	}
@@ -922,223 +908,33 @@
 							{/if}
 
 							{#each folder.rows as { session, depth } (session.path)}
-								<div
-									style={depth > 0 ? `margin-left: ${depth * 0.85}rem` : ''}
-									class="group flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-brand-surface-3/30 {depth >
-									0
-										? 'border-l border-brand-border/60 pl-2'
-										: ''} {currentSession === session.path
-										? 'bg-brand-surface-3'
-										: ''} {session.closed ? 'opacity-50' : ''}"
-									title={session.closed
+								<SessionRow
+									{session}
+									{depth}
+									current={currentSession === session.path}
+									{readOnly}
+									closed={!!session.closed}
+									rowTitle={session.closed
 										? showClosed
 											? 'Closed'
 											: 'Closed (shown because a fork of it is open)'
 										: undefined}
-								>
-									{#if depth > 0}
-										<span
-											class="flex-shrink-0 text-brand-text-muted"
-											title="Forked from the session above"
-											aria-label="Forked session">↳</span
-										>
-									{/if}
-									<a
-										href="#{encodeURIComponent(session.id)}"
-										onclick={(e) => {
-											if (
-												e.button === 0 &&
-												!e.ctrlKey &&
-												!e.metaKey &&
-												!e.altKey &&
-												!e.shiftKey
-											) {
-												e.preventDefault();
-												handleSessionClick(session.path);
-											}
-										}}
-										class="flex min-w-0 flex-1 items-center gap-2 text-left no-underline"
-									>
-										{#if session.isWorking}
-											<span
-												class="h-2 w-2 flex-shrink-0 animate-pulse rounded-full bg-amber-400"
-												role="img"
-												title="Agent is working"
-												aria-label="Agent is working"
-											></span>
-										{:else if session.isActive}
-											<span
-												class="h-2 w-2 flex-shrink-0 rounded-full bg-emerald-500"
-											></span>
-										{:else}
-											<span
-												class="h-2 w-2 flex-shrink-0 rounded-full bg-brand-surface-3"
-											></span>
-										{/if}
-										<div class="min-w-0 flex-1">
-											<div class="truncate text-xs text-brand-text">
-												{#if session.closed}
-													<span
-														class="mr-1 rounded border border-brand-border px-1 text-[9px] tracking-wide text-brand-text-muted uppercase"
-														>Closed</span
-													>
-												{/if}
-												{session.name ||
-													truncate(session.firstMessage) ||
-													'Empty session'}
-											</div>
-											<div class="text-xs text-brand-text-muted">
-												{formatRelative(session.modified)} · {session.messageCount}
-												msgs
-											</div>
-											{#if session.ownerSessionPath}
-												<div
-													class="truncate text-[10px] text-brand-text-muted"
-													title="Spawned by {session.ownerSessionPath}"
-												>
-													↳ spawned by {sessionLabel(session.ownerSessionPath)}
-												</div>
-											{/if}
-											{#if presenceLine(presence.get(session.path))}
-												{@const p = presence.get(session.path)}
-												<div
-													class="truncate text-[10px] {p?.state ===
-													'waiting-for-human'
-														? 'text-amber-400'
-														: 'text-brand-blue'}"
-													title={presenceLine(p)}
-												>
-													{presenceLine(p)}
-												</div>
-											{/if}
-										</div>
-										{#if session.clientCount > 0}
-											<span
-												class="rounded bg-brand-surface-3 px-1.5 py-0.5 text-xs text-brand-text"
-												>{session.clientCount}</span
-											>
-										{/if}
-									</a>
-
-									<!-- Star toggle: always visible once starred, on hover otherwise
-									     (always on touch screens, which have no hover). -->
-									<button
-										onclick={(e) => {
-											e.stopPropagation();
-											toggleStar(session.path, !session.starred);
-										}}
-										class="flex-shrink-0 p-1 text-sm focus:outline-none {session.starred
-											? 'text-amber-400 hover:text-brand-text-muted'
-											: 'text-brand-text-muted transition-opacity hover:text-amber-400 md:opacity-0 md:group-hover:opacity-100'}"
-										title={session.starred
-											? 'Unstar'
-											: 'Star to come back to it later'}
-										aria-label={session.starred
-											? 'Unstar session'
-											: 'Star session'}
-									>
-										{session.starred ? '★' : '☆'}
-									</button>
-
-									<!-- Close / Reopen (main list only, like delete). Always shown on a
-									     closed row (its Reopen action), on hover otherwise. -->
-									{#if !readOnly}
-										<button
-											onclick={(e) => {
-												e.stopPropagation();
-												toggleClosed(session.path, !session.closed);
-											}}
-											class="flex-shrink-0 p-1 text-xs focus:outline-none {session.closed
-												? 'text-brand-text hover:text-brand-blue'
-												: 'text-brand-text-muted transition-opacity hover:text-brand-text md:opacity-0 md:group-hover:opacity-100'}"
-											title={session.closed
-												? 'Reopen: list it again'
-												: 'Close: done with it (hidden, not deleted)'}
-											aria-label={session.closed
-												? 'Reopen session'
-												: 'Close session'}
-										>
-											{session.closed ? '↺' : '⊘'}
-										</button>
-									{/if}
-
-									<!-- Delete button with confirm state (hidden in read-only mode) -->
-									{#if !readOnly}
-										<div class="flex-shrink-0">
-											{#if confirmingDelete === session.path}
-												<div
-													class="flex items-center gap-1 rounded border border-red-500/30 bg-brand-surface-2/80 px-1 py-0.5"
-												>
-													<button
-														onclick={(e) => {
-															e.stopPropagation();
-															handleDeleteSession(session.path);
-														}}
-														class="px-1.5 text-xs font-bold text-rose-400 hover:text-rose-300 focus:outline-none"
-														title="Confirm Delete"
-													>
-														❓
-													</button>
-													<button
-														onclick={(e) => {
-															e.stopPropagation();
-															confirmingDelete = null;
-														}}
-														class="px-1.5 text-[10px] text-brand-text-muted hover:text-brand-text focus:outline-none"
-														title="Cancel"
-													>
-														✕
-													</button>
-												</div>
-											{:else}
-												<button
-													onclick={(e) => {
-														e.stopPropagation();
-														confirmingDelete = session.path;
-													}}
-													class="p-1 text-xs text-brand-text-muted transition-opacity hover:text-rose-400 focus:outline-none md:opacity-0 md:group-hover:opacity-100"
-													title="Delete session"
-												>
-													✕
-												</button>
-											{/if}
-										</div>
-									{/if}
-								</div>
-								{@const ownedShown = shownSessions(
-									owned.get(session.path) ?? [],
-									showClosed,
-								)}
-								{#if ownedShown.length}
-									<!-- shipmates: the sessions this one spawned, wherever they live. -->
-									<div
-										class="mb-1 ml-6 flex flex-wrap gap-1"
-										style={depth > 0
-											? `margin-left: ${depth * 0.85 + 1.5}rem`
-											: ''}
-									>
-										{#each ownedShown as child (child.path)}
-											<a
-												href="#{encodeURIComponent(child.id)}"
-												onclick={(e) => {
-													if (e.button === 0 && !e.ctrlKey && !e.metaKey) {
-														e.preventDefault();
-														handleSessionClick(child.path);
-													}
-												}}
-												class="max-w-[12rem] truncate rounded bg-brand-surface-3/60 px-1.5 py-0.5 text-[10px] text-brand-text no-underline hover:bg-brand-surface-3 {child.closed
-													? 'opacity-50'
-													: ''}"
-												title="{child.closed
-													? 'Closed. '
-													: ''}Spawned by this session: {child.path}"
-												>↳ {child.name ||
-													truncate(child.firstMessage) ||
-													'session'}</a
-											>
-										{/each}
-									</div>
-								{/if}
+									presence={presence.get(session.path)}
+									ownerHint={session.ownerSessionPath
+										? sessionLabel(session.ownerSessionPath)
+										: undefined}
+									ownedChildren={shownSessions(
+										owned.get(session.path) ?? [],
+										showClosed,
+									)}
+									confirmingDelete={confirmingDelete === session.path}
+									onOpen={handleSessionClick}
+									onStar={toggleStar}
+									onToggleClosed={toggleClosed}
+									onAskDelete={(path) => (confirmingDelete = path)}
+									onCancelDelete={() => (confirmingDelete = null)}
+									onDelete={handleDeleteSession}
+								/>
 							{/each}
 						</div>
 					{/if}
