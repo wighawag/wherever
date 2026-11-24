@@ -6,6 +6,7 @@ import {
 	sessionListLabel,
 	sessionLiveState,
 	sessionMatchesFilter,
+	waitingOnText,
 	type LiveSessionLike,
 } from './live-sessions';
 import {presenceByFile, type ShipmatesPresence} from './shipmates';
@@ -17,6 +18,7 @@ const presence = (p: Partial<ShipmatesPresence> = {}): ShipmatesPresence => ({
 	state: 'idle',
 	status: null,
 	waitingOn: null,
+	waitingOnSession: null,
 	...p,
 });
 
@@ -214,6 +216,85 @@ describe('liveSessions', () => {
 			'hi there',
 			'Empty session',
 		]);
+	});
+
+	it('names the session a waiting-for-session row waits on, like the sidebar names it', () => {
+		const waiting = (path: string, on: string | null) =>
+			presence({
+				sessionFile: path,
+				state: 'waiting-for-session',
+				waitingOn: 'q_1',
+				waitingOnSession: on,
+			});
+		const rows = liveSessions(
+			[
+				folder('a', [
+					session({path: '/w1', modified: '2026-01-05'}),
+					session({path: '/w2', modified: '2026-01-04'}),
+					session({path: '/w3', modified: '2026-01-03'}),
+					session({path: '/w4', modified: '2026-01-02'}),
+					session({path: '/w5', modified: '2026-01-01'}),
+					session({path: '/run', isWorking: true}),
+				]),
+				folder('b', [
+					session({path: '/role'}),
+					session({path: '/named', name: 'the parser'}),
+					session({path: '/empty'}),
+				]),
+			],
+			presenceByFile([
+				waiting('/w1', '/named'),
+				waiting('/w2', '/role'),
+				waiting('/w3', null),
+				waiting('/w4', '/not-listed'),
+				waiting('/w5', '/empty'),
+				presence({sessionFile: '/role', roles: ['tree/push'], state: 'idle'}),
+			]),
+			'',
+		);
+		expect(rows.map((r) => [r.session.path, r.stateText])).toEqual([
+			['/w1', 'waiting on the parser'],
+			['/w2', 'waiting on tree/push'],
+			['/w3', 'waiting on a session'],
+			['/w4', 'waiting on a session'],
+			['/w5', 'waiting on a session'],
+			['/run', 'running'],
+		]);
+	});
+
+	it('names a waited-on session filtered out by the filter box (it is listed, not hidden)', () => {
+		const rows = liveSessions(
+			[
+				folder('a', [session({path: '/w', name: 'waiter'})]),
+				folder('b', [session({path: '/t', name: 'target'})]),
+			],
+			presenceByFile([
+				presence({
+					sessionFile: '/w',
+					state: 'waiting-for-session',
+					waitingOnSession: '/t',
+				}),
+			]),
+			'waiter',
+		);
+		expect(rows.map((r) => r.stateText)).toEqual(['waiting on target']);
+	});
+
+	it('never names a waited-on session that is no longer listed, even if it was seen before', () => {
+		// A remembered label (the sidebar's seenLabels) of a now-hidden session must not leak.
+		const listed = new Map([['/t', session({path: '/t', name: 'target'})]]);
+		const presence_ = presenceByFile([
+			presence({
+				sessionFile: '/hidden',
+				roles: ['secret/role'],
+				state: 'running',
+			}),
+		]);
+		expect(waitingOnText('/t', listed, presence_)).toBe('waiting on target');
+		expect(waitingOnText('/hidden', listed, presence_)).toBe(
+			'waiting on a session',
+		);
+		expect(waitingOnText(null, listed, presence_)).toBe('waiting on a session');
 	});
 
 	it('applies the sidebar filter with the same rule as the list', () => {

@@ -9,6 +9,8 @@ import {
   shipmatesNotification,
   shipmatesStateDir,
   sessionIdOf,
+  presenceView,
+  waitingOnSessionOf,
   type ShipmatesNotification,
   type ShipmatesSnapshot,
 } from '../src/shipmates-service.ts';
@@ -101,7 +103,7 @@ describe('ShipmatesService', () => {
     svc.start();
     await until(() => updates.length > 0);
     expect(updates.at(-1)!.presence).toEqual([
-      { sessionFile: path.resolve(file + '/../' + path.basename(file)), sessionId: null, roles: [], state: 'idle', status: null, waitingOn: null },
+      { sessionFile: path.resolve(file + '/../' + path.basename(file)), sessionId: null, roles: [], state: 'idle', status: null, waitingOn: null, waitingOnSession: null },
     ]);
 
     k.claimRole(file + '/../' + path.basename(file), 'tree/push');
@@ -123,6 +125,59 @@ describe('ShipmatesService', () => {
     const n = updates.length;
     await new Promise((r) => setTimeout(r, 100));
     expect(updates.length).toBe(n);
+  });
+
+  it('names the session a `waiting-for-session` presence waits on, and a failed lookup never blanks the snapshot', async () => {
+    const d = dirs();
+    const k = db(d);
+    const sess = (n: number) => path.join(d.root, 'sessions', `2026-11-18T10-00-0${n}-000Z_0b7c5e7a-1111-4222-8333-94445555666${n}.jsonl`);
+    const [asker, target, viaRole, unheld, gone, human] = [1, 2, 3, 4, 5, 6].map(sess);
+    for (const f of [asker, target, viaRole, unheld, gone, human]) k.register({ sessionFile: f, cwd: '/home/u/lane' });
+    // Asked of a session directly (named through a non-normalized path).
+    const direct = k.send({ from: asker, to: target + '/../' + path.basename(target), text: 'done?', kind: 'ask' }).question!;
+    k.update(asker, { state: 'waiting-for-session', waitingOn: direct.id });
+    // Asked of a role someone holds: its holder.
+    k.claimRole(target, 'tree/push');
+    const role = k.send({ from: viaRole, to: 'tree/push', text: 'pushed?', kind: 'ask' }).question!;
+    k.update(viaRole, { state: 'waiting-for-session', waitingOn: role.id });
+    // Asked of a role nobody holds any more: null.
+    k.claimRole(gone, 'tree/review');
+    const orphan = k.send({ from: unheld, to: 'tree/review', text: 'reviewed?', kind: 'ask' }).question!;
+    k.releaseRole(gone, 'tree/review');
+    k.update(unheld, { state: 'waiting-for-session', waitingOn: orphan.id });
+    // A question id that does not exist: null.
+    k.update(gone, { state: 'waiting-for-session', waitingOn: 'q_missing' });
+    // Waiting for the human: never a session, even with an id.
+    const item = k.humanAsk({ from: human, question: 'Ship it?', blocking: true });
+    k.update(human, { state: 'waiting-for-human', waitingOn: item.id });
+
+    const { svc } = service(d);
+    svc.start();
+    await svc.ready();
+    const snap = svc.snapshot();
+    const by = new Map(snap.presence.map((p) => [p.sessionFile, p]));
+    expect(by.get(path.resolve(asker))).toMatchObject({ state: 'waiting-for-session', waitingOn: direct.id, waitingOnSession: path.resolve(target) });
+    expect(by.get(path.resolve(viaRole))).toMatchObject({ waitingOn: role.id, waitingOnSession: path.resolve(target) });
+    expect(by.get(path.resolve(unheld))).toMatchObject({ waitingOn: orphan.id, waitingOnSession: null });
+    expect(by.get(path.resolve(gone))).toMatchObject({ waitingOn: 'q_missing', waitingOnSession: null });
+    expect(by.get(path.resolve(human))).toMatchObject({ state: 'waiting-for-human', waitingOn: item.id, waitingOnSession: null });
+    expect(by.get(path.resolve(target))).toMatchObject({ waitingOnSession: null });
+    // The failed lookups did not empty the inbox or the presence.
+    expect(snap.presence).toHaveLength(6);
+    expect(snap.inbox.map((i) => i.id)).toEqual([item.id]);
+  });
+
+  it('a lookup that THROWS gives null for that session only, never an empty snapshot', () => {
+    const p = { sessionFile: '/s/a.jsonl', sessionId: null, cwd: null, branch: null, roles: [], state: 'waiting-for-session', status: null, refs: [], waitingOn: 'q_1', wake: true, live: true, pid: 1, updatedAt: 0, settledAt: null } as const;
+    const throwing = { question: () => { throw new Error('ambiguous'); }, roleHolder: () => { throw new Error('boom'); } };
+    expect(waitingOnSessionOf(throwing, p)).toBeNull();
+    const viaRole = { question: () => ({ to: { kind: 'role' as const, target: 'r' } }), roleHolder: () => { throw new Error('boom'); } };
+    expect(waitingOnSessionOf(viaRole, p)).toBeNull();
+    const ok = { question: () => ({ to: { kind: 'role' as const, target: 'r' } }), roleHolder: () => '/s/x/../b.jsonl' };
+    expect(waitingOnSessionOf(ok, p)).toBe('/s/b.jsonl');
+    expect(waitingOnSessionOf(ok, { ...p, state: 'running' })).toBeNull();
+    expect(presenceView(p, '/s/b.jsonl')).toMatchObject({ waitingOn: 'q_1', waitingOnSession: '/s/b.jsonl' });
+    expect(presenceView(p)).toMatchObject({ waitingOnSession: null });
   });
 
   it('a web answer is the human\'s: the asker receives it with origin human and channel web', async () => {

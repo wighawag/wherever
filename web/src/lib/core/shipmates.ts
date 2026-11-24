@@ -31,7 +31,10 @@ export interface ShipmatesPresence {
 	roles: string[];
 	state: ShipmatesSessionState;
 	status: string | null;
+	/** Raw from shipmates: a question id (`waiting-for-session`) or an inbox item id (`waiting-for-human`). */
 	waitingOn: string | null;
+	/** The session a `waiting-for-session` presence waits on (its listing `path`), else null; null from an older server. */
+	waitingOnSession: string | null;
 }
 
 /** A delete that took a session and everything it owns, undoable until `undoUntil` (shipmates D24). */
@@ -70,10 +73,19 @@ export function parseShipmatesUpdate(frame: unknown): ShipmatesState {
 				)
 			: [],
 		presence: Array.isArray(f.presence)
-			? f.presence.filter(
-					(p): p is ShipmatesPresence =>
-						!!p && typeof p.sessionFile === 'string',
-				)
+			? f.presence
+					.filter(
+						(p): p is ShipmatesPresence =>
+							!!p && typeof p.sessionFile === 'string',
+					)
+					// Absent from an older server (or malformed): unknown.
+					.map((p) => ({
+						...p,
+						waitingOnSession:
+							typeof p.waitingOnSession === 'string'
+								? p.waitingOnSession
+								: null,
+					}))
 			: [],
 		// Absent from an older server: none.
 		archives: Array.isArray(f.archives)
