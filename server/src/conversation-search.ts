@@ -30,7 +30,9 @@
  *    read; wherever's `sessions.ignore`/`sessions.readOnly` govern what the
  *    DASHBOARD shows. Search is a dashboard surface, so it must obey the
  *    dashboard's rules on top of memonaut's, or it becomes a way to read back
- *    exactly what the user hid from the dashboard.
+ *    exactly what the user hid from the dashboard. Closed sessions (ADR 0025)
+ *    are composed in the same place, as a dashboard-visibility rule the user
+ *    can lift (`includeClosed`), unlike the privacy axes.
  */
 
 import fs from 'node:fs';
@@ -43,10 +45,11 @@ import {
   normalizeSessionFile,
   resolveSessionCwd,
 } from './session-pool.js';
+import { readClosedSet } from './session-closed.js';
 
 // The shapes we consume from memonaut. Declared structurally so this module
 // compiles (and the server boots) even when the optional dependency is absent.
-interface MemonautThreadRef {
+export interface MemonautThreadRef {
   fileId: number;
   path: string;
   name: string | null;
@@ -59,7 +62,7 @@ interface MemonautThreadRef {
   isRoot: boolean;
 }
 
-interface MemonautSearchHit {
+export interface MemonautSearchHit {
   entryId: number;
   entryKey: string;
   lineageId: number;
@@ -113,6 +116,11 @@ export interface SearchThreadResult {
   isRoot: boolean;
   /** True when the thread's cwd matches a `sessions.readOnly` glob. */
   readOnly: boolean;
+  /**
+   * True when the session is closed (`closed-sessions.json`, ADR 0025). Only
+   * ever true with `includeClosed`: without it closed threads are dropped.
+   */
+  closed: boolean;
 }
 
 export interface SearchHitResult {
@@ -164,6 +172,8 @@ export interface SearchParams {
   query: string;
   view?: SearchView;
   limit?: number;
+  /** Keep closed sessions (flagged `closed: true`) instead of dropping them. */
+  includeClosed?: boolean;
 }
 
 const require = createRequire(import.meta.url);
@@ -259,7 +269,41 @@ function maybeSpawnSync(): void {
 }
 
 /**
- * Compose the TWO privacy axes, in one place.
+ * Every visibility rule of one search request, as predicates compiled ONCE per
+ * request (as `listSessions` does) so the hit loop never re-reads config or the
+ * closed store. Built by `visibility()`; tests hand in their own.
+ */
+export interface ThreadFilter {
+  view: SearchView;
+  /** Keep closed sessions (flagged) instead of dropping them. */
+  includeClosed: boolean;
+  /** `sessions.ignore`, on the resolved cwd. */
+  isIgnored: (cwd: string) => boolean;
+  /** `sessions.readOnly`, on the resolved cwd. */
+  isReadOnly: (cwd: string) => boolean;
+  /** Closed-sessions store, on the NORMALIZED session path (the /sessions join key). */
+  isClosed: (sessionPath: string) => boolean;
+}
+
+/**
+ * Build the per-request filter from the wherever config and the closed store.
+ * `readClosedSet()` never throws (a broken store reads as "nothing closed"),
+ * matching `/sessions`, which marks nothing closed in that case either.
+ */
+function visibility(view: SearchView, includeClosed: boolean): ThreadFilter {
+  const sessions = getWhereverConfig().sessions;
+  const closed = readClosedSet();
+  return {
+    view,
+    includeClosed,
+    isIgnored: makeIgnoreMatcher(sessions?.ignore),
+    isReadOnly: makeIgnoreMatcher(sessions?.readOnly),
+    isClosed: (sessionPath) => closed.has(sessionPath),
+  };
+}
+
+/**
+ * Compose the visibility rules, in ONE place.
  *
  * - memonaut `ignore`: never indexed, so invisible here by construction.
  * - memonaut `private`: we never pass `includePrivate`, so never returned.
@@ -268,44 +312,37 @@ function maybeSpawnSync(): void {
  *   see what the user hid.
  * - wherever `sessions.readOnly`: mirrors /sessions exactly. `view=default`
  *   drops them; `view=readonly` returns ONLY them (still minus `ignore`).
+ * - closed sessions (ADR 0025): dropped on BOTH views unless `includeClosed`,
+ *   which keeps them flagged `closed: true`. It is checked LAST, so including
+ *   closed sessions can never bring back a thread another rule removed.
  *
  * Filtering is per THREAD, not per hit: one entry in shared fork history can be
  * carried by both a visible and a hidden session. `threadTotal` is recomputed
- * from the surviving threads, so a hidden fork does not leak even as a count.
- * A thread whose cwd is unknown is dropped (fail closed).
+ * from the surviving threads (`filterHits`), so a hidden fork does not leak even
+ * as a count. A thread whose cwd is unknown is dropped (fail closed).
  *
  * Known limitation: matching is on the RESOLVED path (`path.resolve`, matching
  * `/sessions`), which does not follow symlinks. A cwd reached through a symlink
  * can therefore fail to match a glob written against its real path, exactly as
  * it would in the session list; the two surfaces stay consistent, which is the
  * property that matters here.
- *
- * The matchers are compiled ONCE per request (as `listSessions` does) rather
- * than per hit; `visibility()` is the per-request closure the hit loop calls.
  */
-function visibility(view: SearchView): (threads: MemonautThreadRef[]) => SearchThreadResult[] {
-  const sessions = getWhereverConfig().sessions;
-  const isIgnored = makeIgnoreMatcher(sessions?.ignore);
-  const isReadOnly = makeIgnoreMatcher(sessions?.readOnly);
-
-  return (threads: MemonautThreadRef[]) => filterThreads(threads, view, isIgnored, isReadOnly);
-}
-
-function filterThreads(
+export function filterThreads(
   threads: MemonautThreadRef[],
-  view: SearchView,
-  isIgnored: (cwd: string) => boolean,
-  isReadOnly: (cwd: string) => boolean,
+  filter: ThreadFilter,
 ): SearchThreadResult[] {
   const out: SearchThreadResult[] = [];
   for (const t of threads) {
     if (!t.cwd) continue; // fail closed: cannot prove it is allowed here
     const cwd = resolveSessionCwd(t.cwd);
-    if (isIgnored(cwd)) continue;
-    const readOnly = isReadOnly(cwd);
-    if (view === 'readonly' ? !readOnly : readOnly) continue;
+    if (filter.isIgnored(cwd)) continue;
+    const readOnly = filter.isReadOnly(cwd);
+    if (filter.view === 'readonly' ? !readOnly : readOnly) continue;
+    const sessionPath = normalizeSessionFile(t.path);
+    const closed = filter.isClosed(sessionPath);
+    if (closed && !filter.includeClosed) continue;
     out.push({
-      sessionPath: normalizeSessionFile(t.path),
+      sessionPath,
       name: t.name,
       cwd,
       folderName: path.basename(cwd) || cwd,
@@ -316,9 +353,43 @@ function filterThreads(
       after: t.after,
       isRoot: t.isRoot,
       readOnly,
+      closed,
     });
   }
   return out;
+}
+
+/**
+ * Apply `filterThreads` to every hit: `threadTotal` is recomputed from the
+ * survivors, and a hit left with no visible thread is dropped and counted in
+ * `hiddenHits` (never silently lost).
+ */
+export function filterHits(
+  rawHits: MemonautSearchHit[],
+  filter: ThreadFilter,
+): { hits: SearchHitResult[]; hiddenHits: number } {
+  let hiddenHits = 0;
+  const hits: SearchHitResult[] = [];
+  for (const hit of rawHits) {
+    const threads = filterThreads(hit.threads, filter);
+    if (threads.length === 0) {
+      hiddenHits++;
+      continue;
+    }
+    hits.push({
+      entryKey: hit.entryKey,
+      role: hit.role,
+      kind: hit.kind,
+      tool: hit.tool,
+      ts: hit.ts,
+      snippet: hit.snippet,
+      score: hit.score,
+      threads,
+      threadTotal: threads.length,
+      otherHits: hit.otherHits,
+    });
+  }
+  return { hits, hiddenHits };
 }
 
 /**
@@ -330,6 +401,7 @@ export async function searchConversations(params: SearchParams): Promise<SearchR
   const query = (params.query || '').trim();
   const view: SearchView = params.view === 'readonly' ? 'readonly' : 'default';
   const limit = Math.min(Math.max(1, params.limit || DEFAULT_LIMIT), MAX_LIMIT);
+  const includeClosed = params.includeClosed === true;
 
   if (!query) {
     return { status: 'ok', query, hits: [], scanned: 0, hiddenHits: 0 };
@@ -384,28 +456,7 @@ export async function searchConversations(params: SearchParams): Promise<SearchR
       // "do not hand this back" boundary and search does not get to override it.
     });
 
-    const visible = visibility(view);
-    let hiddenHits = 0;
-    const hits: SearchHitResult[] = [];
-    for (const hit of outcome.hits) {
-      const threads = visible(hit.threads);
-      if (threads.length === 0) {
-        hiddenHits++;
-        continue;
-      }
-      hits.push({
-        entryKey: hit.entryKey,
-        role: hit.role,
-        kind: hit.kind,
-        tool: hit.tool,
-        ts: hit.ts,
-        snippet: hit.snippet,
-        score: hit.score,
-        threads,
-        threadTotal: threads.length,
-        otherHits: hit.otherHits,
-      });
-    }
+    const { hits, hiddenHits } = filterHits(outcome.hits, visibility(view, includeClosed));
 
     const stats = mod.indexStats(db);
 

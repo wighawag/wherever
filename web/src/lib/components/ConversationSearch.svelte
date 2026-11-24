@@ -13,7 +13,9 @@
 	 *  - **It obeys the dashboard's visibility rules.** Which sessions are
 	 *    searchable at all is decided on the server (see
 	 *    server/src/conversation-search.ts); this panel simply mirrors the two
-	 *    views: the main list, and the read-only page.
+	 *    views: the main list, and the read-only page. Closed sessions are left
+	 *    out unless "Include closed" is on (remembered on this device, shared by
+	 *    both views); included ones render dimmed.
 	 */
 	import {untrack} from 'svelte';
 	import {
@@ -35,6 +37,18 @@
 		hitKindLabel,
 		relativeTime,
 	} from '$lib/core/search-snippet.js';
+	import {
+		readIncludeClosed,
+		writeIncludeClosed,
+	} from '$lib/core/search-request.js';
+
+	function settingStorage(): Storage | undefined {
+		try {
+			return localStorage;
+		} catch {
+			return undefined;
+		}
+	}
 
 	let {
 		readOnly = false,
@@ -57,6 +71,7 @@
 	// Threads beyond the first are folded away per hit until asked for, so one
 	// heavily forked conversation cannot own the panel.
 	let expandedThreads = $state<Record<string, boolean>>({});
+	let includeClosed = $state(readIncludeClosed(settingStorage()));
 
 	let currentSession = $derived($activeSessionInfo.sessionFile);
 	let loadingSession = $derived($isLoadingSession);
@@ -98,6 +113,7 @@
 		const response = await searchConversations(
 			text.trim(),
 			readOnly ? 'readonly' : 'default',
+			{includeClosed},
 		);
 		// null = superseded by a newer query; keep what is on screen.
 		if (response === null) return;
@@ -109,6 +125,21 @@
 	function submit(e: Event) {
 		e.preventDefault();
 		if (debounceTimer) clearTimeout(debounceTimer);
+		if (query.trim().length < MIN_QUERY) return;
+		loading = true;
+		void run(query);
+	}
+
+	// Re-run the current query at once, like a submit: a pending debounce is
+	// cleared so it cannot fire afterwards with the old setting, and the request
+	// goes through the store's abort/supersede path like any other.
+	function toggleIncludeClosed() {
+		includeClosed = !includeClosed;
+		writeIncludeClosed(settingStorage(), includeClosed);
+		if (debounceTimer) {
+			clearTimeout(debounceTimer);
+			debounceTimer = null;
+		}
 		if (query.trim().length < MIN_QUERY) return;
 		loading = true;
 		void run(query);
@@ -145,8 +176,12 @@
 {#snippet threadRow(thread: SearchThreadResult, extraClass: string)}
 	<button
 		onclick={() => open(thread)}
-		class="flex w-full items-start gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-brand-surface-3/40 {extraClass}"
-		title={thread.sessionPath}
+		class="flex w-full items-start gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-brand-surface-3/40 {extraClass} {thread.closed
+			? 'opacity-50'
+			: ''}"
+		title={thread.closed
+			? `Closed · ${thread.sessionPath}`
+			: thread.sessionPath}
 	>
 		<span class="mt-0.5 flex-shrink-0 text-brand-text-muted"
 			>{thread.isRoot ? '•' : '↳'}</span
@@ -157,7 +192,7 @@
 			>
 			<span class="block text-[10px] text-brand-text-muted">
 				{thread.folderName} · {relativeTime(thread.lastActivity)} · +{thread.after}
-				after
+				after{#if thread.closed}{' '}· Closed{/if}
 			</span>
 		</span>
 	</button>
@@ -187,6 +222,20 @@
 		<div class="mt-1 px-0.5 text-[10px] text-brand-text-muted">
 			Words are ANDed; use "quoted phrases", OR, NOT, or a trailing * for
 			prefixes.
+		</div>
+		<div class="mt-1.5 flex flex-wrap items-center gap-3 px-0.5">
+			<label
+				class="flex cursor-pointer items-center gap-1.5 text-[10px] text-brand-text-muted select-none hover:text-brand-text"
+				title="Search closed sessions too (shown dimmed)"
+			>
+				<input
+					type="checkbox"
+					checked={includeClosed}
+					onchange={toggleIncludeClosed}
+					class="h-3 w-3 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
+				/>
+				Include closed
+			</label>
 		</div>
 	</div>
 

@@ -2221,6 +2221,8 @@ async function main(): Promise<void> {
         query: url.searchParams.get('q') || '',
         view,
         limit: Number.isFinite(limitParam) && limitParam > 0 ? limitParam : undefined,
+        // Closed sessions (ADR 0025) are left out unless asked for, on both views.
+        includeClosed: url.searchParams.get('includeClosed') === '1',
       });
       sendJSON(res, 200, result);
       return;

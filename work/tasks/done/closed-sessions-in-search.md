@@ -34,3 +34,15 @@ covers: [10]
 > FIRST, check this task against current reality (launch snapshot, may have DRIFTED). The date-range control (spec `conversation-search-date-range`, built after this task) will sit beside this toggle.
 >
 > RECORD non-obvious in-scope decisions in `work/notes/observations/closed-sessions-in-search-decisions.md` and end your final report with a `## Decisions` block linking it. Targeted `CONTEXT.md` edits only. Never write em dashes.
+
+## Decisions
+
+All recorded in `work/notes/observations/closed-sessions-in-search-decisions.md`:
+1. The checks became one options object rather than a fourth argument, and `filterHits` was pulled out so the counts are testable.
+2. Closed is checked last and on the normalized session path, so including closed sessions can't get around the other rules.
+3. Only `includeClosed=1` turns it on; any other value means off.
+4. The new storage key is separate from the sidebar's `wherever-show-closed`, and one value is shared by the main and read-only search views.
+5. Toggling re-runs the query at once (clear the debounce, skip below the minimum query length, same abort path).
+6. Dimmed rows use the same `opacity-50` as the sidebar, plus a "· Closed" label and tooltip.
+7. The request builder is a pure module, and the options argument leaves room for the date-range task's `since`.
+8. The changeset is `minor`.

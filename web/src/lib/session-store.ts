@@ -1,6 +1,7 @@
 import {writable, get} from 'svelte/store';
 import {defaultAppearance, type AppearanceInfo} from '$lib/theme';
 import {adoptTokenFromUrlOnce} from '$lib/core/token-adoption';
+import {searchRequestParams} from '$lib/core/search-request';
 import type {TelegramStatus} from '$lib/core/telegram-settings';
 import {
 	emptyShipmatesState,
@@ -565,6 +566,8 @@ export interface SearchThreadResult {
 	after: number;
 	isRoot: boolean;
 	readOnly: boolean;
+	/** Closed session (ADR 0025); only returned when the search included closed ones. */
+	closed: boolean;
 }
 
 export interface SearchHitResult {
@@ -606,6 +609,7 @@ let searchAbort: AbortController | null = null;
 export async function searchConversations(
 	query: string,
 	view: 'default' | 'readonly' = 'default',
+	opts: {includeClosed?: boolean} = {},
 ): Promise<SearchResponse | null> {
 	searchAbort?.abort();
 	const controller = new AbortController();
@@ -613,9 +617,12 @@ export async function searchConversations(
 	try {
 		const baseUrl = getBaseUrl();
 		const token = getToken();
-		const params = new URLSearchParams({q: query});
-		if (view === 'readonly') params.set('view', 'readonly');
-		if (token) params.set('token', token);
+		const params = searchRequestParams({
+			query,
+			view,
+			includeClosed: opts.includeClosed,
+			token,
+		});
 		const res = await fetch(`${baseUrl}/search?${params.toString()}`, {
 			signal: controller.signal,
 		});

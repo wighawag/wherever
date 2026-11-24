@@ -123,6 +123,7 @@ Full-text search over every past session, backed by the [memonaut](https://githu
   * `q`: an [FTS5 MATCH expression](https://www.sqlite.org/fts5.html#full_text_query_syntax). Bare words are ANDed, `"quoted phrases"` match in order, `OR` / `NOT` / `NEAR(a b, 5)` work, trailing `*` is a prefix search. An unparseable query is retried as quoted literal tokens (reported as `quotedFallback`).
   * `view`: `default` (the main session list) or `readonly` (the `sessions.readOnly` page). Mirrors `GET /sessions`.
   * `limit`: max results, default 20, capped at 50.
+  * `includeClosed`: `1` to include closed sessions (each thread then carries `closed: true`); left out by default, on both views.
 * **Response (200 OK):**
   ```json
   {
@@ -151,7 +152,8 @@ Full-text search over every past session, backed by the [memonaut](https://githu
             "seq": 2,
             "after": 288,
             "isRoot": true,
-            "readOnly": false
+            "readOnly": false,
+            "closed": false
           }
         ],
         "threadTotal": 1,
