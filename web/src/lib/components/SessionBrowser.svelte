@@ -22,6 +22,9 @@
 		presenceLine,
 	} from '$lib/core/shipmates';
 	import {undoShipmatesDelete} from '$lib/wherever';
+	// The sidebar filter rule and the Live strip's rows (unit-tested in core).
+	import {liveSessions, sessionMatchesFilter} from '$lib/core/live-sessions';
+	import LiveStrip from './LiveStrip.svelte';
 	// Fork-hierarchy flattening + recency ordering (unit-tested in core).
 	import {buildForkTree} from '$lib/core/fork-tree.js';
 	// shipmates presence (role, state, status line) by session file, the listing's `path`.
@@ -113,19 +116,10 @@
 		}
 	});
 
-	function matchesFilter(
-		session: (typeof folders)[number]['sessions'][number],
-		folderName: string,
-		query: string,
-	): boolean {
-		if (!query) return true;
-		const q = query.toLowerCase();
-		return (
-			(session.name || '').toLowerCase().includes(q) ||
-			session.firstMessage.toLowerCase().includes(q) ||
-			folderName.toLowerCase().includes(q)
-		);
-	}
+	// The Live strip (main list only): live sessions across folders, same filter.
+	let liveRows = $derived(
+		readOnly ? [] : liveSessions(folders, presence, searchQuery),
+	);
 
 	$effect(() => {
 		const q = searchQuery;
@@ -139,7 +133,7 @@
 					...folder,
 					sessions: folder.sessions.filter(
 						(s: (typeof folder)['sessions'][number]) =>
-							matchesFilter(s, folder.name, q),
+							sessionMatchesFilter(s, folder.name, q),
 					),
 				}))
 				.filter((folder) => folder.sessions.length > 0);
@@ -527,6 +521,16 @@
 			</button>
 		{/if}
 	</div>
+
+	{#if !readOnly}
+		<LiveStrip
+			rows={liveRows}
+			{presence}
+			{currentSession}
+			onOpen={handleSessionClick}
+			labelOf={sessionLabel}
+		/>
+	{/if}
 
 	<div class="flex-1 overflow-y-auto">
 		<!-- Collapsible Create New Session Section (hidden in read-only mode) -->
