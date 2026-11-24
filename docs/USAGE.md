@@ -125,6 +125,7 @@ Full-text search over every past session, backed by the [memonaut](https://githu
   * `limit`: max results, default 20, capped at 50.
   * `includeClosed`: `1` to include closed sessions (each thread then carries `closed: true`); left out by default, on both views.
   * `since`: an ISO 8601 date (anything `Date.parse` accepts; normalized to UTC `Z` before use). Only matches whose message was said at or after it are returned: the bound is on the MATCHED ENTRY's timestamp, not on the session's last activity, and entries with no timestamp are excluded whenever it is set. Absent or empty means no bound. An unparseable value answers `status: "error"` with a `message` (even when no index exists), unlike `view` and `limit`, which coerce silently.
+  * `sort`: `relevance` (the default; also when absent or empty) or `recent`. `recent` orders by when the MATCHED MESSAGE was said, newest first, before the result limit is applied (so it returns the newest matches overall, not a re-sort of the most relevant ones); under `recent`, `score` is informative only. Any other value answers `status: "error"` with a `message` (even when no index exists). Under `recent` the server over-fetches up to 50 results so that hidden or closed sessions do not shorten the page; at `limit=50` there is no headroom and a page can come back short. Requires memonaut 0.5 or later.
 * **Response (200 OK):**
   ```json
   {

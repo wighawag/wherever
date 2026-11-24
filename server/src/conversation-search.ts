@@ -77,12 +77,27 @@ export interface MemonautSearchHit {
   otherHits: number;
 }
 
+/**
+ * The subset of memonaut's `SearchQuery` this module sends. Typed (rather than
+ * `Record<string, unknown>`) so a misspelled option fails to compile. Typing
+ * cannot catch a missed DEPENDENCY bump (memonaut 0.4 silently ignores
+ * `order`); the "fails on memonaut 0.4" ordering test does.
+ */
+interface MemonautSearchQuery {
+  text: string;
+  limit?: number;
+  threadLimit?: number;
+  since?: string;
+  /** memonaut >= 0.5: ordered BEFORE `limit`; `recent` = matched entry ts, newest first. */
+  order?: SearchSort;
+}
+
 interface MemonautModule {
   loadConfig(env?: NodeJS.ProcessEnv): { dbPath: string; configPath: string };
   openDb(dbPath: string, opts?: { readOnly?: boolean }): unknown;
   search(
     db: unknown,
-    query: Record<string, unknown>,
+    query: MemonautSearchQuery,
   ): { hits: MemonautSearchHit[]; usedQuery: string; scanned: number; quotedFallback: boolean };
   indexStats(db: unknown): {
     files: number;
@@ -168,6 +183,17 @@ export interface SearchResponse {
 
 export type SearchView = 'default' | 'readonly';
 
+/**
+ * How results are ordered. `relevance` (the default) is memonaut's ranking;
+ * `recent` is memonaut's `order: 'recent'`: by the MATCHED ENTRY's own `ts`,
+ * newest first, applied BEFORE memonaut's limit (each fork family represented
+ * by its newest matching entry), so it is not a re-sort of the most relevant
+ * few. Under `recent`, `score` is informative only. Mirrors memonaut's
+ * `SearchOrder`; the wire name is `sort` (see `parseSort`).
+ */
+export type SearchSort = 'relevance' | 'recent';
+export const SEARCH_SORTS: readonly SearchSort[] = ['relevance', 'recent'];
+
 export interface SearchParams {
   query: string;
   view?: SearchView;
@@ -180,6 +206,8 @@ export interface SearchParams {
    * means no bound, unparseable answers `status: 'error'`. See `parseSince`.
    */
   since?: string;
+  /** Result order; absent or empty means `relevance`, unknown answers `status: 'error'`. See `parseSort`. */
+  sort?: string;
 }
 
 const require = createRequire(import.meta.url);
@@ -373,10 +401,17 @@ export function filterThreads(
 export function filterHits(
   rawHits: MemonautSearchHit[],
   filter: ThreadFilter,
+  /**
+   * Stop once this many visible hits are collected (the over-fetch cut under
+   * `sort=recent`), so `hiddenHits` counts only hidden results ABOVE the cut,
+   * the same meaning it has when memonaut's own limit is the cut.
+   */
+  cap?: number,
 ): { hits: SearchHitResult[]; hiddenHits: number } {
   let hiddenHits = 0;
   const hits: SearchHitResult[] = [];
   for (const hit of rawHits) {
+    if (cap !== undefined && hits.length >= cap) break;
     const threads = filterThreads(hit.threads, filter);
     if (threads.length === 0) {
       hiddenHits++;
@@ -423,6 +458,23 @@ export function parseSince(raw: string | undefined): { since?: string; error?: s
 }
 
 /**
+ * Validate a `sort`. Absent or empty (after trim) is `relevance`; anything other
+ * than `relevance` / `recent` is REFUSED (like `since`, unlike `view`): silently
+ * falling back to relevance would show a relevance page the user believes is
+ * newest-first. memonaut 0.5 also throws on an unknown `order`, but validating
+ * here first gives a well-formed answer, and before the index is even opened.
+ */
+export function parseSort(raw: string | undefined): { sort: SearchSort; error?: string } {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed) return { sort: 'relevance' };
+  if ((SEARCH_SORTS as readonly string[]).includes(trimmed)) return { sort: trimmed as SearchSort };
+  return {
+    sort: 'relevance',
+    error: `Invalid \`sort\`: ${JSON.stringify(trimmed)} (use ${SEARCH_SORTS.map((s) => `\`${s}\``).join(' or ')}).`,
+  };
+}
+
+/**
  * Run one search. Always resolves to a well-formed `SearchResponse`: a missing
  * index, a missing dependency and a bad query are ANSWERS, not failures, so the
  * dashboard can explain itself instead of showing a dead search box.
@@ -443,6 +495,17 @@ export async function searchConversations(params: SearchParams): Promise<SearchR
   if (bound.error) {
     return { status: 'error', query, hits: [], message: bound.error };
   }
+  const order = parseSort(params.sort);
+  if (order.error) {
+    return { status: 'error', query, hits: [], message: order.error };
+  }
+  // wherever filters (ignore / readOnly / closed) AFTER memonaut's limit, and
+  // under `recent` the newest matches are the likeliest to be hidden (agent
+  // fleets, just-closed sessions). So `recent` asks memonaut for MAX_LIMIT and
+  // cuts to `limit` after filtering. At limit === MAX_LIMIT there is no headroom
+  // and a page can come back short; the over-fetch is deliberately NOT raised
+  // past MAX_LIMIT (human decision). `relevance` is unchanged.
+  const recent = order.sort === 'recent';
 
   const mod = await loadMemonaut();
   if (!mod) {
@@ -486,17 +549,23 @@ export async function searchConversations(params: SearchParams): Promise<SearchR
   try {
     const outcome = mod.search(db, {
       text: query,
-      limit,
+      limit: recent ? MAX_LIMIT : limit,
       // Over-fetch threads so the visible count is honest after filtering.
       threadLimit: THREAD_FETCH_LIMIT,
       // Bounds the MATCHED ENTRY's ts; `otherHits` then counts only in-window
       // matches. Omitted entirely when unbounded.
       ...(bound.since ? { since: bound.since } : {}),
+      // Only sent when asked, so relevance requests are byte-for-byte as before.
+      ...(recent ? { order: 'recent' as const } : {}),
       // NEVER pass includePrivate: memonaut's `private` globs are the user's
       // "do not hand this back" boundary and search does not get to override it.
     });
 
-    const { hits, hiddenHits } = filterHits(outcome.hits, visibility(view, includeClosed));
+    const { hits, hiddenHits } = filterHits(
+      outcome.hits,
+      visibility(view, includeClosed),
+      recent ? limit : undefined,
+    );
 
     const stats = mod.indexStats(db);
 

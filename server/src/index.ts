@@ -2226,6 +2226,8 @@ async function main(): Promise<void> {
         // Lower bound on the matched entry's ts; validated (and normalized to Z)
         // in searchConversations, which answers status:'error' when unparseable.
         since: url.searchParams.get('since') ?? undefined,
+        // relevance (default) | recent; an unknown value answers status:'error'.
+        sort: url.searchParams.get('sort') ?? undefined,
       });
       sendJSON(res, 200, result);
       return;

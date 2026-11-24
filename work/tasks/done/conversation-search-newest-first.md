@@ -42,3 +42,14 @@ A Relevance / Newest toggle in the conversation search panel (main and read-only
 > FIRST, check this task against current reality (launch snapshot, may have DRIFTED): if memonaut's `order` API differs from the above, route to needs-attention.
 >
 > RECORD non-obvious in-scope decisions in `work/notes/observations/conversation-search-newest-first-decisions.md` and end your final report with a `## Decisions` block linking it. Targeted `CONTEXT.md` edits only. Never write em dashes.
+
+## Decisions
+
+Recorded in `work/notes/observations/conversation-search-newest-first-decisions.md`:
+1. `sort` is trimmed before it is checked, the same way `since` is.
+2. The error message lists both valid values. The wire name stays `sort`, and wherever's own types mirror memonaut's instead of importing them, because memonaut is loaded dynamically.
+3. Relevance requests send no `order` and no cap, so their output is unchanged.
+4. The over-fetch cut is a new optional `cap` argument on `filterHits()`.
+5. The web control is a two-button toggle rather than a dropdown like the date range, and only `sort=recent` is ever sent.
+6. The "relevance unchanged" test ignores `score`, which shifts slightly between requests.
+7. The browser check of the toggle was not done; it needs a human.

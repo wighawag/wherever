@@ -5,6 +5,8 @@
  * `ConversationSearch.svelte` owns the toggle.
  */
 
+import type {SearchSort} from './search-sort.js';
+
 /**
  * Where "Include closed" is remembered on this device (on when `'1'`). One
  * value for both the main and the read-only search views, like the panel's
@@ -49,6 +51,11 @@ export interface SearchRequest {
 	 * Built by `rangeToSince` (search-range.ts) at request time.
 	 */
 	since?: string;
+	/**
+	 * Result order (search-sort.ts); only `recent` (Newest) is sent, Relevance
+	 * is the server default.
+	 */
+	sort?: SearchSort;
 	token?: string | null;
 }
 
@@ -58,6 +65,7 @@ export function searchRequestParams(req: SearchRequest): URLSearchParams {
 	if (req.view === 'readonly') params.set('view', 'readonly');
 	if (req.includeClosed) params.set('includeClosed', '1');
 	if (req.since) params.set('since', req.since);
+	if (req.sort === 'recent') params.set('sort', 'recent');
 	if (req.token) params.set('token', req.token);
 	return params;
 }
