@@ -33,9 +33,21 @@
 	import {
 		SHOW_CLOSED_KEY,
 		folderListView,
+		isSessionShown,
 		shownSessions,
 		type FolderListEntry,
 	} from '$lib/core/closed-sessions';
+	// The "By owner" layout: one tree per orchestration across folders, and the
+	// toggle's state (unit-tested in core).
+	import {
+		SESSION_LIST_VIEW_KEY,
+		ownerGroupRows,
+		ownerRowHint,
+		ownerTree,
+		parseSessionListView,
+		sessionListViewState,
+		type SessionListView,
+	} from '$lib/core/owner-tree';
 	import type {SessionInfo} from '$lib/session-store';
 	// shipmates presence (role, state, status line) by session file, the listing's `path`.
 	let presence = $derived(presenceByFile($shipmatesStore.presence));
@@ -117,6 +129,40 @@
 	let allListed = $derived(folders.flatMap((f) => f.sessions));
 	let byPath = $derived(new Map(allListed.map((s) => [s.path, s])));
 	let owned = $derived(ownedChildren(allListed));
+	// "By folder / By owner" (main list only, remembered on this device). The
+	// toggle is hidden, and the list shows "By folder", while "By owner" would
+	// mean nothing; the saved choice is kept for when it does again.
+	function readSavedView(): SessionListView {
+		try {
+			return parseSessionListView(localStorage.getItem(SESSION_LIST_VIEW_KEY));
+		} catch {
+			return 'folder';
+		}
+	}
+	let savedView = $state<SessionListView>(readSavedView());
+	let viewState = $derived(
+		readOnly
+			? {showToggle: false, view: 'folder' as SessionListView}
+			: sessionListViewState(savedView, {
+					shipmatesAvailable: $shipmatesStore.available,
+					sessions: allListed,
+				}),
+	);
+	function setView(view: SessionListView) {
+		savedView = view;
+		try {
+			localStorage.setItem(SESSION_LIST_VIEW_KEY, view);
+		} catch {
+			// No storage (private mode): the choice just is not remembered.
+		}
+	}
+	// The filter does not apply to "By owner" yet (task
+	// `by-owner-view-collapse-summary-filter`); the folder view filters as before.
+	let ownerGroups = $derived(
+		viewState.view === 'owner'
+			? ownerTree(folders, {isVisible: (s) => isSessionShown(s, showClosed)})
+			: [],
+	);
 	let undoing = $state<Record<string, boolean>>({});
 	// Labels of every session this sidebar has listed, kept after a cascaded
 	// delete hides them, so the undo banner can still name what it took.
@@ -560,18 +606,41 @@
 			</button>
 		</div>
 		{#if !readOnly}
-			<label
-				class="mt-1.5 flex cursor-pointer items-center gap-1.5 px-1 text-[10px] text-brand-text-muted select-none hover:text-brand-text"
-				title="List closed sessions too (dimmed), so you can reopen them"
-			>
-				<input
-					type="checkbox"
-					checked={showClosedSetting}
-					onchange={toggleShowClosed}
-					class="h-3 w-3 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
-				/>
-				Show closed
-			</label>
+			<div class="mt-1.5 flex items-center justify-between gap-2">
+				<label
+					class="flex cursor-pointer items-center gap-1.5 px-1 text-[10px] text-brand-text-muted select-none hover:text-brand-text"
+					title="List closed sessions too (dimmed), so you can reopen them"
+				>
+					<input
+						type="checkbox"
+						checked={showClosedSetting}
+						onchange={toggleShowClosed}
+						class="h-3 w-3 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
+					/>
+					Show closed
+				</label>
+				{#if viewState.showToggle}
+					<div
+						class="flex overflow-hidden rounded border border-brand-border text-[10px]"
+						role="group"
+						aria-label="Group sessions"
+					>
+						{#each [['folder', 'By folder'], ['owner', 'By owner']] as [view, label] (view)}
+							<button
+								type="button"
+								onclick={() => setView(view as SessionListView)}
+								aria-pressed={viewState.view === view}
+								class="px-1.5 py-0.5 {viewState.view === view
+									? 'bg-brand-surface-3 text-brand-text'
+									: 'bg-brand-surface-2 text-brand-text-muted hover:text-brand-text'}"
+								title={view === 'owner'
+									? 'One tree per orchestration: spawned sessions under their owner, across folders'
+									: 'Sessions grouped by folder'}>{label}</button
+							>
+						{/each}
+					</div>
+				{/if}
+			</div>
 		{/if}
 		{#if onSearchAll && searchQuery.trim().length >= 2}
 			<!-- The box above only filters this list (names + first-message previews).
@@ -800,7 +869,43 @@
 			</div>
 		{/if}
 
-		{#if loading && filteredFolders.length === 0}
+		{#if viewState.view === 'owner'}
+			{#if ownerGroups.length === 0}
+				<div class="p-4 text-center text-sm text-brand-text-muted">
+					{loading ? 'Loading sessions...' : 'No sessions found'}
+				</div>
+			{/if}
+			{#each ownerGroups as group (group.root.session.path)}
+				<div class="border-b border-brand-border/50 px-3 py-1.5">
+					{#each ownerGroupRows(group) as { node, depth } (node.session.path)}
+						<SessionRow
+							session={node.session}
+							{depth}
+							current={currentSession === node.session.path}
+							{readOnly}
+							closed={node.closed}
+							rowTitle={node.closed
+								? showClosed
+									? 'Closed'
+									: 'Closed (shown because a session under it is open)'
+								: undefined}
+							nestKind={node.edge ?? 'fork'}
+							presence={presence.get(node.session.path)}
+							ownerHint={ownerRowHint(node, sessionLabel)}
+							folderTag={node.folderName}
+							showOwned={false}
+							confirmingDelete={confirmingDelete === node.session.path}
+							onOpen={handleSessionClick}
+							onStar={toggleStar}
+							onToggleClosed={toggleClosed}
+							onAskDelete={(path) => (confirmingDelete = path)}
+							onCancelDelete={() => (confirmingDelete = null)}
+							onDelete={handleDeleteSession}
+						/>
+					{/each}
+				</div>
+			{/each}
+		{:else if loading && filteredFolders.length === 0}
 			<div class="p-4 text-center text-brand-text-muted">
 				<div
 					class="inline-block h-4 w-4 animate-spin rounded-full border-2 border-brand-text-muted border-t-transparent"

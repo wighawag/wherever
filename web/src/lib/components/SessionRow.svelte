@@ -28,6 +28,7 @@
 		nestKind = 'fork',
 		presence,
 		ownerHint,
+		folderTag,
 		ownedChildren = [],
 		showOwned = true,
 		confirmingDelete = false,
@@ -57,6 +58,8 @@
 		presence?: ShipmatesPresence;
 		/** Owner's label for "↳ spawned by <ownerHint>"; no hint when empty. */
 		ownerHint?: string;
+		/** The folder as a small tag (the By-owner view); no tag when empty. */
+		folderTag?: string;
 		/** The owned sessions to show as chips (already filtered by the parent). */
 		ownedChildren?: SessionInfo[];
 		/** Show the owned-children chips under the row. */
@@ -136,6 +139,12 @@
 			<div class="text-xs text-brand-text-muted">
 				{relativeTime(session.modified)} · {session.messageCount}
 				msgs
+				{#if folderTag}
+					<span
+						class="ml-1 rounded bg-brand-surface-3/60 px-1 text-[10px] text-brand-text-muted"
+						title="Folder: {folderTag}">{folderTag}</span
+					>
+				{/if}
 			</div>
 			{#if ownerHint}
 				<div

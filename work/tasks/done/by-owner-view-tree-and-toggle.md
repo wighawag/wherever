@@ -42,3 +42,14 @@ Rendering: nested rows use the `spawned` marker kind for an ownership edge and `
 > FIRST, check this task against current reality (launch snapshot, may have DRIFTED): if the row component, the closed helpers or the live-strip helpers landed under different names, use what landed; if a premise broke, route to needs-attention.
 >
 > RECORD non-obvious in-scope decisions in `work/notes/observations/by-owner-view-tree-and-toggle-decisions.md` and end your final report with a `## Decisions` block linking it. Targeted `CONTEXT.md` edits only. Never write em dashes.
+
+## Decisions
+
+Recorded in `work/notes/observations/by-owner-view-tree-and-toggle-decisions.md`:
+- **"↳ spawned by X" is hidden on a row nested directly under its owner**, because the row above is the owner and the marker already says so. It still shows when the row's parent is not its owner (a sibling fork, or the root of a cycle), and "(not listed)" shows for an owner that isn't listed.
+- **Two extra node fields, `edge` and `ownerNotListed`**, so the markup stays free of logic.
+- **Siblings inside a group are ordered like the fork tree**: by the newest activity in their subtree, then their own date, then path.
+- **A group's latest activity counts only the rows still shown** after closed sessions are pruned.
+- **A path listed in two folders appears once**, under the first folder.
+- **The toggle logic lives in `owner-tree.ts`, not `core/view-mode.ts`**, because that name already means the chat area's view state.
+- **The toggle sits on the "Show closed" line**, and an empty "By owner" list says "Loading sessions..." or "No sessions found".
