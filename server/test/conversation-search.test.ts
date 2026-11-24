@@ -101,7 +101,9 @@ async function makeFixture(opts?: {
   skipIndex?: boolean;
   /** Also write a session in a folder memonaut's config marks `private`. */
   memonautPrivate?: boolean;
-}): Promise<Fixture> {
+  /** Extra sessions written before the index is built. */
+  extraSessions?: (dirs: { visibleCwd: string }) => FixtureSession[];
+}): Promise<Fixture & { extraFiles: string[] }> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wherever-search-'));
   const sessionsRoot = path.join(root, 'sessions');
   const memonautConfigDir = path.join(root, 'memonaut-config');
@@ -164,6 +166,10 @@ async function makeFixture(opts?: {
       })
     : undefined;
 
+  const extraFiles = (opts?.extraSessions?.({ visibleCwd }) ?? []).map((session) =>
+    writeSession(sessionsRoot, session),
+  );
+
   fs.writeFileSync(
     path.join(memonautConfigDir, 'config.json'),
     JSON.stringify(
@@ -204,6 +210,7 @@ async function makeFixture(opts?: {
     privateFile,
     privateCwd,
     env,
+    extraFiles,
   };
 }
 
@@ -274,6 +281,35 @@ async function search(
   expect(res.status).toBe(200);
   return (await res.json()) as SearchResponseShape;
 }
+
+/** One raw `GET /search` with arbitrary query-string params (e.g. `since`). */
+async function searchParams(
+  h: Harness,
+  params: Record<string, string>,
+): Promise<SearchResponseShape> {
+  const res = await fetch(`http://127.0.0.1:${h.port}/search?${new URLSearchParams(params)}`);
+  expect(res.status).toBe(200);
+  return (await res.json()) as SearchResponseShape;
+}
+
+function hitPaths(body: SearchResponseShape): string[] {
+  return body.hits.flatMap((hit) => hit.threads.map((t) => t.sessionPath));
+}
+
+/**
+ * A NEWER match in the visible project (2026-02-10T10:00Z), on top of the
+ * fixture's older ones (the shared parent/fork entry is 2026-02-01T10:00Z).
+ */
+const recentSession = ({ visibleCwd }: { visibleCwd: string }): FixtureSession[] => [
+  {
+    uuid: '00000000-0000-4000-8000-0000000011aa',
+    cwd: visibleCwd,
+    started: '2026-02-10T10:00:00.000Z',
+    entries: [
+      { id: '11aa0001', text: 'flamingo protocol, revisited recently', ts: '2026-02-10T10:00:00.000Z' },
+    ],
+  },
+];
 
 let harness: Harness | undefined;
 let cleanupDirs: string[] = [];
@@ -591,4 +627,140 @@ describe('conversation search', () => {
     expect(body.status).toBe('ok');
     expect(body.hits).toEqual([]);
   }, 60_000);
+  describe('since (date range)', () => {
+    it('excludes an older match and keeps a newer one, by the matched entry ts', async () => {
+      const fixture = await makeFixture({ extraSessions: recentSession });
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, {});
+      const [recentFile] = fixture.extraFiles;
+
+      harness = await startHarness({ env: fixture.env });
+
+      // Unbounded: both the old shared entry and the recent one match.
+      const all = await searchParams(harness, { q: '"flamingo protocol"' });
+      expect(all.status).toBe('ok');
+      expect(hitPaths(all)).toContain(fixture.parentFile);
+      expect(hitPaths(all)).toContain(recentFile);
+
+      // Bounded after the old entry: only the recent match survives. The fork
+      // was ACTIVE on 2026-02-02, but its matched (inherited) entry is from
+      // 2026-02-01, so it is out: the bound is on the entry, not the session.
+      const bounded = await searchParams(harness, {
+        q: '"flamingo protocol"',
+        since: '2026-02-05T00:00:00.000Z',
+      });
+      expect(bounded.status).toBe('ok');
+      expect(hitPaths(bounded)).toContain(recentFile);
+      expect(hitPaths(bounded)).not.toContain(fixture.parentFile);
+      expect(hitPaths(bounded)).not.toContain(fixture.forkFile);
+    }, 60_000);
+
+    it('treats an absent or empty since as no bound', async () => {
+      const fixture = await makeFixture({ extraSessions: recentSession });
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, {});
+
+      harness = await startHarness({ env: fixture.env });
+
+      for (const params of [{ q: '"flamingo protocol"' }, { q: '"flamingo protocol"', since: '' }]) {
+        const body = await searchParams(harness, params);
+        expect(body.status).toBe('ok');
+        expect(hitPaths(body)).toContain(fixture.parentFile);
+        expect(hitPaths(body)).toContain(fixture.extraFiles[0]);
+      }
+    }, 60_000);
+
+    it('normalizes an offset form to Z before comparing', async () => {
+      const fixture = await makeFixture({ extraSessions: recentSession });
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, {});
+      const [recentFile] = fixture.extraFiles;
+
+      harness = await startHarness({ env: fixture.env });
+
+      // 11:00+02:00 is 09:00Z, BEFORE the 10:00Z entry, so it must match. As
+      // raw TEXT, "2026-02-10T10:00..." < "2026-02-10T11:00...", so an
+      // unnormalized bound would wrongly exclude it.
+      const body = await searchParams(harness, {
+        q: '"flamingo protocol"',
+        since: '2026-02-10T11:00:00+02:00',
+      });
+      expect(body.status).toBe('ok');
+      expect(hitPaths(body)).toContain(recentFile);
+      expect(hitPaths(body)).not.toContain(fixture.parentFile);
+
+      // And a bound after the entry (13:00+02:00 = 11:00Z) drops it.
+      const after = await searchParams(harness, {
+        q: '"flamingo protocol"',
+        since: '2026-02-10T13:00:00+02:00',
+      });
+      expect(hitPaths(after)).not.toContain(recentFile);
+    }, 60_000);
+
+    it('answers status:error on an unparseable since', async () => {
+      const fixture = await makeFixture();
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, {});
+
+      harness = await startHarness({ env: fixture.env });
+      const body = await searchParams(harness, { q: 'flamingo', since: 'last tuesday-ish' });
+      expect(body.status).toBe('error');
+      expect(body.hits).toEqual([]);
+      expect(body.message).toContain('since');
+    }, 60_000);
+
+    it('answers ok for an empty query even with a garbage since', async () => {
+      const fixture = await makeFixture();
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, {});
+
+      harness = await startHarness({ env: fixture.env });
+      const body = await searchParams(harness, { q: '  ', since: 'garbage' });
+      expect(body.status).toBe('ok');
+      expect(body.hits).toEqual([]);
+    }, 60_000);
+
+    it('answers error, not not-indexed, for a garbage since with no index', async () => {
+      const fixture = await makeFixture({ skipIndex: true });
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, {});
+
+      harness = await startHarness({ env: fixture.env });
+      const body = await searchParams(harness, { q: 'flamingo', since: 'garbage' });
+      expect(body.status).toBe('error');
+      expect(fs.existsSync(fixture.dbPath)).toBe(false);
+    }, 60_000);
+
+    it('still drops hidden, read-only and closed threads with since set', async () => {
+      const fixture = await makeFixture({ extraSessions: recentSession });
+      cleanupDirs.push(fixture.root);
+      writeWhereverConfig(fixture, {
+        ignore: [`${fixture.hiddenCwd}/**`],
+        readOnly: [`${fixture.fleetCwd}/**`],
+      });
+      const [recentFile] = fixture.extraFiles;
+      writeClosed(fixture, [recentFile]);
+
+      harness = await startHarness({ env: fixture.env });
+
+      // The hidden (02-03), fleet (02-04) and closed recent (02-10) matches are
+      // all INSIDE the window, so only the visibility rules can remove them.
+      const since = '2026-02-02T00:00:00.000Z';
+      const body = await searchParams(harness, { q: 'flamingo', since });
+      expect(body.status).toBe('ok');
+      expect(hitPaths(body)).not.toContain(fixture.hiddenFile);
+      expect(hitPaths(body)).not.toContain(fixture.fleetFile);
+      expect(hitPaths(body)).not.toContain(recentFile);
+      expect(JSON.stringify(body.hits)).not.toContain('nobody should see');
+      expect(body.hiddenHits).toBeGreaterThan(0);
+
+      const included = await searchParams(harness, { q: 'flamingo', since, includeClosed: '1' });
+      const recent = included.hits
+        .flatMap((hit) => hit.threads)
+        .find((t) => t.sessionPath === recentFile);
+      expect(recent).toMatchObject({ closed: true });
+      expect(hitPaths(included)).not.toContain(fixture.hiddenFile);
+      expect(hitPaths(included)).not.toContain(fixture.fleetFile);
+    }, 60_000);
+  });
 });

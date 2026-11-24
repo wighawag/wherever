@@ -124,6 +124,7 @@ Full-text search over every past session, backed by the [memonaut](https://githu
   * `view`: `default` (the main session list) or `readonly` (the `sessions.readOnly` page). Mirrors `GET /sessions`.
   * `limit`: max results, default 20, capped at 50.
   * `includeClosed`: `1` to include closed sessions (each thread then carries `closed: true`); left out by default, on both views.
+  * `since`: an ISO 8601 date (anything `Date.parse` accepts; normalized to UTC `Z` before use). Only matches whose message was said at or after it are returned: the bound is on the MATCHED ENTRY's timestamp, not on the session's last activity, and entries with no timestamp are excluded whenever it is set. Absent or empty means no bound. An unparseable value answers `status: "error"` with a `message` (even when no index exists), unlike `view` and `limit`, which coerce silently.
 * **Response (200 OK):**
   ```json
   {

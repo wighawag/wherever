@@ -2223,6 +2223,9 @@ async function main(): Promise<void> {
         limit: Number.isFinite(limitParam) && limitParam > 0 ? limitParam : undefined,
         // Closed sessions (ADR 0025) are left out unless asked for, on both views.
         includeClosed: url.searchParams.get('includeClosed') === '1',
+        // Lower bound on the matched entry's ts; validated (and normalized to Z)
+        // in searchConversations, which answers status:'error' when unparseable.
+        since: url.searchParams.get('since') ?? undefined,
       });
       sendJSON(res, 200, result);
       return;

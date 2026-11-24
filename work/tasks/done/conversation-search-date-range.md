@@ -37,3 +37,14 @@ A date range selector (Any time, last 24 hours, last 7 days, last 30 days; defau
 > FIRST, check this task against current reality (launch snapshot, may have DRIFTED): if memonaut was bumped and `since` semantics changed, route to needs-attention.
 >
 > RECORD non-obvious in-scope decisions in `work/notes/observations/conversation-search-date-range-decisions.md` and end your final report with a `## Decisions` block linking it. Targeted `CONTEXT.md` edits only. Never write em dashes.
+
+## Decisions
+
+All recorded in `work/notes/observations/conversation-search-date-range-decisions.md`:
+1. **Range values and storage:** `'any' | '24h' | '7d' | '30d'`. Any time removes the key rather than storing it, and an unknown stored value reads as Any time.
+2. **Separate module:** the range logic lives in its own `search-range.ts`; `SearchRequest` only gained `since`.
+3. **Whitespace `since`:** treated as empty, so no bound.
+4. **Error wording:** the message for an unparseable `since`.
+5. **Any time sends nothing:** with no bound, `since` is left out of the memonaut call entirely.
+6. **Re-run check by code reading:** how the no-stale-debounce behaviour was verified without a browser, plus a short manual check for a human (type, change the range within 250 ms, confirm one request with the new `since`).
+7. **Placement:** where the dropdown sits and how it is styled.

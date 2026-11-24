@@ -44,6 +44,11 @@ export interface SearchRequest {
 	view?: 'default' | 'readonly';
 	/** Keep closed sessions (the server returns them flagged `closed: true`). */
 	includeClosed?: boolean;
+	/**
+	 * Lower bound (ISO) on when the matched message was said; absent = Any time.
+	 * Built by `rangeToSince` (search-range.ts) at request time.
+	 */
+	since?: string;
 	token?: string | null;
 }
 
@@ -52,6 +57,7 @@ export function searchRequestParams(req: SearchRequest): URLSearchParams {
 	const params = new URLSearchParams({q: req.query});
 	if (req.view === 'readonly') params.set('view', 'readonly');
 	if (req.includeClosed) params.set('includeClosed', '1');
+	if (req.since) params.set('since', req.since);
 	if (req.token) params.set('token', req.token);
 	return params;
 }
