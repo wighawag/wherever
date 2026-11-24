@@ -21,6 +21,7 @@ A date range selector (Any time, last 24 hours, last 7 days, last 30 days; defau
 - [ ] Range persists; changing it re-runs immediately without a stale debounce firing afterwards (checked by hand and recorded in the decisions file, unless you extract a small pure scheduler and test it).
 - [ ] Server tests also cover: absent and empty `since` -> no bound; garbage `since` with no index -> `error`, not `not-indexed`.
 - [ ] Tests isolate state dirs and the memonaut index in temp dirs and leave the real ones untouched.
+- [ ] `docs/USAGE.md` `GET /search` lists `since` (ISO date, absent or empty = no bound, error on an unparseable value).
 - [ ] `CONTEXT.md` "Conversation search" documents `since` (semantics: matched entry `ts`; inherited fork history keeps its original `ts`; `otherHits` counts only in-window matches; no-`ts` entries excluded; the new error case); changeset (`"wherever-dev": minor`).
 
 ## Blocked by
