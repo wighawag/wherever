@@ -10,6 +10,7 @@ import {
   ClosedUnavailableError,
   applyClose,
   applyReopen,
+  applyReopenBatch,
   closeSessions,
   enforceClosedCap,
   forgetClosed,
@@ -102,8 +103,8 @@ const close = (h: Harness, sessionFile: string, closed = true) =>
   api(h.port, '/sessions/close', { method: 'POST', body: { sessionFile, closed } });
 
 /** Write a minimal session transcript under the harness's sessions dir. */
-function writeSession(h: Harness, id: string): string {
-  const dir = path.join(h.agentDir, 'sessions', '--workspace--');
+function writeSession(h: Harness, id: string, folder = '--workspace--'): string {
+  const dir = path.join(h.agentDir, 'sessions', folder);
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${id}.jsonl`);
   const lines = [
@@ -243,6 +244,108 @@ describe('close and star are exclusive', () => {
     expect((await close(h, file)).status).toBe(200);
     expect(listedSession((await api(h.port, '/sessions')).body, file)?.closed).toBe(true);
     expect(fs.readFileSync(starsPath, 'utf8')).toBe('{not json');
+  }, 60_000);
+});
+
+describe('cascading close and batch undo (ADR 0025)', () => {
+  /**
+   * owner -> child (another folder) -> grandchild, and owner -> shut (already
+   * closed, so not part of a later batch). Ownership goes in this file's
+   * SHIPMATES_STATE_DIR (setup-isolate-env.ts), which the server opens too.
+   */
+  async function orchestration() {
+    const { h, stateDir } = await start();
+    const owner = writeSession(h, 'owner');
+    const child = writeSession(h, 'child', '--worktree-a--');
+    const grandchild = writeSession(h, 'grandchild', '--worktree-b--');
+    const shut = writeSession(h, 'shut');
+    const k = openShipmates();
+    k.recordOwnership({ session: child, owner, folder: '/w/a', via: 'host' });
+    k.recordOwnership({ session: grandchild, owner: child, folder: '/w/b', via: 'host' });
+    k.recordOwnership({ session: shut, owner, folder: '/w/a', via: 'host' });
+    k.close();
+    return { h, stateDir, owner, child, grandchild, shut };
+  }
+
+  const owned = (h: Harness, file: string) =>
+    api(h.port, `/sessions/owned?sessionFile=${encodeURIComponent(file)}`);
+
+  /** shipmates opens in the background after the server starts. */
+  async function untilOwned(h: Harness, file: string, n: number) {
+    const deadline = Date.now() + 20_000;
+    let body: any;
+    while (Date.now() < deadline) {
+      body = (await owned(h, file)).body;
+      if (body.sessions?.length === n) return body;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return body;
+  }
+
+  it('/sessions/owned answers the true N: the owned subtree a cascade would close, not what is listed', async () => {
+    const { h, owner, child, grandchild, shut } = await orchestration();
+    expect((await untilOwned(h, owner, 3)).sessions.sort()).toEqual([child, grandchild, shut].sort());
+    // An already closed member would not be closed again: not counted.
+    await close(h, shut);
+    expect((await owned(h, owner)).body.sessions.sort()).toEqual([child, grandchild].sort());
+    expect((await owned(h, grandchild)).body.sessions).toEqual([]);
+    expect((await owned(h, '/etc/passwd.jsonl')).status).toBe(400);
+  }, 60_000);
+
+  it('a cascade closes the session and its transitive subtree as one batch; the batch reopen restores them and their stars', async () => {
+    const { h, stateDir, owner, child, grandchild, shut } = await orchestration();
+    await untilOwned(h, owner, 3);
+    const shutClose = await close(h, shut);
+    await api(h.port, '/sessions/star', { method: 'POST', body: { sessionFile: grandchild, starred: true } });
+
+    const res = await api(h.port, '/sessions/close', {
+      method: 'POST',
+      body: { sessionFile: owner, closed: true, cascade: true },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.batch).toMatch(/^c_[0-9a-f]+$/);
+    expect(res.body.sessions.sort()).toEqual([owner, child, grandchild].sort());
+    const byFile = new Map(readStore(stateDir).closed.map((s) => [s.sessionFile, s]));
+    for (const f of [owner, child, grandchild]) expect(byFile.get(f)?.batch).toBe(res.body.batch);
+    expect(byFile.get(grandchild)?.unstarred).toBe(true);
+    // Already closed before: keeps its own batch.
+    expect(byFile.get(shut)?.batch).toBe(shutClose.body.batch);
+    const listed = (await api(h.port, '/sessions')).body;
+    expect(listedSession(listed, grandchild)).toMatchObject({ closed: true });
+    expect(listedSession(listed, grandchild)?.starred).toBeUndefined();
+
+    const undo = await api(h.port, '/sessions/close', { method: 'POST', body: { batch: res.body.batch, closed: false } });
+    expect(undo.status).toBe(200);
+    expect(undo.body.batch).toBe(res.body.batch);
+    expect(undo.body.sessions.sort()).toEqual([owner, child, grandchild].sort());
+    expect(readStore(stateDir).closed.map((s) => s.sessionFile)).toEqual([shut]);
+    const after = (await api(h.port, '/sessions')).body;
+    expect(listedSession(after, grandchild)?.starred).toBe(true);
+    expect(listedSession(after, grandchild)?.closed).toBeUndefined();
+    expect(listedSession(after, owner)?.starred).toBeUndefined();
+  }, 60_000);
+
+  it('the undo of a single close restores the star it removed', async () => {
+    const { h, stateDir } = await start();
+    const file = writeSession(h, 'starred');
+    await api(h.port, '/sessions/star', { method: 'POST', body: { sessionFile: file, starred: true } });
+    const res = await close(h, file);
+    const undo = await api(h.port, '/sessions/close', { method: 'POST', body: { batch: res.body.batch, closed: false } });
+    expect(undo.body).toEqual({ batch: res.body.batch, sessions: [path.resolve(file)] });
+    expect(readStore(stateDir).closed).toEqual([]);
+    expect(listedSession((await api(h.port, '/sessions')).body, file)?.starred).toBe(true);
+    // An unknown (or already undone) batch reopens nothing.
+    const again = await api(h.port, '/sessions/close', { method: 'POST', body: { batch: res.body.batch, closed: false } });
+    expect(again.body).toEqual({ batch: res.body.batch, sessions: [] });
+  }, 60_000);
+
+  it('refuses cascade on a reopen and a batch on a close', async () => {
+    const { h } = await start();
+    const file = writeSession(h, 's');
+    const post = (body: unknown) => api(h.port, '/sessions/close', { method: 'POST', body });
+    expect((await post({ sessionFile: file, closed: false, cascade: true })).status).toBe(400);
+    expect((await post({ batch: 'c_00', closed: true })).status).toBe(400);
+    expect((await post({ batch: 'nope', closed: false })).status).toBe(400);
   }, 60_000);
 });
 
@@ -411,5 +514,23 @@ describe('closed list transforms', () => {
     expect(validateCloseInput({ sessionFile: '/a.jsonl', closed: true })).toBeNull();
     expect(validateCloseInput({ closed: true })).not.toBeNull();
     expect(validateCloseInput({ sessionFile: '/a.jsonl' })).not.toBeNull();
+    expect(validateCloseInput({ sessionFile: '/a.jsonl', closed: true, cascade: true })).toBeNull();
+    expect(validateCloseInput({ sessionFile: '/a.jsonl', closed: false, cascade: true })).not.toBeNull();
+    expect(validateCloseInput({ batch: 'c_0123abcd', closed: false })).toBeNull();
+    expect(validateCloseInput({ batch: 'c_0123abcd', closed: true })).not.toBeNull();
+    expect(validateCloseInput({ batch: 'c_0123abcd', sessionFile: '/a.jsonl', closed: false })).not.toBeNull();
+    expect(validateCloseInput({ batch: '../x', closed: false })).not.toBeNull();
+  });
+
+  it('applyReopenBatch removes exactly one batch and returns its entries', () => {
+    const list: ClosedSession[] = [
+      { sessionFile: '/a.jsonl', closedAt: 2, batch: 'c_1', unstarred: true },
+      { sessionFile: '/b.jsonl', closedAt: 2, batch: 'c_1' },
+      { sessionFile: '/c.jsonl', closedAt: 1, batch: 'c_2' },
+      { sessionFile: '/d.jsonl', closedAt: 0 },
+    ];
+    const r = applyReopenBatch(list, 'c_1');
+    expect(r.reopened.map((s) => s.sessionFile)).toEqual(['/a.jsonl', '/b.jsonl']);
+    expect(r.list.map((s) => s.sessionFile)).toEqual(['/c.jsonl', '/d.jsonl']);
   });
 });

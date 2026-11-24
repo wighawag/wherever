@@ -31,6 +31,7 @@ import {
   readClosedSet,
   closeSessions,
   reopenSessions,
+  reopenBatch,
   validateCloseInput,
   forgetClosed,
   ClosedCapError,
@@ -1519,6 +1520,10 @@ async function main(): Promise<void> {
     }
   };
   void shipmates.ready().then(purgeShipmatesDeletes);
+  // The sessions a cascading close takes besides the root (ADR 0025): its
+  // transitive owned subtree, only those in the sessions dir (like every close).
+  const cascadeMembers = (sessionFile: string): string[] =>
+    shipmates.ownedSubtree(sessionFile).filter((f) => sessionPool.isSessionFile(f));
   const shipmatesPurgeTimer = setInterval(purgeShipmatesDeletes, 60 * 60 * 1000);
   shipmatesPurgeTimer.unref?.();
   if (channelDispatcher) {
@@ -2107,6 +2112,32 @@ async function main(): Promise<void> {
     // so a retried request is idempotent. Every close answers a fresh `batch`
     // (even for one session, for undo) and the `sessions` it newly closed; a
     // reopen answers `batch: null` and the sessions it reopened.
+    //
+    // `cascade: true` (close only) also closes the session's transitive owned
+    // subtree (shipmates ownership), all in the same batch. `{batch, closed:
+    // false}` is the undo: it reopens the whole batch and restores every star
+    // the batch's close removed (`unstarred`), answering `{batch, sessions}`.
+    //
+    // GET `/sessions/owned?sessionFile=` answers the true N for the web's
+    // "Also close the N sessions it owns?": the sessions a cascade would newly
+    // close (owned subtree, in the sessions dir, not already closed). The web's
+    // own listing only sees listed sessions, so it asks here.
+    if (pathname === '/sessions/owned' && req.method === 'GET') {
+      const raw = url.searchParams.get('sessionFile') || '';
+      if (!raw || validateCloseInput({ sessionFile: raw, closed: true })) {
+        sendJSON(res, 400, { error: 'Missing or invalid sessionFile' });
+        return;
+      }
+      const resolved = path.resolve(raw);
+      if (!sessionPool.isSessionFile(resolved)) {
+        sendJSON(res, 400, { error: 'Invalid session file: not a session in the sessions directory' });
+        return;
+      }
+      const closedSet = readClosedSet();
+      sendJSON(res, 200, { sessions: cascadeMembers(resolved).filter((f) => !closedSet.has(f)) });
+      return;
+    }
+
     if (pathname === '/sessions/close' && req.method === 'POST') {
       let parsed: any;
       try {
@@ -2118,6 +2149,25 @@ async function main(): Promise<void> {
       const invalid = validateCloseInput(parsed);
       if (invalid) {
         sendJSON(res, 400, { error: invalid });
+        return;
+      }
+      if (typeof parsed.batch === 'string') {
+        try {
+          const entries = reopenBatch(parsed.batch);
+          // Restore the stars the close removed. Best effort, like clearing them.
+          for (const e of entries) {
+            if (!e.unstarred) continue;
+            try {
+              setSessionStarred(e.sessionFile, true);
+            } catch (err) {
+              console.error('[wherever] undo close: could not restore the star:', (err as Error).message);
+            }
+          }
+          broadcastSessionsUpdated();
+          sendJSON(res, 200, { batch: parsed.batch, sessions: entries.map((e) => e.sessionFile) });
+        } catch (err) {
+          sendJSON(res, 500, { error: (err as Error).message || 'Failed to update closed sessions' });
+        }
         return;
       }
       const resolved = path.resolve(parsed.sessionFile);
@@ -2138,8 +2188,10 @@ async function main(): Promise<void> {
         // authoritative; clearing the star is best effort, so a broken stars
         // file (read as "no stars") cannot block closing.
         const starred = readStarredSet();
-        const result = closeSessions([resolved], { unstarred: (f) => starred.has(f) });
-        for (const f of [resolved]) {
+        const files = parsed.cascade ? [resolved, ...cascadeMembers(resolved)] : [resolved];
+        const result = closeSessions(files, { unstarred: (f) => starred.has(f) });
+        // Only the sessions this close took: an already closed one keeps its state.
+        for (const f of result.sessions) {
           if (!starred.has(f)) continue;
           try {
             setSessionStarred(f, false);

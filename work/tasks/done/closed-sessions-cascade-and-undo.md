@@ -35,3 +35,13 @@ covers: [8, 9, 19]
 > FIRST, check this task against current reality (launch snapshot, may have DRIFTED). If shipmates' ownership API differs, route to needs-attention with the discrepancy.
 >
 > RECORD non-obvious in-scope decisions (how N is fetched, banner lifetime) in `work/notes/observations/closed-sessions-cascade-and-undo-decisions.md` and end your final report with a `## Decisions` block linking it. Targeted `CONTEXT.md` edits only. Never write em dashes.
+
+## Decisions
+
+All recorded in `work/notes/observations/closed-sessions-cascade-and-undo-decisions.md`:
+1. N comes from the dedicated `GET /sessions/owned` query, not a listing field (that would cost a lookup per listed session). It is fetched on every close and leaves out sessions that are already closed.
+2. Cascade members outside the sessions directory are skipped, the same rule every close follows. Cascaded delete doesn't apply this filter.
+3. The question is a modal mounted once on the page, so a top-bar close gets it too, including on mobile.
+4. Banner lifetime: there is only ever one banner, for the latest close. A newer close replaces it; Undo, dismiss, or 30 seconds clears it. It is kept in the browser only, and appears in the sidebar only, so after a top-bar close on mobile you see it when you open the sidebar.
+5. The specific request shapes that get a 400, and why an unknown batch is not an error.
+6. After a cascade, stars are cleared only on the sessions that close actually closed.

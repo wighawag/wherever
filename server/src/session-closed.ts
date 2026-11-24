@@ -190,6 +190,19 @@ export function applyReopen(
 }
 
 /**
+ * Reopen every session one close request closed (its `batch`: the undo of a
+ * close, single or cascading). Returns the new list and the removed entries, so
+ * the caller can restore the stars they record as `unstarred`.
+ */
+export function applyReopenBatch(
+  list: ClosedSession[],
+  batch: string,
+): { list: ClosedSession[]; reopened: ClosedSession[] } {
+  const reopened = list.filter((s) => s.batch === batch);
+  return { list: list.filter((s) => s.batch !== batch), reopened };
+}
+
+/**
  * Enforce the cap WITHOUT a silent reopen: when over, drop only entries whose
  * transcript no longer exists (never one in `protect`, the sessions being closed
  * right now, which may not be written yet). Still over: `ClosedCapError`.
@@ -211,13 +224,35 @@ export function enforceClosedCap(
   return pruned;
 }
 
-/** Validate an incoming close/reopen, returning an error message or null. */
-export function validateCloseInput(input: { sessionFile?: unknown; closed?: unknown }): string | null {
+/** A batch id as `newCloseBatch` makes it. */
+const BATCH_RE = /^c_[0-9a-f]{1,64}$/;
+
+/**
+ * Validate an incoming close/reopen, returning an error message or null. Three
+ * shapes: `{sessionFile, closed}` (one session), `{sessionFile, closed: true,
+ * cascade: true}` (it and its owned subtree, as one batch) and `{batch, closed:
+ * false}` (reopen a whole batch: the undo).
+ */
+export function validateCloseInput(input: {
+  sessionFile?: unknown;
+  closed?: unknown;
+  cascade?: unknown;
+  batch?: unknown;
+}): string | null {
+  if (typeof input.closed !== 'boolean') return 'closed must be a boolean';
+  if (input.cascade !== undefined && typeof input.cascade !== 'boolean') return 'cascade must be a boolean';
+  if (input.batch !== undefined) {
+    if (typeof input.batch !== 'string' || !BATCH_RE.test(input.batch)) return 'Invalid batch';
+    if (input.closed) return 'batch is only for a reopen (closed: false)';
+    if (input.sessionFile !== undefined) return 'Give either sessionFile or batch, not both';
+    if (input.cascade) return 'cascade is only for a close (closed: true)';
+    return null;
+  }
   if (typeof input.sessionFile !== 'string' || input.sessionFile.length === 0) {
     return 'Missing sessionFile';
   }
   if (input.sessionFile.length > MAX_CLOSED_PATH_CHARS) return 'sessionFile is too long';
-  if (typeof input.closed !== 'boolean') return 'closed must be a boolean';
+  if (input.cascade && !input.closed) return 'cascade is only for a close (closed: true)';
   return null;
 }
 
@@ -333,6 +368,17 @@ export function closeSessions(
 export function reopenSessions(files: string[]): string[] {
   const current = readClosed();
   const { list, reopened } = applyReopen(current, files);
+  persist(current, list);
+  return reopened;
+}
+
+/**
+ * Reopen the whole `batch` and persist. Returns the entries it removed (their
+ * `unstarred` says which stars the close took). Throws like `readClosed`.
+ */
+export function reopenBatch(batch: string): ClosedSession[] {
+  const current = readClosed();
+  const { list, reopened } = applyReopenBatch(current, batch);
   persist(current, list);
   return reopened;
 }

@@ -7,6 +7,14 @@ import {
 	parseShipmatesUpdate,
 	type ShipmatesState,
 } from '$lib/core/shipmates';
+import {
+	CLOSE_BANNER_MS,
+	closeWithCascade,
+	undoClose,
+	type CloseApi,
+	type CloseBanner,
+	type CloseResult,
+} from '$lib/core/close-flow';
 
 // getToken()/getBaseUrl() below read the stored config STRAIGHT out of
 // localStorage, and a route can import this module without importing
@@ -358,6 +366,7 @@ function patchClosed(
 export async function setSessionClosed(
 	sessionFile: string,
 	closed: boolean,
+	cascade = false,
 ): Promise<{batch: string | null; sessions: string[]}> {
 	const optimistic = (prev: ClosedFlags): ClosedFlags => ({
 		closed,
@@ -376,7 +385,9 @@ export async function setSessionClosed(
 		const res = await fetch(url, {
 			method: 'POST',
 			headers: {'Content-Type': 'application/json'},
-			body: JSON.stringify({sessionFile, closed}),
+			body: JSON.stringify(
+				cascade ? {sessionFile, closed, cascade} : {sessionFile, closed},
+			),
 		});
 		if (!res.ok) {
 			const errData = await res.json().catch(() => ({}));
@@ -384,7 +395,13 @@ export async function setSessionClosed(
 				errData.error || `Close failed with status ${res.status}`,
 			);
 		}
-		return (await res.json()) as {batch: string | null; sessions: string[]};
+		const answer = (await res.json()) as {
+			batch: string | null;
+			sessions: string[];
+		};
+		// The owned sessions a cascade took are not patched optimistically: list again.
+		if (cascade) void fetchSessions();
+		return answer;
 	} catch (err) {
 		if (prevMain !== undefined)
 			patchClosed(sessionFolders, sessionFile, () => prevMain);
@@ -392,6 +409,113 @@ export async function setSessionClosed(
 			patchClosed(readOnlySessionFolders, sessionFile, () => prevReadOnly);
 		console.error('Failed to update closed state:', err);
 		throw err;
+	}
+}
+
+// --- Close with cascade and undo (core/close-flow.ts) ------------------------
+
+function apiUrl(pathname: string, query: Record<string, string> = {}): string {
+	const token = getToken();
+	const params = new URLSearchParams(query);
+	if (token) params.set('token', token);
+	const qs = params.toString();
+	return `${getBaseUrl()}${pathname}${qs ? `?${qs}` : ''}`;
+}
+
+const closeApi: CloseApi = {
+	async owned(sessionFile) {
+		const res = await fetch(apiUrl('/sessions/owned', {sessionFile}));
+		if (!res.ok)
+			throw new Error(`Owned lookup failed with status ${res.status}`);
+		const body = (await res.json()) as {sessions?: unknown};
+		return Array.isArray(body.sessions) ? (body.sessions as string[]) : [];
+	},
+	close: (sessionFile, cascade) => setSessionClosed(sessionFile, true, cascade),
+	async reopenBatch(batch): Promise<CloseResult> {
+		const res = await fetch(apiUrl('/sessions/close'), {
+			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
+			body: JSON.stringify({batch, closed: false}),
+		});
+		if (!res.ok) {
+			const errData = await res.json().catch(() => ({}));
+			throw new Error(errData.error || `Undo failed with status ${res.status}`);
+		}
+		const answer = (await res.json()) as CloseResult;
+		void fetchSessions();
+		return answer;
+	},
+};
+
+/** The open "Also close the N sessions it owns?" question, or null. */
+export const closePromptStore = writable<{
+	sessionFile: string;
+	n: number;
+} | null>(null);
+let answerPrompt: ((answer: boolean | null) => void) | null = null;
+
+/** Answer the open question: true closes the subtree too, false only the session, null cancels. */
+export function answerClosePrompt(answer: boolean | null): void {
+	const resolve = answerPrompt;
+	answerPrompt = null;
+	closePromptStore.set(null);
+	resolve?.(answer);
+}
+
+/** The undo banner of the latest close, or null (cleared after CLOSE_BANNER_MS). */
+export const closeBannerStore = writable<CloseBanner | null>(null);
+let bannerTimer: ReturnType<typeof setTimeout> | null = null;
+
+function showBanner(banner: CloseBanner | null): void {
+	if (bannerTimer) clearTimeout(bannerTimer);
+	bannerTimer = null;
+	closeBannerStore.set(banner);
+	if (banner) {
+		bannerTimer = setTimeout(() => {
+			bannerTimer = null;
+			if (get(closeBannerStore)?.batch === banner.batch)
+				closeBannerStore.set(null);
+		}, CLOSE_BANNER_MS);
+	}
+}
+
+/** Hide the undo banner without undoing. */
+export function dismissCloseBanner(): void {
+	showBanner(null);
+}
+
+/**
+ * Close a session the way the UI does: ask about its owned sessions (N from the
+ * server), close, then show the undo banner. Failures are logged (the store
+ * already rolled the optimistic flag back).
+ */
+export async function closeSession(sessionFile: string): Promise<void> {
+	answerClosePrompt(null); // a question still open for another session is cancelled
+	try {
+		const banner = await closeWithCascade(
+			sessionFile,
+			closeApi,
+			(n) =>
+				new Promise((resolve) => {
+					answerPrompt = resolve;
+					closePromptStore.set({sessionFile, n});
+				}),
+		);
+		if (banner) showBanner(banner);
+	} catch (err) {
+		console.error('Failed to close session:', err);
+	}
+}
+
+/** Undo the banner's close: reopen its whole batch (stars come back server-side). */
+export async function undoLastClose(): Promise<void> {
+	const banner = get(closeBannerStore);
+	if (!banner) return;
+	try {
+		await undoClose(banner, closeApi);
+		if (get(closeBannerStore)?.batch === banner.batch) showBanner(null);
+	} catch (err) {
+		console.error('Failed to undo close:', err);
 	}
 }
 
