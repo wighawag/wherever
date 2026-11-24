@@ -39,3 +39,13 @@ Nothing that needs the user may hide behind "closed". The server clears a sessio
 > FIRST, check this task against current reality (launch snapshot, may have DRIFTED). If a hook point moved or a trigger cannot be observed, route to needs-attention with the discrepancy.
 >
 > RECORD non-obvious in-scope decisions in `work/notes/observations/closed-sessions-auto-reopen-decisions.md` and end your final report with a `## Decisions` block linking it. Targeted `CONTEXT.md` edits only. Never write em dashes.
+
+## Decisions
+
+Recorded in `work/notes/observations/closed-sessions-auto-reopen-decisions.md`:
+1. The two non-triggers above, and why.
+2. `closedAtOf()` added to the in-memory cache, and the inbox rule skipped entirely while nothing is closed.
+3. A failed reopen leaves the session closed and retries on its next trigger.
+4. `sessions_updated` goes through the existing 2-second throttle, like every other list change.
+5. Where the listener is registered, and the inbox check runs in a `finally` after `wakeEvicted()` so a failing wake can't skip it.
+6. Why `agent_start` is tested on its own only via the CLI bridge and in-process.
