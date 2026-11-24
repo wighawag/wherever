@@ -174,6 +174,12 @@ export interface SearchParams {
   limit?: number;
   /** Keep closed sessions (flagged `closed: true`) instead of dropping them. */
   includeClosed?: boolean;
+  /**
+   * Lower bound on when the MATCHED ENTRY was said (memonaut's entry `ts`), not
+   * on the session's last activity. Any `Date.parse`-able form; absent or empty
+   * means no bound, unparseable answers `status: 'error'`. See `parseSince`.
+   */
+  since?: string;
 }
 
 const require = createRequire(import.meta.url);
@@ -393,6 +399,30 @@ export function filterHits(
 }
 
 /**
+ * Validate and normalize a `since` bound.
+ *
+ * - absent or empty (after trim): `{ since: undefined }`, i.e. no bound;
+ * - unparseable (`Date.parse` is NaN): `{ error }`. Unlike `view` and `limit`,
+ *   which coerce silently, a bad bound is REFUSED: silently dropping it would
+ *   return an unbounded result the user believes is bounded;
+ * - otherwise normalized with `toISOString()` (UTC, `Z`). memonaut compares
+ *   `ts >= since` as TEXT and pi writes `Z`-suffixed timestamps, so an offset
+ *   form like `+02:00` would otherwise compare wrongly.
+ *
+ * Entries with no `ts` never satisfy a bound (memonaut's behaviour), so they
+ * are excluded whenever one is set.
+ */
+export function parseSince(raw: string | undefined): { since?: string; error?: string } {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed) return {};
+  const ms = Date.parse(trimmed);
+  if (Number.isNaN(ms)) {
+    return { error: `Invalid \`since\`: ${JSON.stringify(trimmed)} is not a parseable date (use ISO 8601).` };
+  }
+  return { since: new Date(ms).toISOString() };
+}
+
+/**
  * Run one search. Always resolves to a well-formed `SearchResponse`: a missing
  * index, a missing dependency and a bad query are ANSWERS, not failures, so the
  * dashboard can explain itself instead of showing a dead search box.
@@ -405,6 +435,13 @@ export async function searchConversations(params: SearchParams): Promise<SearchR
 
   if (!query) {
     return { status: 'ok', query, hits: [], scanned: 0, hiddenHits: 0 };
+  }
+
+  // Validated BEFORE memonaut is loaded or the index opened, so a bad bound is
+  // reported as such even when there is no index (not as 'not-indexed').
+  const bound = parseSince(params.since);
+  if (bound.error) {
+    return { status: 'error', query, hits: [], message: bound.error };
   }
 
   const mod = await loadMemonaut();
@@ -452,6 +489,9 @@ export async function searchConversations(params: SearchParams): Promise<SearchR
       limit,
       // Over-fetch threads so the visible count is honest after filtering.
       threadLimit: THREAD_FETCH_LIMIT,
+      // Bounds the MATCHED ENTRY's ts; `otherHits` then counts only in-window
+      // matches. Omitted entirely when unbounded.
+      ...(bound.since ? { since: bound.since } : {}),
       // NEVER pass includePrivate: memonaut's `private` globs are the user's
       // "do not hand this back" boundary and search does not get to override it.
     });

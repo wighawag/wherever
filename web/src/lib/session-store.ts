@@ -609,7 +609,7 @@ let searchAbort: AbortController | null = null;
 export async function searchConversations(
 	query: string,
 	view: 'default' | 'readonly' = 'default',
-	opts: {includeClosed?: boolean} = {},
+	opts: {includeClosed?: boolean; since?: string} = {},
 ): Promise<SearchResponse | null> {
 	searchAbort?.abort();
 	const controller = new AbortController();
@@ -621,6 +621,7 @@ export async function searchConversations(
 			query,
 			view,
 			includeClosed: opts.includeClosed,
+			since: opts.since,
 			token,
 		});
 		const res = await fetch(`${baseUrl}/search?${params.toString()}`, {

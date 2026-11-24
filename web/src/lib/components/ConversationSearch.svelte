@@ -15,7 +15,10 @@
 	 *    server/src/conversation-search.ts); this panel simply mirrors the two
 	 *    views: the main list, and the read-only page. Closed sessions are left
 	 *    out unless "Include closed" is on (remembered on this device, shared by
-	 *    both views); included ones render dimmed.
+	 *    both views); included ones render dimmed. The date range (Any time by
+	 *    default, also remembered and shared) bounds when the MATCHED MESSAGE
+	 *    was said; its window is computed per request, so it moves with the
+	 *    clock.
 	 */
 	import {untrack} from 'svelte';
 	import {
@@ -41,6 +44,13 @@
 		readIncludeClosed,
 		writeIncludeClosed,
 	} from '$lib/core/search-request.js';
+	import {
+		SEARCH_RANGES,
+		readSearchRange,
+		writeSearchRange,
+		rangeToSince,
+		type SearchRange,
+	} from '$lib/core/search-range.js';
 
 	function settingStorage(): Storage | undefined {
 		try {
@@ -72,6 +82,7 @@
 	// heavily forked conversation cannot own the panel.
 	let expandedThreads = $state<Record<string, boolean>>({});
 	let includeClosed = $state(readIncludeClosed(settingStorage()));
+	let range = $state<SearchRange>(readSearchRange(settingStorage()));
 
 	let currentSession = $derived($activeSessionInfo.sessionFile);
 	let loadingSession = $derived($isLoadingSession);
@@ -113,7 +124,8 @@
 		const response = await searchConversations(
 			text.trim(),
 			readOnly ? 'readonly' : 'default',
-			{includeClosed},
+			// The window is computed NOW, at request time, never cached.
+			{includeClosed, since: rangeToSince(range, Date.now())},
 		);
 		// null = superseded by a newer query; keep what is on screen.
 		if (response === null) return;
@@ -130,12 +142,25 @@
 		void run(query);
 	}
 
-	// Re-run the current query at once, like a submit: a pending debounce is
-	// cleared so it cannot fire afterwards with the old setting, and the request
-	// goes through the store's abort/supersede path like any other.
 	function toggleIncludeClosed() {
 		includeClosed = !includeClosed;
 		writeIncludeClosed(settingStorage(), includeClosed);
+		rerunNow();
+	}
+
+	function changeRange(next: string) {
+		const picked = SEARCH_RANGES.find((r) => r.value === next)?.value;
+		if (!picked || picked === range) return;
+		range = picked;
+		writeSearchRange(settingStorage(), range);
+		rerunNow();
+	}
+
+	// A setting changed (Include closed, date range): re-run the current query at
+	// once, like a submit. A pending debounce is cleared so it cannot fire
+	// afterwards, and the request goes through the store's abort/supersede path
+	// like any other, so an in-flight request with the old setting is aborted.
+	function rerunNow() {
 		if (debounceTimer) {
 			clearTimeout(debounceTimer);
 			debounceTimer = null;
@@ -235,6 +260,21 @@
 					class="h-3 w-3 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
 				/>
 				Include closed
+			</label>
+			<label
+				class="flex items-center gap-1.5 text-[10px] text-brand-text-muted"
+				title="Only matches said within this window"
+			>
+				<span class="sr-only">Date range</span>
+				<select
+					value={range}
+					onchange={(e) => changeRange(e.currentTarget.value)}
+					class="rounded border border-brand-border bg-brand-surface-2 px-1 py-0.5 text-[10px] text-brand-text-muted hover:text-brand-text focus:border-brand-blue focus:outline-none"
+				>
+					{#each SEARCH_RANGES as option (option.value)}
+						<option value={option.value}>{option.label}</option>
+					{/each}
+				</select>
 			</label>
 		</div>
 	</div>
