@@ -1,16 +1,20 @@
 // Pure decision helpers for the pill composer (ChatInput.svelte), kept out of
 // the component so they are unit-testable in the node-env vitest run.
 //
-// sendButtonState: which button(s) sit at the right end of the pill.
+// sendButtonState: the pill's right button, and whether ■ Stop shows.
 //   - idle, empty pill          -> ➤ send, disabled
 //   - idle, with content        -> ➤ send (disabled while sending is blocked)
-//   - agent running, empty pill -> ■ Stop only
-//   - agent running, content    -> ➤ steer, with ■ Stop beside it
+//   - agent running, empty pill -> ➤ steer, disabled; ■ Stop above the pill
+//   - agent running, content    -> ➤ steer; ■ Stop above the pill
 //   - search mode               -> today's Search label, never a Stop
-// ■ Stop follows ONLY `streaming`, exactly like the old settings-strip Abort
-// (`disabled={!streaming}`): a reconnect or an upload in progress blocks
-// SENDING, never stopping. Resolved decision 1 of spec chat-compact-layout:
-// Stop is never hidden while the agent runs.
+// The pill's button only ever SENDS. ■ Stop is a labelled red button in the
+// row ABOVE the pill (beside "Cancel queued"), not in the pill: next to 🎤 a
+// recording mic and a Stop were two red circles side by side and read as one
+// control. ■ Stop follows ONLY `streaming`, exactly like the old settings-strip
+// Abort (`disabled={!streaming}`): a reconnect or an upload in progress blocks
+// SENDING, never stopping, and Stop is never hidden while the agent runs
+// (resolved decision 1 of spec chat-compact-layout; where it sits was changed
+// after the human's first use).
 //
 // contextRing: the small context-usage ring shown above the pill (it replaces
 // the strip's "🧠 11.3% / 1.0M" label). The token formatter is injected so this
@@ -28,32 +32,22 @@ export interface SendButtonInput {
 }
 
 export interface SendButtonState {
-	/** The pill's rightmost button. */
-	primary: 'send' | 'steer' | 'stop' | 'search';
+	/** The pill's rightmost button: it only ever sends. */
+	primary: 'send' | 'steer' | 'search';
 	primaryDisabled: boolean;
-	/** Show a separate ■ Stop next to the primary (running with content). */
-	stopBeside: boolean;
+	/** Show ■ Stop (above the pill): the agent runs, outside search mode. */
+	stop: boolean;
 }
 
 export function sendButtonState(input: SendButtonInput): SendButtonState {
 	if (input.searchMode) {
-		return {
-			primary: 'search',
-			primaryDisabled: !input.canSend,
-			stopBeside: false,
-		};
+		return {primary: 'search', primaryDisabled: !input.canSend, stop: false};
 	}
-	if (input.streaming) {
-		if (!input.hasContent) {
-			return {primary: 'stop', primaryDisabled: false, stopBeside: false};
-		}
-		return {
-			primary: 'steer',
-			primaryDisabled: !input.canSend,
-			stopBeside: true,
-		};
-	}
-	return {primary: 'send', primaryDisabled: !input.canSend, stopBeside: false};
+	return {
+		primary: input.streaming ? 'steer' : 'send',
+		primaryDisabled: !input.canSend,
+		stop: input.streaming,
+	};
 }
 
 export interface ContextUsageLike {

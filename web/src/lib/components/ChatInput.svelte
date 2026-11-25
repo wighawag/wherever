@@ -239,9 +239,9 @@
 			(text.trim().length > 0 || attachments.length > 0),
 	);
 
-	// The pill's right end: ➤ send / ➤ steer (+ ■ Stop beside) / ■ Stop /
-	// Search. See core/composer-controls.ts for the rule (Stop follows only
-	// `streaming`, like the old strip's Abort).
+	// The pill's right end: ➤ send / ➤ steer / Search; ■ Stop sits in the row
+	// above the pill, away from 🎤. See core/composer-controls.ts for the rule
+	// (Stop follows only `streaming`, like the old strip's Abort).
 	let buttons = $derived(
 		sendButtonState({
 			searchMode,
@@ -1292,11 +1292,13 @@
 	{/if}
 	<!-- Above the pill: the context ring (always, in every composer state: it is
 	     outside the pill, so neither the keyboard nor the pill growing to its cap
-	     can push it away), "Cancel queued (N)" while steers wait, a transient
-	     "Draft saved", and "Drafts (N)" when there are any. -->
-	{#if ring || queuedSteers > 0 || drafts.length > 0 || draftSavedFlash}
+	     can push it away), ■ Stop while the agent runs (here, not in the pill, so
+	     it is never mistaken for the mic's stop-recording), "Cancel queued (N)"
+	     while steers wait, a transient "Draft saved", and "Drafts (N)" when there
+	     are any. -->
+	{#if ring || buttons.stop || queuedSteers > 0 || drafts.length > 0 || draftSavedFlash}
 		<div
-			class="mb-1.5 flex min-h-[20px] items-center justify-between gap-3 px-1 text-[11px] text-brand-text-muted select-none"
+			class="mb-1.5 flex min-h-6 items-center justify-between gap-3 px-1 text-[11px] text-brand-text-muted select-none"
 		>
 			<div class="flex min-w-0 items-center gap-1.5">
 				{#if ring}
@@ -1335,9 +1337,21 @@
 					</span>
 				{/if}
 			</div>
-			<div class="flex shrink-0 items-center gap-3">
+			<div class="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
 				{#if draftSavedFlash}
 					<span class="text-emerald-400">✓ Draft saved</span>
+				{/if}
+				{#if buttons.stop}
+					<button
+						type="button"
+						onclick={abort}
+						class="flex items-center gap-1.5 rounded-md bg-rose-500 px-2.5 py-0.5 text-xs font-medium text-brand-text transition-colors hover:bg-rose-600"
+						title="Stop the agent"
+						aria-label="Stop the agent"
+					>
+						<span class="block h-2.5 w-2.5 rounded-[2px] bg-current"></span>
+						Stop
+					</button>
 				{/if}
 				<!-- Cancel ALL queued steers without aborting the running turn. pi's
 				     clearQueue() is all-or-nothing, so this is a single session-level
@@ -1367,7 +1381,7 @@
 			</div>
 		</div>
 	{/if}
-	<!-- The pill: ＋, the text, 🎤, and the send button (➤ / ■ Stop / Search).
+	<!-- The pill: ＋, the text, 🎤, and the send button (➤ send / ➤ steer / Search).
 	     The textarea grows with its content up to about 40% of the viewport
 	     height, then scrolls. -->
 	<form
@@ -1516,30 +1530,7 @@
 			onSend={handleSend}
 			compact
 		/>
-		{#if buttons.stopBeside}
-			<button
-				type="button"
-				onclick={abort}
-				disabled={!streaming}
-				class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-rose-500 text-brand-text transition-colors hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
-				title="Stop the agent"
-				aria-label="Stop"
-			>
-				<span class="block h-3 w-3 rounded-[2px] bg-current"></span>
-			</button>
-		{/if}
-		{#if buttons.primary === 'stop'}
-			<button
-				type="button"
-				onclick={abort}
-				disabled={buttons.primaryDisabled}
-				class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-rose-500 text-brand-text transition-colors hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
-				title="Stop the agent"
-				aria-label="Stop"
-			>
-				<span class="block h-3 w-3 rounded-[2px] bg-current"></span>
-			</button>
-		{:else if buttons.primary === 'search'}
+		{#if buttons.primary === 'search'}
 			<button
 				type="submit"
 				disabled={buttons.primaryDisabled}
