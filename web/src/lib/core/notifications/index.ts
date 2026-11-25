@@ -1,5 +1,9 @@
 import {createQuestionToasts, readQuestionPush} from './question-toasts';
 import {createUpdateToasts, readUpdatePush} from './update-toasts';
+import {
+	browserNotifications,
+	createAnsweredNotificationCloser,
+} from './answered-notifications';
 
 /** What the service worker posts to the page: the push as `{title, options}`. */
 export type JSONNotification = {
@@ -69,6 +73,15 @@ export const questionToasts = createQuestionToasts({
 export const updateToasts = createUpdateToasts({
 	storage: typeof localStorage !== 'undefined' ? localStorage : undefined,
 	openTarget: (navigate) => openNotificationTarget(navigate, browserLocation()),
+});
+
+/**
+ * Closes this device's system notification for a question answered anywhere
+ * (`answered-notifications.ts`). `wherever.ts` feeds it every received
+ * `shipmates_update` frame and every return to the page.
+ */
+export const answeredNotificationCloser = createAnsweredNotificationCloser({
+	list: browserNotifications,
 });
 
 /**

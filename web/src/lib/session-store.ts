@@ -1121,6 +1121,9 @@ export function setCurrentSession(sessionId: string | null): void {
  */
 export const shipmatesStore = writable<ShipmatesState>(emptyShipmatesState);
 
-export function applyShipmatesUpdate(frame: unknown): void {
-	shipmatesStore.set(parseShipmatesUpdate(frame));
+/** Parse and store a received frame; returns the parsed state. */
+export function applyShipmatesUpdate(frame: unknown): ShipmatesState {
+	const parsed = parseShipmatesUpdate(frame);
+	shipmatesStore.set(parsed);
+	return parsed;
 }
