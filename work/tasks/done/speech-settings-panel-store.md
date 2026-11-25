@@ -39,3 +39,14 @@ Today `engine` and `locale` are local state in `SpeechButton.svelte`, read from 
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/speech-settings-panel-store-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+Recorded in `work/notes/observations/speech-settings-panel-store-decisions.md`, along with the full browser check:
+1. **Where the store lives:** the testable store code is in `core/`, and the app's copy is in `wherever.ts`, next to the other saved settings.
+2. **Direct send:** it is not copied into the new store; the panel uses the existing `autoSendOnSpeechEnd` store directly.
+3. **Speech error:** it moved into the shared store (not saved), so the panel can show it wherever it is mounted.
+4. **Defaults:** unchanged and never saved. One small tightening: an unknown saved engine value now falls back to the default.
+5. **Error display:** a small alert box with × above 🎤 rather than a hover tooltip (which phones can't show). It is hidden while the panel is open.
+6. **Panel scope:** it renders only the panel body; whoever mounts it supplies the popover or sheet around it.
+7. **Left as is:** `speechLocale()` in `chat-message-helpers.ts` (the read-aloud voice language) still reads localStorage directly. It reads at speak time, so it already sees changes at once.

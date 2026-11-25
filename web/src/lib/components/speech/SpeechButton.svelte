@@ -1,6 +1,8 @@
 <script lang="ts">
 	import {onMount} from 'svelte';
-	import {autoSendOnSpeechEnd, setAutoSendOnSpeechEnd} from '$lib/wherever';
+	import {autoSendOnSpeechEnd, speechSettings} from '$lib/wherever';
+	import {hasBrowserSpeechRecognition} from '$lib/core/speech-settings';
+	import SpeechSettingsPanel from './SpeechSettingsPanel.svelte';
 	import {unlockTts} from '$lib/core/speak';
 	import {
 		createAutoStopDetector,
@@ -21,8 +23,9 @@
 		// The speech engine currently in use, mirrored out to the parent so the
 		// hands-free mic-reopen loop can see it (both engines auto-record; the cloud
 		// one additionally auto-STOPS, see autoStopDetector below). Bindable so a
-		// parent can read it reactively; SpeechButton owns the value (the settings
-		// popover sets it), the parent only observes.
+		// parent can read it reactively; the value comes from the shared speech
+		// settings store (the Speech Settings panel sets it), the parent only
+		// observes.
 		activeEngine?: 'browser' | 'cloud';
 		// Pill-composer sizing: smaller, borderless while idle, so the mic sits
 		// inside the one-line pill instead of in a column of 48px buttons.
@@ -35,17 +38,31 @@
 			? (window as any).SpeechRecognition ||
 				(window as any).webkitSpeechRecognition
 			: null;
-	const isBrowserSupported = !!SpeechRecognition;
+	const isBrowserSupported = hasBrowserSpeechRecognition();
 
 	// State
 	let isRecording = $state(false);
 	let isProcessing = $state(false);
 	let isHolding = $state(false);
 	let showSettings = $state(false);
-	let directSend = $state(false);
-	let locale = $state('en-US');
-	let engine = $state<'browser' | 'cloud'>('browser');
-	let speechError = $state<string | null>(null);
+	// Engine, locale and the last error live in the shared speech settings store
+	// (core/speech-settings.ts, instance in wherever.ts), so the Speech Settings
+	// panel can be mounted anywhere and a change there applies here at once.
+	// directSend IS the conversation-mode `autoSendOnSpeechEnd` knob: it shares
+	// the single `wherever-speech-direct-send` home via the autoSendOnSpeechEnd
+	// store (see wherever.ts), not a forked second flag.
+	const {
+		engine: engineStore,
+		locale: localeStore,
+		error: errorStore,
+	} = speechSettings;
+	const engine = $derived($engineStore);
+	const locale = $derived($localeStore);
+	const directSend = $derived($autoSendOnSpeechEnd);
+	const speechError = $derived($errorStore);
+	function setSpeechError(message: string | null) {
+		errorStore.set(message);
+	}
 
 	// Keep the bindable `activeEngine` prop in lockstep with the internal engine
 	// choice so the parent (the hands-free loop) always sees the live engine.
@@ -74,39 +91,9 @@
 	let baseText = '';
 	let textModified = false;
 
-	const locales = [
-		{code: 'en-US', label: 'English (US)'},
-		{code: 'en-GB', label: 'English (UK)'},
-		{code: 'en-IN', label: 'English (India)'},
-		{code: 'en-AU', label: 'English (Australia)'},
-		{code: 'en-CA', label: 'English (Canada)'},
-		{code: 'en-ZA', label: 'English (South Africa)'},
-	];
-
-	// directSend IS the conversation-mode `autoSendOnSpeechEnd` knob: it shares the
-	// single `wherever-speech-direct-send` home via the autoSendOnSpeechEnd store
-	// (see wherever.ts), so a change here or in the settings UI is reflected in the
-	// other without a forked second flag.
-	const unsubscribeDirectSend = autoSendOnSpeechEnd.subscribe((v) => {
-		directSend = v;
-	});
-
 	onMount(() => {
-		// Load preferences (directSend is loaded via the autoSendOnSpeechEnd store).
-		const storedLocale = localStorage.getItem('wherever-speech-locale');
-		if (storedLocale !== null) {
-			locale = storedLocale;
-		}
-		const storedEngine = localStorage.getItem('wherever-speech-engine');
-		if (storedEngine !== null) {
-			engine = storedEngine as 'browser' | 'cloud';
-		} else if (!isBrowserSupported) {
-			engine = 'cloud'; // Default to cloud if browser doesn't support Web Speech API
-		}
-
 		// Cleanup on destroy
 		return () => {
-			unsubscribeDirectSend();
 			if (recognitionInstance) {
 				try {
 					recognitionInstance.abort();
@@ -135,14 +122,6 @@
 			if (pressTimer) clearTimeout(pressTimer);
 		};
 	});
-
-	function savePreferences() {
-		// directSend persists via its shared store (single canonical home) so the
-		// conversation-mode autoSendOnSpeechEnd knob and this toggle stay in sync.
-		setAutoSendOnSpeechEnd(directSend);
-		localStorage.setItem('wherever-speech-locale', locale);
-		localStorage.setItem('wherever-speech-engine', engine);
-	}
 
 	function getBaseUrl(): string {
 		const config = localStorage.getItem('wherever-config');
@@ -272,7 +251,7 @@
 			recognitionInstance.onerror = (event: any) => {
 				console.error('Browser speech recognition error:', event.error);
 				if (event.error !== 'no-speech') {
-					speechError = `Error: ${event.error}`;
+					setSpeechError(`Error: ${event.error}`);
 				}
 				stopBrowserRecording();
 			};
@@ -294,7 +273,7 @@
 			}
 		} catch (e: any) {
 			console.error('Failed to start browser speech recognition:', e);
-			speechError = 'Failed to start browser recording';
+			setSpeechError('Failed to start browser recording');
 			isRecording = false;
 		}
 	}
@@ -356,7 +335,7 @@
 			}
 		} catch (err: any) {
 			console.error('Failed to start cloud audio recording:', err);
-			speechError = err.message || 'Microphone access denied';
+			setSpeechError(err.message || 'Microphone access denied');
 			isRecording = false;
 			isProcessing = false;
 			autoStopDetector = null;
@@ -397,7 +376,7 @@
 				return;
 			}
 
-			speechError = null;
+			setSpeechError(null);
 
 			// Concatenate Float32 chunks
 			let totalLength = 0;
@@ -463,7 +442,7 @@
 			}
 		} catch (err: any) {
 			console.error('Cloud transcription request failed:', err);
-			speechError = err.message || 'Cloud API failed';
+			setSpeechError(err.message || 'Cloud API failed');
 		} finally {
 			isProcessing = false;
 			if (audioContext) {
@@ -483,7 +462,7 @@
 	// user-opened recording is never ended for them.
 	function startRecording(autoStop = false) {
 		if (disabled || isRecording || isProcessing) return;
-		speechError = null;
+		setSpeechError(null);
 		textModified = false;
 		baseText = text;
 		autoStopDetector =
@@ -742,6 +721,25 @@
 		</svg>
 	</button>
 
+	<!-- Speech error, next to the mic (story 12): visible from the pill, not only
+	     inside the settings panel (which shows it itself while open). Cleared by
+	     the next recording or by its ×. -->
+	{#if speechError && !showSettings}
+		<div
+			role="alert"
+			class="absolute right-0 bottom-full z-30 mb-2 flex w-max max-w-[min(16rem,80vw)] items-start gap-1.5 rounded-md border border-red-900/60 bg-red-950/90 py-1 pr-1 pl-2 text-[11px] leading-snug text-red-300 shadow-lg"
+		>
+			<span class="min-w-0 break-words">{speechError}</span>
+			<button
+				type="button"
+				onclick={() => setSpeechError(null)}
+				class="shrink-0 rounded px-1 text-red-400 hover:bg-red-900/50 hover:text-red-200"
+				title="Dismiss"
+				aria-label="Dismiss speech error">×</button
+			>
+		</div>
+	{/if}
+
 	<!-- Settings Popover -->
 	{#if showSettings}
 		<!-- Click Outside Backdrop -->
@@ -755,101 +753,7 @@
 		<div
 			class="absolute right-0 bottom-14 z-50 w-64 rounded-lg border border-gray-600 bg-gray-800 p-4 text-xs text-white shadow-xl"
 		>
-			<h4
-				class="mb-3 border-b border-gray-700 pb-1.5 font-semibold text-gray-300"
-			>
-				Speech Settings
-			</h4>
-
-			<!-- Engine Selection -->
-			<div class="mb-3.5">
-				<span class="mb-1 block font-medium text-gray-400">
-					Speech-to-Text Engine
-				</span>
-				<div class="flex gap-2">
-					<button
-						type="button"
-						onclick={() => {
-							engine = 'browser';
-							savePreferences();
-						}}
-						disabled={!isBrowserSupported}
-						class="flex-1 rounded border px-2 py-1.5 text-center font-medium transition-colors disabled:opacity-40
-							{engine === 'browser'
-							? 'border-blue-500 bg-blue-600 text-white'
-							: 'border-gray-600 bg-gray-950 text-gray-400 hover:text-white'}"
-					>
-						On-Device
-					</button>
-					<button
-						type="button"
-						onclick={() => {
-							engine = 'cloud';
-							savePreferences();
-						}}
-						class="flex-1 rounded border px-2 py-1.5 text-center font-medium transition-colors
-							{engine === 'cloud'
-							? 'border-blue-500 bg-blue-600 text-white'
-							: 'border-gray-600 bg-gray-950 text-gray-400 hover:text-white'}"
-					>
-						Cloud AI
-					</button>
-				</div>
-				<p class="mt-1 text-[10px] leading-relaxed text-gray-400">
-					{engine === 'browser'
-						? 'Uses free built-in browser dictation. Streaming, zero-latency.'
-						: 'Uses server-side Z.ai / Groq / OpenAI keys. High accent tolerance.'}
-				</p>
-			</div>
-
-			<!-- Accent/Locale Selection (Only visible for Browser engine) -->
-			{#if engine === 'browser'}
-				<div class="mb-3.5">
-					<label
-						for="speech-locale"
-						class="mb-1 block font-medium text-gray-400"
-					>
-						Accent / Locale
-					</label>
-					<select
-						id="speech-locale"
-						bind:value={locale}
-						onchange={savePreferences}
-						class="w-full rounded border border-gray-600 bg-gray-950 px-2 py-1.5 text-white focus:border-blue-500 focus:outline-none"
-					>
-						{#each locales as loc}
-							<option value={loc.code}>{loc.label}</option>
-						{/each}
-					</select>
-				</div>
-			{/if}
-
-			<!-- Direct Send Toggle -->
-			<div class="mb-2">
-				<label class="flex cursor-pointer items-center gap-2 py-1">
-					<input
-						type="checkbox"
-						bind:checked={directSend}
-						onchange={savePreferences}
-						class="rounded border-gray-600 bg-gray-950 text-blue-600 focus:ring-0 focus:ring-offset-0"
-					/>
-					<span class="font-medium text-gray-300"
-						>Direct Send (Auto-dispatch)</span
-					>
-				</label>
-				<p class="pl-6 text-[10px] leading-relaxed text-gray-400">
-					When enabled, releasing or stopping the microphone immediately sends
-					the message.
-				</p>
-			</div>
-
-			{#if speechError}
-				<div
-					class="mt-2 rounded border border-red-900/40 bg-red-950/40 p-2 leading-normal text-red-400"
-				>
-					{speechError}
-				</div>
-			{/if}
+			<SpeechSettingsPanel />
 		</div>
 	{/if}
 </div>

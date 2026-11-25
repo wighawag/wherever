@@ -15,6 +15,10 @@ import {
 	shouldSignalConversationMode,
 } from './core/conversation-mode';
 import {buildAttachmentMessage} from './core/attachments';
+import {
+	createSpeechSettings,
+	hasBrowserSpeechRecognition,
+} from './core/speech-settings';
 import {shouldDropStaleHash} from './core/view-mode';
 import {fileStillReadable, postUpload} from './core/post-upload';
 import {adoptTokenFromUrlOnce} from './core/token-adoption';
@@ -323,6 +327,17 @@ export function setAutoSendOnSpeechEnd(value: boolean) {
 	} catch {}
 	autoSendOnSpeechEnd.set(value);
 }
+
+// --- Speech settings (engine, locale, last error) ---------------------------
+// The ONE app instance of the speech settings store (core/speech-settings.ts):
+// SpeechButton (the 🎤 in the pill) and SpeechSettingsPanel both read it, so a
+// change made in the panel, wherever it is mounted, applies to the mic at once.
+// Same localStorage keys as before. Direct send stays the autoSendOnSpeechEnd
+// store above (one home per setting).
+export const speechSettings = createSpeechSettings({
+	storage: typeof localStorage !== 'undefined' ? localStorage : null,
+	browserSupported: hasBrowserSpeechRecognition(),
+});
 
 // --- The master toggle: PER CONVERSATION, over a global default -------------
 // A spoken exchange is a property of the CONVERSATION you are having, not of the
