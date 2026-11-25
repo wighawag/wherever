@@ -42,3 +42,13 @@ None, can start immediately.
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/chat-message-layout-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+Recorded in `work/notes/observations/chat-message-layout-decisions.md`:
+1. Tapping a message pins its action row open on touch, and the hidden row ignores taps. I chose this over always-visible rows, relying on sticky hover, or long-press.
+2. Fork moved from the user bubble into the action row and is hidden until hover, focus or tap.
+3. The timestamp moved out of the bubble onto the action row's line. The assistant timestamp is now grey instead of purple, and the shipmates card's timestamp sits under the card.
+4. The 760px width comes from centering each row plus padding in the composer, not a wrapper element. With a non-overlay scrollbar the two columns can be off by half a scrollbar width.
+5. The chip uses ✓ / ✗ / ⊘ / ⟳ instead of ✅ / ❌ / ⚡, and the duration drops its "Took" / "Elapsed" prefix (the tooltip still says which).
+6. The new helpers `messageLayout()` and `toolChipStatus()`, with layout names `document` / `bubble` / `chip` / `card`. None of them clashes with a `CONTEXT.md` term.
