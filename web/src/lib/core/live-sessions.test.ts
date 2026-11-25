@@ -2,6 +2,9 @@ import {describe, it, expect} from 'vitest';
 import {
 	LIVE_STRIP_CAP,
 	liveSessions,
+	liveBadgeText,
+	liveRowDetail,
+	liveStateCounts,
 	liveStripHeader,
 	sessionListLabel,
 	sessionLiveState,
@@ -252,13 +255,13 @@ describe('liveSessions', () => {
 			]),
 			'',
 		);
-		expect(rows.map((r) => [r.session.path, r.stateText])).toEqual([
+		expect(rows.map((r) => [r.session.path, r.waitingOn])).toEqual([
 			['/w1', 'waiting on the parser'],
 			['/w2', 'waiting on tree/push'],
 			['/w3', 'waiting on a session'],
 			['/w4', 'waiting on a session'],
 			['/w5', 'waiting on a session'],
-			['/run', 'running'],
+			['/run', null],
 		]);
 	});
 
@@ -277,7 +280,7 @@ describe('liveSessions', () => {
 			]),
 			'waiter',
 		);
-		expect(rows.map((r) => r.stateText)).toEqual(['waiting on target']);
+		expect(rows.map((r) => r.waitingOn)).toEqual(['waiting on target']);
 	});
 
 	it('never names a waited-on session that is no longer listed, even if it was seen before', () => {
@@ -338,6 +341,81 @@ describe('liveStripHeader', () => {
 
 	it('omits the waiting part when nobody waits for you', () => {
 		expect(liveStripHeader([{state: 'running'}])).toBe('Live · 1');
+	});
+});
+
+describe('liveBadgeText', () => {
+	it('is short: you, session, running', () => {
+		expect(liveBadgeText('waiting-for-human')).toBe('you');
+		expect(liveBadgeText('waiting-for-session')).toBe('session');
+		expect(liveBadgeText('running')).toBe('running');
+	});
+});
+
+describe('liveRowDetail', () => {
+	const row = (
+		r: Partial<{
+			folderName: string;
+			waitingOn: string | null;
+		}> = {},
+	) => ({folderName: 'wherever', waitingOn: null, ...r});
+
+	it('is just the folder when nothing else is present', () => {
+		expect(liveRowDetail(row(), null, undefined)).toBe('wherever');
+	});
+
+	it('adds the presence status line', () => {
+		expect(liveRowDetail(row(), 'building mockups', undefined)).toBe(
+			'wherever · building mockups',
+		);
+	});
+
+	it('shows what a row waits on instead of its status line', () => {
+		expect(
+			liveRowDetail(
+				row({waitingOn: 'waiting on memonaut/search-order'}),
+				'blocked',
+				undefined,
+			),
+		).toBe('wherever · waiting on memonaut/search-order');
+	});
+
+	it('ends with the owner when the session was spawned', () => {
+		expect(liveRowDetail(row(), null, 'drive-sidebar-tasks')).toBe(
+			'wherever · ↳ drive-sidebar-tasks',
+		);
+		expect(liveRowDetail(row(), 'Ship 0.5.0 now?', 'lead')).toBe(
+			'wherever · Ship 0.5.0 now? · ↳ lead',
+		);
+	});
+
+	it('skips empty parts', () => {
+		expect(liveRowDetail(row(), '', '')).toBe('wherever');
+	});
+});
+
+describe('liveStateCounts', () => {
+	it('counts the rows per live state', () => {
+		expect(
+			liveStateCounts([
+				{state: 'waiting-for-human'},
+				{state: 'running'},
+				{state: 'running'},
+				{state: 'waiting-for-session'},
+			]),
+		).toEqual({
+			'waiting-for-human': 1,
+			'waiting-for-session': 1,
+			running: 2,
+		});
+	});
+
+	it('is all zero with no rows', () => {
+		expect(liveStateCounts([])).toEqual({
+			'waiting-for-human': 0,
+			'waiting-for-session': 0,
+			running: 0,
+		});
 	});
 });
 

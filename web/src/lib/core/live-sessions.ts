@@ -7,11 +7,7 @@
  * Also home of the sidebar's filter rule and row label, so the folder list and
  * the strip match and name sessions the same way.
  */
-import {
-	stateLabel,
-	type ShipmatesPresence,
-	type ShipmatesSessionState,
-} from './shipmates';
+import type {ShipmatesPresence, ShipmatesSessionState} from './shipmates';
 
 /** The fields of a listed session (`SessionInfo`) these helpers read. */
 export interface LiveSessionLike {
@@ -74,8 +70,11 @@ export interface LiveSessionRow<S extends LiveSessionLike = LiveSessionLike> {
 	folderName: string;
 	state: LiveState;
 	label: string;
-	/** The state badge's text: "waiting on <session>" for a waiting-for-session row, else the state label. */
-	stateText: string;
+	/**
+	 * What a waiting-for-session row waits on ("waiting on <session>",
+	 * `waitingOnText`), shown on the row's second line; null for other rows.
+	 */
+	waitingOn: string | null;
 }
 
 const NEED_RANK: Record<LiveState, number> = {
@@ -139,10 +138,10 @@ export function liveSessions<S extends LiveSessionLike>(
 				folderName: folder.name,
 				state,
 				label: p?.roles[0] || sessionListLabel(session),
-				stateText:
+				waitingOn:
 					state === 'waiting-for-session'
 						? waitingOnText(p?.waitingOnSession, listed, presence)
-						: stateLabel(state),
+						: null,
 			});
 		}
 	}
@@ -153,7 +152,50 @@ export function liveSessions<S extends LiveSessionLike>(
 	);
 }
 
-/** "Live · 4 · 1 waiting for you" (the waiting part only when some wait). */
+const BADGE_TEXT: Record<LiveState, string> = {
+	'waiting-for-human': 'you',
+	'waiting-for-session': 'session',
+	running: 'running',
+};
+
+/** A strip row's short state badge: `you`, `session` or `running`. */
+export function liveBadgeText(state: LiveState): string {
+	return BADGE_TEXT[state];
+}
+
+/**
+ * A strip row's second line: "folder · (what it waits on, else the presence
+ * status line) · ↳ <owner>", each part only when present. A
+ * waiting-for-session row always shows what it waits on (`waitingOn`, which
+ * falls back to "waiting on a session"), never its status line.
+ */
+export function liveRowDetail(
+	row: {folderName: string; waitingOn: string | null},
+	status: string | null | undefined,
+	ownerLabel: string | null | undefined,
+): string {
+	const parts = [row.folderName, row.waitingOn || status];
+	if (ownerLabel) parts.push(`↳ ${ownerLabel}`);
+	return parts.filter(Boolean).join(' · ');
+}
+
+/** How many rows are in each live state (the strip header's count dots). */
+export function liveStateCounts(
+	rows: {state: LiveState}[],
+): Record<LiveState, number> {
+	const counts: Record<LiveState, number> = {
+		'waiting-for-human': 0,
+		'waiting-for-session': 0,
+		running: 0,
+	};
+	for (const r of rows) counts[r.state]++;
+	return counts;
+}
+
+/**
+ * "Live · 4 · 1 waiting for you" (the waiting part only when some wait): the
+ * strip header's accessible name and tooltip (its visible form is count dots).
+ */
 export function liveStripHeader(rows: {state: LiveState}[]): string {
 	const waiting = rows.filter((r) => r.state === 'waiting-for-human').length;
 	return `Live · ${rows.length}${waiting ? ` · ${waiting} waiting for you` : ''}`;

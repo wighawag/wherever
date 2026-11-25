@@ -43,3 +43,13 @@ Re-lay out the Live strip (`LiveStrip.svelte`) per `live.png`:
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/live-strip-two-line-rows-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+These are recorded in `work/notes/observations/live-strip-two-line-rows-decisions.md`. The ones worth checking:
+- **Field renamed**: `stateText` became `waitingOn` instead of quietly changing what `stateText` means. Only `LiveStrip.svelte` read it.
+- **Waiting-on line**: a row waiting on another session always shows its "waiting on…" text, even the generic "waiting on a session", and never its status line.
+- **Folder on every row**: the folder appears on every second line, including the waiting-on-a-session row where `live.png` leaves it out, because the spec wins.
+- **Amber wins over grey**: a waiting-for-you row that is also the open session gets a stronger amber wash rather than the grey highlight.
+- **Old header text kept**: `liveStripHeader` stays as the header's tooltip and accessible name.
+- **No import loop**: `liveStateCounts` sits in `live-sessions.ts` because `state-dot.ts` already imports that file.
