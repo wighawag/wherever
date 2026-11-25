@@ -6,6 +6,7 @@ import { openShipmates } from 'shipmates';
 import { startHarness, type Harness } from './harness.js';
 import {
   MAX_CLOSED,
+  MAX_CLOSE_FILES,
   ClosedCapError,
   ClosedUnavailableError,
   applyClose,
@@ -339,6 +340,60 @@ describe('cascading close and batch undo (ADR 0025)', () => {
     expect(again.body).toEqual({ batch: res.body.batch, sessions: [] });
   }, 60_000);
 
+  it('sessionFiles closes many sessions as ONE batch (no cascade), clears their stars, and the batch undo reopens all and restores the stars', async () => {
+    const { h, stateDir, owner, child, shut } = await orchestration();
+    await untilOwned(h, owner, 3);
+    const a = writeSession(h, 'a');
+    const b = writeSession(h, 'b');
+    const shutClose = await close(h, shut);
+    await api(h.port, '/sessions/star', { method: 'POST', body: { sessionFile: a, starred: true } });
+
+    // `owner` owns `child` (another folder): a folder close does not cascade.
+    const res = await api(h.port, '/sessions/close', {
+      method: 'POST',
+      body: { sessionFiles: [a, b, owner, shut, a], closed: true },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.batch).toMatch(/^c_[0-9a-f]+$/);
+    // The sessions it newly closed: the already closed `shut` and the duplicate are not listed.
+    expect(res.body.sessions.sort()).toEqual([a, b, owner].sort());
+    const byFile = new Map(readStore(stateDir).closed.map((s) => [s.sessionFile, s]));
+    for (const f of [a, b, owner]) expect(byFile.get(f)?.batch).toBe(res.body.batch);
+    expect(byFile.get(a)?.unstarred).toBe(true);
+    expect(byFile.get(b)).not.toHaveProperty('unstarred');
+    expect(byFile.get(shut)?.batch).toBe(shutClose.body.batch);
+    expect(byFile.has(child)).toBe(false);
+    const listed = (await api(h.port, '/sessions')).body;
+    expect(listedSession(listed, a)).toMatchObject({ closed: true });
+    expect(listedSession(listed, a)?.starred).toBeUndefined();
+
+    const undo = await api(h.port, '/sessions/close', { method: 'POST', body: { batch: res.body.batch, closed: false } });
+    expect(undo.status).toBe(200);
+    expect(undo.body.sessions.sort()).toEqual([a, b, owner].sort());
+    expect(readStore(stateDir).closed.map((s) => s.sessionFile)).toEqual([shut]);
+    const after = (await api(h.port, '/sessions')).body;
+    expect(listedSession(after, a)?.starred).toBe(true);
+    expect(listedSession(after, a)?.closed).toBeUndefined();
+    expect(listedSession(after, b)?.closed).toBeUndefined();
+  }, 60_000);
+
+  it('sessionFiles refuses an over-long list, a path outside the sessions dir (closing nothing), and the wrong shapes', async () => {
+    const { h, stateDir } = await start();
+    const a = writeSession(h, 'a');
+    const post = (body: unknown) => api(h.port, '/sessions/close', { method: 'POST', body });
+    const tooMany = Array.from({ length: MAX_CLOSE_FILES + 1 }, () => a);
+    expect((await post({ sessionFiles: tooMany, closed: true })).status).toBe(400);
+    const outside = await post({ sessionFiles: [a, '/etc/passwd.jsonl'], closed: true });
+    expect(outside.status).toBe(400);
+    expect(fs.existsSync(path.join(stateDir, 'closed-sessions.json'))).toBe(false);
+    expect((await post({ sessionFiles: [], closed: true })).status).toBe(400);
+    expect((await post({ sessionFiles: [a], closed: false })).status).toBe(400);
+    expect((await post({ sessionFiles: [a], closed: true, cascade: true })).status).toBe(400);
+    expect((await post({ sessionFiles: [a], sessionFile: a, closed: true })).status).toBe(400);
+    expect((await post({ sessionFiles: [a, 3], closed: true })).status).toBe(400);
+    expect(listedSession((await api(h.port, '/sessions')).body, a)?.closed).toBeUndefined();
+  }, 60_000);
+
   it('refuses cascade on a reopen and a batch on a close', async () => {
     const { h } = await start();
     const file = writeSession(h, 's');
@@ -520,6 +575,19 @@ describe('closed list transforms', () => {
     expect(validateCloseInput({ batch: 'c_0123abcd', closed: true })).not.toBeNull();
     expect(validateCloseInput({ batch: 'c_0123abcd', sessionFile: '/a.jsonl', closed: false })).not.toBeNull();
     expect(validateCloseInput({ batch: '../x', closed: false })).not.toBeNull();
+    // The folder close: a bounded list of paths, close only, no cascade.
+    expect(validateCloseInput({ sessionFiles: ['/a.jsonl', '/b.jsonl'], closed: true })).toBeNull();
+    expect(validateCloseInput({ sessionFiles: [], closed: true })).not.toBeNull();
+    expect(validateCloseInput({ sessionFiles: '/a.jsonl', closed: true })).not.toBeNull();
+    expect(validateCloseInput({ sessionFiles: ['/a.jsonl', ''], closed: true })).not.toBeNull();
+    expect(validateCloseInput({ sessionFiles: ['x'.repeat(5000)], closed: true })).not.toBeNull();
+    expect(validateCloseInput({ sessionFiles: ['/a.jsonl'], closed: false })).not.toBeNull();
+    expect(validateCloseInput({ sessionFiles: ['/a.jsonl'], closed: true, cascade: true })).not.toBeNull();
+    expect(validateCloseInput({ sessionFiles: ['/a.jsonl'], sessionFile: '/a.jsonl', closed: true })).not.toBeNull();
+    expect(validateCloseInput({ sessionFiles: ['/a.jsonl'], batch: 'c_01', closed: false })).not.toBeNull();
+    const max = Array.from({ length: MAX_CLOSE_FILES }, (_, i) => `/${i}.jsonl`);
+    expect(validateCloseInput({ sessionFiles: max, closed: true })).toBeNull();
+    expect(validateCloseInput({ sessionFiles: [...max, '/x.jsonl'], closed: true })).not.toBeNull();
   });
 
   it('applyReopenBatch removes exactly one batch and returns its entries', () => {

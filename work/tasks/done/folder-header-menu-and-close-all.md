@@ -42,3 +42,16 @@ covers: [25, 26, 27, 44]
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/folder-header-menu-and-close-all-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+Recorded in `work/notes/observations/folder-header-menu-and-close-all-decisions.md`. In short:
+- `sessionFiles` only closes, never reopens, and never cascades.
+- The list is capped at 1,000.
+- One bad path rejects the whole request.
+- "Close all" skips the question about owned sessions.
+- The item shows the count it would close and is disabled at 0.
+- "Delete all…" asks again inside the menu.
+- The phone sheet stays inside the drawer instead of covering the whole screen. Moving it to the page root would break Svelte's click handlers.
+- The popover opens upward when there is no room below, but can still be cut off by the sidebar's scroll area in rare cases.
+- The ☰ checkboxes keep the menu open; Refresh closes it and no longer shows its spinner.

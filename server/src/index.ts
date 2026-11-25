@@ -2153,7 +2153,9 @@ async function main(): Promise<void> {
     // reopen answers `batch: null` and the sessions it reopened.
     //
     // `cascade: true` (close only) also closes the session's transitive owned
-    // subtree (shipmates ownership), all in the same batch. `{batch, closed:
+    // subtree (shipmates ownership), all in the same batch. `{sessionFiles:
+    // [...], closed: true}` closes a list (the web's "Close all in folder") as
+    // one batch, without cascading, clearing stars like a single close. `{batch, closed:
     // false}` is the undo: it reopens the whole batch and restores every star
     // the batch's close removed (`unstarred`), answering `{batch, sessions}`.
     //
@@ -2209,14 +2211,20 @@ async function main(): Promise<void> {
         }
         return;
       }
-      const resolved = path.resolve(parsed.sessionFile);
+      // `{sessionFiles, closed: true}` ("Close all in folder"): many sessions as
+      // one batch, no cascade. Every path must pass the same check as a single
+      // close, or nothing is closed.
+      const many: string[] | null = Array.isArray(parsed.sessionFiles)
+        ? [...new Set((parsed.sessionFiles as string[]).map((f) => path.resolve(f)))]
+        : null;
+      const resolved = many ? '' : path.resolve(parsed.sessionFile);
       // Same check as the star endpoint: only paths inside the sessions dir.
-      if (!sessionPool.isSessionFile(resolved)) {
+      if (many ? !many.every((f) => sessionPool.isSessionFile(f)) : !sessionPool.isSessionFile(resolved)) {
         sendJSON(res, 400, { error: 'Invalid session file: not a session in the sessions directory' });
         return;
       }
       try {
-        if (!parsed.closed) {
+        if (!many && !parsed.closed) {
           const sessions = reopenSessions([resolved]);
           broadcastSessionsUpdated();
           sendJSON(res, 200, { batch: null, sessions });
@@ -2227,7 +2235,7 @@ async function main(): Promise<void> {
         // authoritative; clearing the star is best effort, so a broken stars
         // file (read as "no stars") cannot block closing.
         const starred = readStarredSet();
-        const files = parsed.cascade ? [resolved, ...cascadeMembers(resolved)] : [resolved];
+        const files = many ?? (parsed.cascade ? [resolved, ...cascadeMembers(resolved)] : [resolved]);
         const result = closeSessions(files, { unstarred: (f) => starred.has(f) });
         // Only the sessions this close took: an already closed one keeps its state.
         for (const f of result.sessions) {

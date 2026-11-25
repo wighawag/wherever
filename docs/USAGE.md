@@ -243,6 +243,17 @@ Rename a session. The name is written by whichever process owns the session file
 * **Response (200 OK):** `{ "sessionFile": "...", "name": "Release notes" }`, the name as stored.
 * **Errors:** `400` for a malformed body, a missing `sessionFile`, an empty or over-long `name`, or a path outside the sessions directory; `404` if the session file does not exist; `409` when the rename cannot be done safely: the session has no message yet (pi writes nothing to the file before the first one), a load or reload of it is in progress, or it runs in a terminal whose wherever extension is too old ("update the wherever extension in that terminal"); `502` if the terminal refused or disconnected; `504` if the terminal did not answer within 10 seconds.
 
+### `POST /sessions/close`
+Close or reopen sessions ("done with this", ADR 0025). Closing hides a session from the sidebar and from search without deleting it (the transcript is never touched); `GET /sessions` still returns it, with `"closed": true`. Closing a starred session removes its star, and undoing the close puts it back. Any new activity in a closed session reopens it. Every open dashboard is told to re-list (`sessions_updated`). `closed` is always an explicit boolean, so a retried request is idempotent: closing an already closed session keeps its original entry and reports nothing newly closed.
+* **Auth required:** Yes
+* **Body**, one of four forms:
+  * **One session:** `{ "sessionFile": "/home/me/.pi/agent/sessions/.../x.jsonl", "closed": true }` closes it; `"closed": false` reopens it.
+  * **Cascade:** `{ "sessionFile": "...", "closed": true, "cascade": true }` closes the session and every session it owns, transitively (shipmates ownership; only sessions in the sessions directory). `GET /sessions/owned?sessionFile=...` answers `{ "sessions": [...] }`, the sessions such a cascade would newly close.
+  * **Many sessions** (the web's "Close all in folder"): `{ "sessionFiles": ["...", "..."], "closed": true }` closes the listed sessions (at most 1,000, duplicates ignored) as one batch. It never cascades.
+  * **Undo a close:** `{ "batch": "c_0123abcd...", "closed": false }` reopens every session that close took and restores the stars it removed.
+* **Response (200 OK):** a close (any form) answers `{ "batch": "c_...", "sessions": ["..."] }`: a fresh batch id (pass it back to undo) and the sessions it newly closed. A single reopen answers `{ "batch": null, "sessions": [...] }` with the sessions it reopened; an undo answers `{ "batch": "c_...", "sessions": [...] }` (empty for an unknown or already undone batch).
+* **Errors:** `400` for a malformed body, a missing `sessionFile`, a non-boolean `closed` or `cascade`, `cascade` on a reopen, `batch` on a close or together with `sessionFile`, a `sessionFiles` that is empty, longer than 1,000, holds a non-string or empty entry, is combined with `sessionFile`, `batch`, `cascade` or `closed: false`, or any path outside the sessions directory (then nothing is closed); `409` when the closed-sessions store is full of entries for existing transcripts; `500` if the store cannot be read (nothing is written).
+
 ### `POST /session/new`
 Start a session inside a directory. If that folder already has a live session with at least one attached viewer, this returns THAT session instead of creating a second agent beside it. (The WebSocket `session_new` message is the other intent: it always creates a new conversation.)
 

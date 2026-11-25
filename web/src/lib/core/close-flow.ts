@@ -7,7 +7,9 @@
  * `ownedChildren`: that only sees listed sessions, while ownership is
  * transitive and reaches sessions the listing does not show. Every close
  * (single or cascading) answers a batch id, and Undo reopens that batch (the
- * server also restores any star the close removed).
+ * server also restores any star the close removed). "Close all in folder"
+ * (`closeFolder`) closes many sessions as one batch without cascading, and its
+ * banner reads "Closed N sessions in <folder>." (`closeFolderBannerText`).
  *
  * Pure (the transport and the question are injected), so it is unit-tested
  * here; `session-store.ts` wires it to fetch and the components render it.
@@ -24,6 +26,8 @@ export interface CloseApi {
 	/** The sessions a cascade would newly close besides the root (the true N). */
 	owned(sessionFile: string): Promise<string[]>;
 	close(sessionFile: string, cascade: boolean): Promise<CloseResult>;
+	/** Close many sessions as ONE batch, never cascading (`{sessionFiles}`). */
+	closeMany(sessionFiles: string[]): Promise<CloseResult>;
 	reopenBatch(batch: string): Promise<CloseResult>;
 }
 
@@ -42,6 +46,11 @@ export interface CloseBanner {
 	owned: number;
 	/** Every session the close took, root included (the banner's tooltip). */
 	sessions: string[];
+	/**
+	 * Set for "Close all in folder" (the folder's name): the banner then reads
+	 * "Closed N sessions in <folder>." and `root` is just the first session.
+	 */
+	folder?: string;
 }
 
 /** The question, with the server's N. */
@@ -54,6 +63,54 @@ export function closeBannerText(label: string, owned: number): string {
 	return owned > 0
 		? `Closed ${label} (and ${owned} owned).`
 		: `Closed ${label}.`;
+}
+
+/** The folder variant of the banner's text ("Close all in folder"). */
+export function closeFolderBannerText(folder: string, n: number): string {
+	return `Closed ${n} session${n === 1 ? '' : 's'} in ${folder}.`;
+}
+
+/** The banner's text for any close; `labelOf` names a single close's session. */
+export function closeBannerFor(
+	banner: CloseBanner,
+	labelOf: (sessionFile: string) => string,
+): string {
+	return banner.folder !== undefined
+		? closeFolderBannerText(banner.folder, banner.sessions.length)
+		: closeBannerText(labelOf(banner.root), banner.owned);
+}
+
+/**
+ * What "Close all in folder" closes: the OPEN sessions among the folder's shown
+ * rows (the rows "Delete all" acts on, so the text filter and "Only starred"
+ * already apply); closed rows (shown by "Show closed") are skipped.
+ */
+export function folderCloseTargets(
+	rows: readonly {path: string; closed?: boolean}[],
+): string[] {
+	return rows.filter((r) => !r.closed).map((r) => r.path);
+}
+
+/**
+ * "Close all in folder": close `files` as ONE batch without asking about owned
+ * sessions (a folder close never cascades to sessions elsewhere), and answer
+ * the folder banner (null when there was nothing to close or it took nothing).
+ */
+export async function closeFolder(
+	files: string[],
+	folder: string,
+	api: CloseApi,
+): Promise<CloseBanner | null> {
+	if (files.length === 0) return null;
+	const r = await api.closeMany(files);
+	if (!r.batch || r.sessions.length === 0) return null;
+	return {
+		batch: r.batch,
+		root: r.sessions[0],
+		owned: 0,
+		sessions: r.sessions,
+		folder,
+	};
 }
 
 /**
