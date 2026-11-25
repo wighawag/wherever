@@ -3347,6 +3347,12 @@ export class WhereverClient {
     // sessionId yet (a load or rejoin that has not resolved), since that is
     // exactly when a late reply would pull the user back.
     this.queuedSessionRequest = null;
+    // A load the server may still be working on (no sessionId yet): tell it too,
+    // or it finishes the load and attaches this socket as a hidden viewer of the
+    // session being left. The server stops such a load on any session_leave
+    // (its WSClient.loadGeneration), so the empty sessionId is fine.
+    const loadInFlight = this.pendingLoadFile !== null || s.loadingSession || s.resyncing;
+    if (!s.sessionId && loadInFlight) this.send({type: 'session_leave', sessionId: ''});
     this.abandonPendingLoad();
     if (!s.sessionId && !s.activeSessionFile && this.pendingLoadFile === null && !this.resumeSessionFile) {
       if (s.creatingSession) {

@@ -15,7 +15,6 @@ const base: ChatMenuInput = {
 	closed: false,
 	desktop: false,
 	hasModel: true,
-	searchWeb: false,
 	viewingAssistant: false,
 	hasContext: true,
 };
@@ -77,12 +76,10 @@ describe('chatMenuSections', () => {
 		expect(items['this-chat']).toEqual(['conversation']);
 	});
 
-	it('Search the web and Reset the assistant only when they apply', () => {
-		expect(itemsOf({searchWeb: true}).session).toContain('search-web');
+	it('Reset the assistant only when viewing it (Search the web is the top bar 🔍)', () => {
 		expect(itemsOf({viewingAssistant: true}).session).toContain(
 			'reset-assistant',
 		);
-		expect(itemsOf({}).session).not.toContain('search-web');
 		expect(itemsOf({}).session).not.toContain('reset-assistant');
 	});
 
@@ -95,7 +92,6 @@ describe('chatMenuSections', () => {
 		const sections = chatMenuSections({
 			...base,
 			hasSession: false,
-			searchWeb: true,
 			viewingAssistant: true,
 		});
 		expect(sections).toEqual([

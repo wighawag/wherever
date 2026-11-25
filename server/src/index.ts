@@ -446,6 +446,17 @@ interface WSClient {
    * `session_leave`; NEVER by `switchClientSession(null)`.
    */
   paintedSessionFile?: string;
+  /**
+   * Bumped by every `session_load` (at its start), `session_new` and
+   * `session_leave`. A load remembers its value and stops after its first await
+   * (the cheap read) when it changed: a leave, a create or a newer load arrived
+   * meanwhile (frames of one
+   * socket are not serialized). Without it a leave sent while the read is in
+   * flight (the web's 🔍 or logo during a load, when the client has no sessionId
+   * yet) found nothing to clear, and the load then painted the session and
+   * attached the socket as a hidden viewer of a session the user had left.
+   */
+  loadGeneration?: number;
   /** The painted session's id. See `paintedSessionFile`. */
   paintedSessionId?: string;
   /** The painted session's cwd: the upload target folder. See `paintedSessionFile`. */
@@ -4251,7 +4262,11 @@ async function handleWSMessage(
       // slow cold build of the previous session finishing during the read below
       // would otherwise still match it and attach the socket to the wrong session.
       clearPaintedSession(client);
+      const loadGeneration = (client.loadGeneration = (client.loadGeneration ?? 0) + 1);
       const meta = await pool.readSessionMeta(msg.sessionFile, INITIAL_HISTORY_LIMIT, msg.model);
+      // Superseded during the read (a leave, or a newer load): paint nothing,
+      // attach nothing, and no stale session_error either.
+      if (client.loadGeneration !== loadGeneration) return;
       if ('error' in meta) {
         sendWS(client.ws, { type: 'session_error', error: meta.error });
         return;
@@ -4517,8 +4532,10 @@ async function handleWSMessage(
       // dialog) is untouched and still happens inside createNewSession.
       //
       // A create is a new paint: forget the previous one first, so a cold load
-      // still building cannot late-attach and uploads for it are refused.
+      // still building cannot late-attach and uploads for it are refused. And a
+      // load still in its first read stops (see WSClient.loadGeneration).
       clearPaintedSession(client);
+      client.loadGeneration = (client.loadGeneration ?? 0) + 1;
       if (msg.cloneRemote) {
         const targetPath = resolveCreateCwd(msg.cwd);
         // The restore broadcast is DERIVED from a path match against each
@@ -4632,6 +4649,8 @@ async function handleWSMessage(
       // before the attach (sessionId still null or the previous session), and it
       // is what stops that load's late attach and refuses its uploads.
       clearPaintedSession(client);
+      // And any load still in its first await (see WSClient.loadGeneration).
+      client.loadGeneration = (client.loadGeneration ?? 0) + 1;
       if (client.sessionId) {
         switchClientSession(client, null, pool, onSessionsUpdated);
         client.readOnly = false;

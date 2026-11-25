@@ -798,7 +798,7 @@
 				onclick={() => onSearchAll?.(searchQuery.trim())}
 				class="mt-1.5 w-full truncate rounded px-1 py-0.5 text-left text-[10px] text-brand-blue hover:underline"
 			>
-				🔎 Search all conversations for “{searchQuery.trim()}”
+				🕘 Search all conversations for “{searchQuery.trim()}”
 			</button>
 		{/if}
 	</div>

@@ -11,8 +11,8 @@
 	- Star / Unstar (`setSessionStarred`), Rename (the shared `RenamePrompt`,
 	  `renameSession`, its refusals shown in place), Copy link (the row menu's
 	  `sessionLinkUrl` + `copyText`), Open in new tab (desktop), Close / Reopen
-	  (the existing close flow: `closeSession`, `setSessionClosed`), Search the
-	  web (`onStartSearch`, today's 🔍), Reset the assistant (`resetAssistant`).
+	  (the existing close flow: `closeSession`, `setSessionClosed`), Reset the
+	  assistant (`resetAssistant`). Search the web is the top bar's 🔍, not here.
 	- "This chat": Beep when done (tri-state, `setBeepSessionOverride`) and
 	  Conversation mode (`setConversationModeBundle`, per conversation). Its
 	  handler calls `unlockTts()` first: it is a TTS gesture-unlock point, as the
@@ -31,10 +31,7 @@
 	  listed.
 	- `title`: the top bar's title of the open session (the rename prompt's
 	  label).
-	- `searchWeb`: web search is configured and reachable (Search the web).
 	- `viewingAssistant`: the open session is the assistant's (Reset).
-	- `onStartSearch`: leave the session for the web-search screen, focusing the
-	  composer inside the tap (the page's `startSearch`).
 -->
 <script lang="ts">
 	import Menu from './menu/Menu.svelte';
@@ -83,15 +80,11 @@
 	let {
 		listed,
 		title,
-		searchWeb,
 		viewingAssistant,
-		onStartSearch,
 	}: {
 		listed: {name?: string; starred?: boolean; closed?: boolean} | undefined;
 		title: string;
-		searchWeb: boolean;
 		viewingAssistant: boolean;
-		onStartSearch: () => void;
 	} = $props();
 
 	function isWide(): boolean {
@@ -138,7 +131,6 @@
 			closed,
 			desktop,
 			hasModel: !!sessionInfo.model,
-			searchWeb,
 			viewingAssistant,
 			hasContext: !!contextText,
 		}),
@@ -338,12 +330,6 @@
 						onselect={() => {
 							if (file) setSessionClosed(file, false).catch(() => {});
 						}}>Reopen session</MenuItem
-					>
-				{:else if item === 'search-web'}
-					<MenuItem
-						icon="🔍"
-						title="Leave this session and search the web"
-						onselect={onStartSearch}>Search the web</MenuItem
 					>
 				{:else if item === 'reset-assistant'}
 					<MenuItem

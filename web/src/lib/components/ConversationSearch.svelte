@@ -257,7 +257,7 @@
 				class="flex shrink-0 items-center justify-center rounded border border-brand-border bg-brand-surface-2 px-2 py-1.5 text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
 				title="Search"
 			>
-				<span class={loading ? 'animate-pulse' : ''}>🔎</span>
+				<span class={loading ? 'animate-pulse' : ''}>🕘</span>
 			</button>
 		</form>
 		<div class="mt-1 px-0.5 text-[10px] text-brand-text-muted">

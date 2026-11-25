@@ -3,6 +3,7 @@ import {
 	decideHashJoin,
 	isSearchActive,
 	isSessionPendingOpen,
+	webSearchShortcutShown,
 	shouldDropStaleHash,
 } from './view-mode.js';
 
@@ -159,5 +160,40 @@ describe('shouldDropStaleHash', () => {
 	it('does nothing while connected (the page rewrites the hash) or with no hash', () => {
 		expect(shouldDropStaleHash({connected: true, hashId: 'sid-A'})).toBe(false);
 		expect(shouldDropStaleHash({connected: false, hashId: ''})).toBe(false);
+	});
+});
+
+describe('webSearchShortcutShown (the top bar 🔍)', () => {
+	it('shows with a session open', () => {
+		expect(webSearchShortcutShown({...base, hasSession: true})).toBe(true);
+	});
+
+	it('shows while a session is still loading, not only once loaded', () => {
+		expect(webSearchShortcutShown({...base, loading: true})).toBe(true);
+		expect(webSearchShortcutShown({...base, hasSessionHash: true})).toBe(true);
+		expect(webSearchShortcutShown({...base, resyncing: true})).toBe(true);
+	});
+
+	it('hides on the web-search screen itself', () => {
+		expect(webSearchShortcutShown(base)).toBe(false);
+	});
+
+	it('hides after a failed load (the search screen shows, with its error)', () => {
+		expect(
+			webSearchShortcutShown({...base, hasSessionHash: true, loadFailed: true}),
+		).toBe(false);
+	});
+
+	it('hides when disconnected or with no search folder', () => {
+		expect(
+			webSearchShortcutShown({...base, hasSession: true, connected: false}),
+		).toBe(false);
+		expect(
+			webSearchShortcutShown({
+				...base,
+				hasSession: true,
+				searchConfigured: false,
+			}),
+		).toBe(false);
 	});
 });
