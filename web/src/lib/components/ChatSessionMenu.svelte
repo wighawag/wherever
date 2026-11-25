@@ -18,7 +18,8 @@
 	  handler calls `unlockTts()` first: it is a TTS gesture-unlock point, as the
 	  old strip toggle was, or mobile drops every spoken reply.
 	- "On this device": Hide thinking (`updateConfig`), Enter sends (the shared
-	  `enterToSend` store), Voice settings… (the `SpeechSettingsPanel`, shown in
+	  `enterToSend` store), Wide chat (desktop, the `wideChat` store),
+	  Voice settings… (the `SpeechSettingsPanel`, shown in
 	  place under the item).
 	- Text: the context usage and the versions.
 
@@ -63,6 +64,7 @@
 		conversationMode,
 		conversationModeSessionOverride,
 		enterToSend,
+		wideChat,
 		isReadOnly,
 		piState,
 		resetAssistant,
@@ -398,6 +400,15 @@
 							? 'Enter sends, Shift+Enter adds a new line'
 							: 'Shift+Enter sends, Enter adds a new line'}
 						onselect={() => enterToSend.toggle()}>Enter sends</MenuItem
+					>
+				{:else if item === 'wide-chat'}
+					<MenuItem
+						checked={$wideChat}
+						keepOpen
+						title={$wideChat
+							? 'The chat uses the whole width (this device)'
+							: 'The chat sits in a centered column of about 760px (this device)'}
+						onselect={() => wideChat.toggle()}>Wide chat</MenuItem
 					>
 				{:else if item === 'voice-settings'}
 					<MenuItem

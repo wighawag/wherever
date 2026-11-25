@@ -22,6 +22,12 @@
 	unicode-range: U+23FB-23FE, U+2B58, U+E000-F8FF, U+F0000-FFFFD;
 }
 
+:root {
+	/* The chat's reading lane (messages, composer, toasts): about 760px, or the
+	   whole chat area with "Wide chat" (core/wide-chat.ts, set by wherever.ts). */
+	--chat-column: 760px;
+}
+
 @theme {
 	--font-sans:
 		'Wherever Nerd Symbols', ui-sans-serif, system-ui, sans-serif,

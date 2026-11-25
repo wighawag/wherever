@@ -9,8 +9,10 @@
  *   configured), Reset the assistant (when viewing it);
  * - "This chat": Beep when done (tri-state, only on a drivable session) and
  *   Conversation mode (per conversation, following the default unless set);
- * - "On this device": Hide thinking, Enter sends, Voice settings… (device-wide
- *   settings, so the section says so instead of the mockup's single "This chat");
+ * - "On this device": Hide thinking, Enter sends, Wide chat (desktop: the
+ *   chat spans the whole area instead of the ~760px lane), Voice settings…
+ *   (device-wide settings, so the section says so instead of the mockup's
+ *   single "This chat");
  * - details (no title): the context usage and the versions, as text.
  *
  * With no session open only "On this device" is shown (Enter sends stays
@@ -32,6 +34,7 @@ export type ChatMenuItem =
 	| 'conversation'
 	| 'hide-thinking'
 	| 'enter-sends'
+	| 'wide-chat'
 	| 'voice-settings'
 	| 'context'
 	| 'versions';
@@ -62,14 +65,16 @@ export interface ChatMenuInput {
 	hasContext: boolean;
 }
 
-const DEVICE: ChatMenuSection = {
-	id: 'device',
-	title: 'On this device',
-	items: ['hide-thinking', 'enter-sends', 'voice-settings'],
-};
+/** "On this device": Wide chat only on desktop (a phone's lane is already full width). */
+function deviceSection(desktop: boolean): ChatMenuSection {
+	const items: ChatMenuItem[] = ['hide-thinking', 'enter-sends'];
+	if (desktop) items.push('wide-chat');
+	items.push('voice-settings');
+	return {id: 'device', title: 'On this device', items};
+}
 
 export function chatMenuSections(input: ChatMenuInput): ChatMenuSection[] {
-	if (!input.hasSession) return [{...DEVICE, items: [...DEVICE.items]}];
+	if (!input.hasSession) return [deviceSection(input.desktop)];
 
 	const session: ChatMenuItem[] = [];
 	if (input.hasModel) session.push('model');
@@ -92,7 +97,7 @@ export function chatMenuSections(input: ChatMenuInput): ChatMenuSection[] {
 	return [
 		{id: 'session', items: session},
 		{id: 'this-chat', title: 'This chat', items: thisChat},
-		{...DEVICE, items: [...DEVICE.items]},
+		deviceSection(input.desktop),
 		{id: 'details', items: details},
 	];
 }
