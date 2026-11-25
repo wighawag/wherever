@@ -4,6 +4,7 @@ slug: rename-session-endpoint
 spec: sidebar-compact-layout
 blockedBy: []
 covers: [40, 41, 42, 43]
+needsAnswers: true
 ---
 
 ## What to build
