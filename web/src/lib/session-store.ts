@@ -535,6 +535,15 @@ const closeApi: CloseApi = {
 	},
 };
 
+/**
+ * How many open sessions closing `sessionFile` would cascade to (`GET
+ * /sessions/owned`, the same count the close flow asks about): the row ⋯
+ * menu's "and N owned" hint. Rejects on a failed lookup.
+ */
+export async function fetchOwnedCount(sessionFile: string): Promise<number> {
+	return (await closeApi.owned(sessionFile)).length;
+}
+
 /** The open "Also close the N sessions it owns?" question, or null. */
 export const closePromptStore = writable<{
 	sessionFile: string;

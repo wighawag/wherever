@@ -1,5 +1,15 @@
 import {describe, it, expect} from 'vitest';
-import {ownedChipLabel, relativeTime, rowNestMarker} from './session-row';
+import {
+	closeOwnedHint,
+	ownedChipLabel,
+	relativeTime,
+	rowHoverAction,
+	rowMenuHeaderMeta,
+	rowMenuItems,
+	rowMetaLine,
+	rowNestMarker,
+	sessionLinkUrl,
+} from './session-row';
 
 describe('relativeTime', () => {
 	const now = Date.parse('2026-01-10T12:00:00Z');
@@ -46,5 +56,124 @@ describe('rowNestMarker', () => {
 			title: 'Spawned by the session above',
 			ariaLabel: 'Spawned session',
 		});
+	});
+});
+
+describe('rowMenuItems', () => {
+	it('orders a main-list row: close, star, copy link, new tab, then delete apart', () => {
+		expect(
+			rowMenuItems({readOnly: false, closed: false, desktop: true}),
+		).toEqual([
+			'close',
+			'star',
+			'copy-link',
+			'open-new-tab',
+			'separator',
+			'delete',
+		]);
+	});
+
+	it('offers Reopen instead of Close on a closed row', () => {
+		expect(
+			rowMenuItems({readOnly: false, closed: true, desktop: true}),
+		).toEqual([
+			'reopen',
+			'star',
+			'copy-link',
+			'open-new-tab',
+			'separator',
+			'delete',
+		]);
+	});
+
+	it('leaves out Open in new tab on a phone', () => {
+		expect(
+			rowMenuItems({readOnly: false, closed: false, desktop: false}),
+		).toEqual(['close', 'star', 'copy-link', 'separator', 'delete']);
+	});
+
+	it('holds only Star, Copy link and Open in new tab on the read-only page', () => {
+		expect(
+			rowMenuItems({readOnly: true, closed: false, desktop: true}),
+		).toEqual(['star', 'copy-link', 'open-new-tab']);
+		expect(rowMenuItems({readOnly: true, closed: true, desktop: true})).toEqual(
+			['star', 'copy-link', 'open-new-tab'],
+		);
+		expect(
+			rowMenuItems({readOnly: true, closed: false, desktop: false}),
+		).toEqual(['star', 'copy-link']);
+	});
+});
+
+describe('rowHoverAction', () => {
+	it('is close on an open row, reopen on a closed one, nothing read-only', () => {
+		expect(rowHoverAction({readOnly: false, closed: false})).toBe('close');
+		expect(rowHoverAction({readOnly: false, closed: true})).toBe('reopen');
+		expect(rowHoverAction({readOnly: true, closed: false})).toBeNull();
+		expect(rowHoverAction({readOnly: true, closed: true})).toBeNull();
+	});
+});
+
+describe('closeOwnedHint', () => {
+	it('says "and N owned" only when the close would cascade', () => {
+		expect(closeOwnedHint(undefined)).toBeUndefined();
+		expect(closeOwnedHint(0)).toBeUndefined();
+		expect(closeOwnedHint(1)).toBe('and 1 owned');
+		expect(closeOwnedHint(3)).toBe('and 3 owned');
+	});
+});
+
+describe('sessionLinkUrl', () => {
+	it('is the origin, the page path and #<session id>', () => {
+		expect(
+			sessionLinkUrl({origin: 'https://box.local:3000', pathname: '/'}, 'abc'),
+		).toBe('https://box.local:3000/#abc');
+	});
+
+	it('keeps a base path', () => {
+		expect(
+			sessionLinkUrl(
+				{origin: 'https://example.com', pathname: '/wherever/'},
+				'abc',
+			),
+		).toBe('https://example.com/wherever/#abc');
+		expect(
+			sessionLinkUrl({origin: 'https://example.com', pathname: '/w'}, 'abc'),
+		).toBe('https://example.com/w#abc');
+	});
+
+	it('treats an empty path as the root and encodes the id', () => {
+		expect(
+			sessionLinkUrl({origin: 'http://localhost', pathname: ''}, 'a b/c'),
+		).toBe('http://localhost/#a%20b%2Fc');
+	});
+});
+
+describe('rowMenuHeaderMeta', () => {
+	it('is "folder · age · messages", without the folder when unknown', () => {
+		const now = Date.parse('2026-01-10T12:00:00Z');
+		const session = {
+			modified: new Date(now - 6 * 3_600_000).toISOString(),
+			messageCount: 235,
+		};
+		expect(rowMenuHeaderMeta(session, 'wherever', now)).toBe(
+			'wherever · 6h ago · 235 msgs',
+		);
+		expect(rowMenuHeaderMeta(session, undefined, now)).toBe(
+			'6h ago · 235 msgs',
+		);
+	});
+});
+
+describe('rowMetaLine', () => {
+	const now = Date.parse('2026-01-10T12:00:00Z');
+	const session = {
+		modified: new Date(now - 6 * 3_600_000).toISOString(),
+		messageCount: 235,
+	};
+
+	it('is "age · messages", with "owns N" only when it owns any', () => {
+		expect(rowMetaLine(session, 0, now)).toBe('6h ago · 235 msgs');
+		expect(rowMetaLine(session, 1, now)).toBe('6h ago · 235 msgs · owns 1');
 	});
 });

@@ -1,0 +1,21 @@
+# session-row-menu: decisions (2026-11-25)
+
+Non-obvious in-scope choices made while building task `session-row-menu` (spec `sidebar-compact-layout` stories 28 to 36 and 45). Each is easy to reverse.
+
+## Drift check
+
+The dependency `folder-header-menu-and-close-all` landed as the task assumes: the shared `Menu` / `MenuItem` / `MenuSeparator` primitive in `web/src/lib/components/menu/`, used by the folder ⋯ and the ☰ view options. `closeApi.owned` was not exported (as the task says); `fetchOwnedCount` now is. No drift found.
+
+## Decisions
+
+1. **"Open in new tab" is desktop only, decided when the menu opens.** `desktop` is `matchMedia(MENU_SHEET_QUERY)` read on the ⋯ tap (the same breakpoint at which the shared menu becomes a popover), so the item never disagrees with the menu's form. `sidebar.png`'s sheet shows "Open in new tab"; the spec (story 29) says desktop only and wins. Alternative: a live media-query listener per row (one listener per row for no visible gain).
+2. **The bottom-sheet header shows only on the sheet.** The desktop popover in `desktop.png` has no header, so the row passes `header` only when not `desktop`. The folder in the header is the folder view's `folder.name`, else the By-owner row's folder tag.
+3. **Desktop row actions are out of the layout until hover / focus.** The hover ⊘ and ⋯ are `md:hidden` and shown on `group-hover` / `group-focus-within` (and while the row's menu is open), so at rest the title takes the full width, as in `desktop.png`; hovering shortens the title, as the mockup's hovered row does. Alternative: keep them in the layout at opacity 0 (titles always truncated early) or overlay them on the title (needs a background matching every row state).
+4. **Dimming moved from the row wrapper to its content.** A closed / dimmed row's `opacity-50` is now on the link and the ↳ marker, not the wrapper, because an opacity on the wrapper would also fade the menu's sheet and popover rendered inside it. The ⋯ and hover ↺ of a closed row are therefore not dimmed.
+5. **The row title tooltip moved to the link** (it was on the wrapper), so the menu's items do not inherit the closed / dimmed-reason tooltip.
+6. **"owns N" counts the owned sessions the row's chips would show** (`shownSessions(owned, showClosed)`, so closed ones only with Show closed). The By-owner view, which shows no chips (children are nested rows), passes the same count explicitly (`ownedCount`). It is the sidebar's listed ownership, NOT the server's `/sessions/owned` (which the menu's "and N owned" hint uses, as the close flow does), so the two can differ when an owned session is not listed.
+7. **The second line is "age · N msgs · owns N · ★" with a "·" before the ★**, as the spec words it; `desktop.png` / `sidebar.png` draw the ★ without the dot. Spec wins.
+8. **Copy link URL = `location.origin + location.pathname + #<encoded id>`** (`sessionLinkUrl`). The page's own path is the base path (the app is built with relative paths and can be served under any prefix); the query is dropped on purpose because it may carry the auth `token`. It points at THIS web app, not at the server the app is configured to talk to (Connection Settings), since that is the page a receiver would open.
+9. **Copy feedback is in the menu.** Copy link keeps the menu open, turns into "Copied ✓", and closes the menu after 0.9 s. When `copyText` fails (no clipboard and no `execCommand`), it reads "Could not copy · copy it by hand" and the URL shows in the menu, selectable. Alternative: a toast; there is no toast system in the sidebar.
+10. **Delete… asks again inside the menu**, like the folder ⋯'s "Delete all…": it swaps to "Delete this session?" (focused) and Cancel. The confirm state is still the parent's single `confirmingDelete` (decision 2 of `session-row-component-decisions.md`), and closing the menu (Escape, outside tap, any other item) cancels it. A one-tap delete is impossible: Delete… itself never deletes.
+11. **The owned-count lookup is per menu opening and race-guarded.** Opening the menu clears the hint and asks `/sessions/owned`; a late answer for an earlier opening is dropped. A failed lookup shows no hint (the close flow counts a failure as 0 too). No lookup on a closed row (Reopen) or the read-only page.

@@ -14,6 +14,7 @@
 		setSessionStarred,
 		setSessionClosed,
 		closeSession,
+		fetchOwnedCount,
 		closeFolderSessions,
 		closeBannerStore,
 		undoLastClose,
@@ -1063,6 +1064,11 @@
 										ownerHint={ownerRowHint(node, sessionLabel)}
 										folderTag={node.folderName}
 										showOwned={false}
+										ownedCount={shownSessions(
+											owned.get(node.session.path) ?? [],
+											showClosed,
+										).length}
+										fetchOwnedCount={readOnly ? undefined : fetchOwnedCount}
 										confirmingDelete={confirmingDelete === node.session.path}
 										onOpen={handleSessionClick}
 										onStar={toggleStar}
@@ -1256,10 +1262,12 @@
 									ownerHint={session.ownerSessionPath
 										? sessionLabel(session.ownerSessionPath)
 										: undefined}
+									folderName={folder.name}
 									ownedChildren={shownSessions(
 										owned.get(session.path) ?? [],
 										showClosed,
 									)}
+									fetchOwnedCount={readOnly ? undefined : fetchOwnedCount}
 									confirmingDelete={confirmingDelete === session.path}
 									onOpen={handleSessionClick}
 									onStar={toggleStar}
