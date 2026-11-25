@@ -4,7 +4,7 @@ slug: live-strip-two-line-rows
 spec: sidebar-compact-layout
 blockedBy: [state-dot-legend]
 covers: [5, 6, 7, 8, 9, 10]
-needsAnswers: true
+needsAnswers: false
 ---
 
 ## What to build
@@ -53,3 +53,15 @@ These are recorded in `work/notes/observations/live-strip-two-line-rows-decision
 - **Amber wins over grey**: a waiting-for-you row that is also the open session gets a stronger amber wash rather than the grey highlight.
 - **Old header text kept**: `liveStripHeader` stays as the header's tooltip and accessible name.
 - **No import loop**: `liveStateCounts` sits in `live-sessions.ts` because `state-dot.ts` already imports that file.
+
+## Decisions (continued run, 2026-11-25)
+
+See `work/notes/observations/live-strip-two-line-rows-decisions.md`, linked from the done record:
+1. `LiveSessionRow.stateText` became `waitingOn: string | null` and the badge comes from a separate `liveBadgeText`, so the old field doesn't quietly change meaning.
+2. A row waiting on a session always shows its "waiting on…" text on line two, even the generic "waiting on a session", never its status line.
+3. The folder appears on every row's second line, including where `live.png` leaves it out, because the spec wins over the mockup.
+4. A waiting-for-you row that is also the open session gets a stronger amber wash instead of the grey highlight.
+5. `liveStripHeader` text is kept as the header's tooltip and accessible name.
+6. The new `liveStateCounts` helper lives in `live-sessions.ts`, because importing `state-dot.ts` from there would create an import loop.
+
+The same note now also records the hand check, and `work/notes/observations/server-suite-flakes-under-host-load.md` records the out-of-scope server flakes.
