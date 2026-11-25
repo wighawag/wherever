@@ -43,7 +43,7 @@
 			<div
 				role="group"
 				aria-label="Update"
-				class="pointer-events-auto flex w-full max-w-[760px] items-start gap-2 rounded-xl border border-l-4 border-brand-border border-l-brand-blue bg-brand-surface-2 px-3 py-2.5 shadow-lg shadow-black/50 select-none"
+				class="pointer-events-auto flex w-full max-w-(--chat-column) items-start gap-2 rounded-xl border border-l-4 border-brand-border border-l-brand-blue bg-brand-surface-2 px-3 py-2.5 shadow-lg shadow-black/50 select-none"
 				onpointerdown={() => updateToasts.hold('touch')}
 				onpointerup={() => updateToasts.release('touch')}
 				onpointercancel={() => updateToasts.release('touch')}

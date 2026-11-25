@@ -1006,7 +1006,8 @@
 			{/if}
 			{#each msgList as msg (msg.id)}
 				<!-- Layout (spec chat-compact-layout, stories 25 to 30): every row sits
-				     in a centered column of about 760px (the composer in ChatInput is
+				     in a centered column of about 760px, `--chat-column`, the whole area
+				     with Wide chat (the composer in ChatInput is
 				     aligned to the same width). Assistant text is a full-width
 				     'document' with no bubble, the user's message a compact
 				     right-aligned 'bubble', a generic tool call a one-line 'chip', and
@@ -1016,7 +1017,7 @@
 				{@const actionsShown = revealedActionsId === msg.id}
 				<div
 					data-msg-id={msg.id}
-					class="mx-auto flex w-full max-w-[760px] {layout === 'bubble'
+					class="mx-auto flex w-full max-w-(--chat-column) {layout === 'bubble'
 						? 'justify-end'
 						: 'justify-start'}"
 				>
@@ -1026,7 +1027,7 @@
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						class="group/msg flex min-w-0 flex-col {layout === 'bubble'
-							? 'max-w-[85%] items-end'
+							? 'max-w-[min(85%,760px)] items-end'
 							: layout === 'card'
 								? 'max-w-[85%]'
 								: 'w-full'}"

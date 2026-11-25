@@ -21,6 +21,7 @@ import {
 	hasBrowserSpeechRecognition,
 } from './core/speech-settings';
 import {createEnterToSend} from './core/enter-to-send';
+import {chatColumnWidth, createWideChat} from './core/wide-chat';
 import {shouldDropStaleHash} from './core/view-mode';
 import {fileStillReadable, postUpload} from './core/post-upload';
 import {adoptTokenFromUrlOnce} from './core/token-adoption';
@@ -348,6 +349,22 @@ export const speechSettings = createSpeechSettings({
 export const enterToSend = createEnterToSend({
 	storage: typeof localStorage !== 'undefined' ? localStorage : null,
 });
+
+// --- Wide chat -----------------------------------------------------------------
+// The ONE app instance of the "Wide chat" store (core/wide-chat.ts): the chat ⋯
+// menu ("On this device", desktop) toggles it, and it drives the `--chat-column`
+// CSS property every part of the chat lane reads (app.css holds the default).
+export const wideChat = createWideChat({
+	storage: typeof localStorage !== 'undefined' ? localStorage : null,
+});
+if (typeof document !== 'undefined') {
+	// Off removes the inline value, so app.css stays the one source of 760px.
+	wideChat.subscribe((wide) => {
+		const style = document.documentElement.style;
+		if (wide) style.setProperty('--chat-column', chatColumnWidth(true));
+		else style.removeProperty('--chat-column');
+	});
+}
 
 // --- The master toggle: PER CONVERSATION, over a global default -------------
 // A spoken exchange is a property of the CONVERSATION you are having, not of the

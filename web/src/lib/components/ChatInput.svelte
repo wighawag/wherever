@@ -1009,9 +1009,10 @@
 
 <!-- The composer's content is aligned to the chat message column (about
      760px, centered; see ChatMessageList): the side padding grows so the
-     content is never wider than 760px, while the top border stays full width. -->
+     content is never wider than 760px (`--chat-column`; the whole area with
+     Wide chat), while the top border stays full width. -->
 <div
-	class="relative border-t border-brand-border px-[max(1rem,calc((100%-760px)/2))] pt-2 pb-3"
+	class="relative border-t border-brand-border px-[max(1rem,calc((100%-var(--chat-column))/2))] pt-2 pb-3"
 >
 	{#if draftsOpen}
 		<!-- Saved drafts. Floats ABOVE the composer (like the skill menu) so opening
@@ -1021,7 +1022,7 @@
 			id="drafts-panel"
 			role="dialog"
 			aria-label="Saved drafts"
-			class="absolute right-[max(1rem,calc((100%-760px)/2))] bottom-full left-[max(1rem,calc((100%-760px)/2))] z-30 mb-2 overflow-hidden rounded-lg border border-brand-border bg-brand-surface-2 shadow-lg"
+			class="absolute right-[max(1rem,calc((100%-var(--chat-column))/2))] bottom-full left-[max(1rem,calc((100%-var(--chat-column))/2))] z-30 mb-2 overflow-hidden rounded-lg border border-brand-border bg-brand-surface-2 shadow-lg"
 		>
 			<div
 				class="flex items-center justify-between border-b border-brand-border px-3 py-2"

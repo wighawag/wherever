@@ -54,6 +54,18 @@ describe('chatMenuSections', () => {
 		]);
 	});
 
+	it('desktop adds Wide chat to On this device, before Voice settings', () => {
+		expect(itemsOf({desktop: true}).device).toEqual([
+			'hide-thinking',
+			'enter-sends',
+			'wide-chat',
+			'voice-settings',
+		]);
+		expect(
+			chatMenuSections({...base, hasSession: false, desktop: true})[0].items,
+		).toContain('wide-chat');
+	});
+
 	it('a closed session offers Reopen instead of Close', () => {
 		expect(itemsOf({closed: true}).session).toContain('reopen');
 		expect(itemsOf({closed: true}).session).not.toContain('close');

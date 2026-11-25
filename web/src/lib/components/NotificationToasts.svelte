@@ -130,7 +130,7 @@
 {#if barCount > 0 || updateCount > 0}
 	<div class="app-chrome px-3 pt-2">
 		<div
-			class="mx-auto flex w-full max-w-[760px] items-center rounded-lg border text-sm text-brand-text {barCount >
+			class="mx-auto flex w-full max-w-(--chat-column) items-center rounded-lg border text-sm text-brand-text {barCount >
 			0
 				? 'border-amber-400/50 bg-amber-400/10'
 				: 'border-brand-blue/50 bg-brand-blue/10'}"
@@ -253,7 +253,7 @@
 			<div
 				role="group"
 				aria-label="Question from {toast.item?.from ?? 'a session'}"
-				class="pointer-events-auto w-full max-w-[760px] rounded-xl border border-l-4 border-brand-border border-l-amber-400 bg-brand-surface-2 px-3 py-2.5 shadow-lg shadow-black/50 select-none"
+				class="pointer-events-auto w-full max-w-(--chat-column) rounded-xl border border-l-4 border-brand-border border-l-amber-400 bg-brand-surface-2 px-3 py-2.5 shadow-lg shadow-black/50 select-none"
 				style="touch-action: pan-x; transform: translateY({swipeDy}px); opacity: {1 +
 					swipeDy / 120};"
 				onpointerdown={onPointerDown}
