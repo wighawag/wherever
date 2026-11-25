@@ -50,3 +50,14 @@ Rework `SessionRow.svelte`:
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/session-row-menu-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+Recorded in `work/notes/observations/session-row-menu-decisions.md`. The ones you are most likely to want to reverse:
+1. "Open in new tab" counts as desktop when the screen is at least the `md` width (where the shared menu becomes a popover), checked when ⋯ is tapped.
+2. On desktop the row's buttons take no space until hover, focus or an open menu, so titles use the full width at rest.
+3. A closed row's dimming moved from the whole row to its content, because dimming the whole row would also fade the menu inside it. As a result, ⋯ and ↺ are not dimmed.
+4. "owns N" counts the owned sessions the sidebar lists, while "and N owned" comes from the server's `/sessions/owned`, so the two numbers can differ.
+5. The ★ gets a "·" before it, as the spec words it; the mockups draw it without one.
+6. Copy link uses the page's origin and path plus `#<id>`. The query string is dropped because it may carry the auth token.
+7. "Copied" shows inside the menu, which then closes. If copying fails, the link is shown in the menu to copy by hand.
