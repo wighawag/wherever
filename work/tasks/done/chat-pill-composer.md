@@ -46,3 +46,17 @@ Re-lay out `ChatInput.svelte` as a one-line pill and move the run controls out o
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/chat-pill-composer-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+Recorded in `work/notes/observations/chat-pill-composer-decisions.md`:
+1. An attachment counts as content, so a running pill holding only a file shows ➤ steer with ■ Stop beside it.
+2. ■ Stop is never blocked by the send rules, and Enter can never stop the agent.
+3. The phone placeholder while running is "Steer the agent..." so the empty pill stays one line; desktop keeps the longer wording plus the Enter hint.
+4. The ring reads "33% of 1.0M" (the desktop mockup's wording, also on the phone). It turns amber from 70% and red from 90%, and sits in its own row above the pill.
+5. "Cancel queued (N)" always shows the count, even for one steer.
+6. The "Draft saved" confirmation moved to the row above the pill, since the menu closes on tap.
+7. The ＋ menu always opens, so the offline drafts list stays reachable.
+8. The mic keeps its ⚙ (now smaller) until the session-menu task.
+9. The scroll fix in `ChatMessageList` described above.
+10. No new glossary terms: "steer" keeps its existing meaning, and "Stop" is the label for the existing `abort()`.

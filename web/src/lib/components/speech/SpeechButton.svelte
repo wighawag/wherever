@@ -13,6 +13,7 @@
 		disabled,
 		onSend,
 		activeEngine = $bindable('browser'),
+		compact = false,
 	}: {
 		text: string;
 		disabled: boolean;
@@ -23,6 +24,9 @@
 		// parent can read it reactively; SpeechButton owns the value (the settings
 		// popover sets it), the parent only observes.
 		activeEngine?: 'browser' | 'cloud';
+		// Pill-composer sizing: smaller, borderless while idle, so the mic sits
+		// inside the one-line pill instead of in a column of 48px buttons.
+		compact?: boolean;
 	} = $props();
 
 	// Check for Web Speech API support
@@ -664,7 +668,11 @@
 	}
 </script>
 
-<div class="relative flex shrink-0 items-center gap-1 select-none">
+<div
+	class="relative flex shrink-0 items-center select-none {compact
+		? 'gap-0'
+		: 'gap-1'}"
+>
 	<!-- Mic Button -->
 	<button
 		type="button"
@@ -672,12 +680,16 @@
 		onpointerdown={handlePointerDown}
 		onpointerup={handlePointerUp}
 		onpointercancel={handlePointerCancel}
-		class="flex h-[48px] w-[48px] items-center justify-center rounded-lg border transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40
+		class="flex items-center justify-center border transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-40
+			{compact ? 'h-9 w-9 rounded-full' : 'h-[48px] w-[48px] rounded-lg'}
 			{isRecording
 			? 'animate-pulse border-red-500 bg-red-600 text-white'
 			: isProcessing
 				? 'cursor-wait border-amber-500 bg-amber-600 text-white'
-				: 'border-gray-600 bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'}"
+				: compact
+					? 'border-transparent bg-transparent text-gray-400 hover:bg-gray-700 hover:text-white'
+					: 'border-gray-600 bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white'}"
+		aria-label="Voice input"
 		title={isRecording
 			? 'Recording (release/tap to stop)...'
 			: isProcessing
@@ -705,8 +717,11 @@
 		type="button"
 		onclick={() => (showSettings = !showSettings)}
 		disabled={(disabled && !isRecording && !isProcessing) || isProcessing}
-		class="flex h-[48px] w-[28px] items-center justify-center rounded-lg border border-gray-600 bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+		class="flex items-center justify-center rounded-lg border text-gray-400 hover:bg-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 {compact
+			? 'h-9 w-5 border-transparent bg-transparent'
+			: 'h-[48px] w-[28px] border-gray-600 bg-gray-800'}"
 		title="Speech Settings"
+		aria-label="Speech settings"
 	>
 		<svg
 			xmlns="http://www.w3.org/2000/svg"
