@@ -1,5 +1,15 @@
 # wherever-dev
 
+## 0.29.2
+
+### Patch Changes
+
+- 5405901: Sidebar: ✦ Assistant moves out of the tab row into the sidebar header, beside ⚙, because it opens the assistant's chat rather than switching the sidebar's view like 🙋, 🕘 and 👁. A small dot on it shows when the assistant is running, waiting on a session or waiting for you. On the desktop rail it sits above the tabs, apart from them.
+- 2d3ef23: Leaving a session that is still loading now really stops the load. The client tells the server it is leaving even before the session has opened, and the server cancels such a load. Before, the load finished anyway and kept the tab attached in the background to the session it had left, so that session's activity could show up after leaving.
+- 7951dbb: Chat composer: ■ Stop moves out of the pill into the row just above it, as a labelled red "Stop" button beside "Cancel queued". Next to 🎤 it read as part of the mic (a recording mic is also a red circle). The pill's right button now only sends: ➤ send, or ➤ steer while the agent runs (greyed out while the pill is empty).
+- 08aa5db: Chat top bar: 🔍 Search the web is back as a button (it had moved into the ⋯ menu), and it now shows while a session is still loading too, not only once it has loaded. Conversation search (searching what was said in past sessions) gets a 🕘 icon in the sidebar tab, its links and its panel, so the magnifier only means web search.
+- f1551b1: Desktop: a "Wide chat" toggle in the chat ⋯ menu (On this device) lets the messages, the composer and the notification toasts use the whole width of the chat area instead of the centered column of about 760px. It is remembered per device and off by default; phones are unchanged (the column is already the full width there).
+
 ## 0.29.1
 
 ### Patch Changes
