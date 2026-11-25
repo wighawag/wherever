@@ -1,4 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import { startHarness, type Harness } from './harness.js';
 
 // Step 2 fast-load (docs/plan-speed-up-long-session-load.md): opening a session
@@ -13,10 +15,12 @@ afterEach(async () => {
   h = undefined;
 });
 
-async function seedSession(h: Harness) {
+async function seedSession(h: Harness, subdir?: string) {
   const c = await h.connect();
   await c.waitForType('connected');
-  c.send({ type: 'session_new', cwd: c.workspace });
+  const cwd = subdir ? path.join(c.workspace, subdir) : c.workspace;
+  if (subdir) fs.mkdirSync(cwd, { recursive: true });
+  c.send({ type: 'session_new', cwd });
   const created = await c.waitForType('session_created');
   c.send({ type: 'message', message: 'hello', sessionId: created.sessionId });
   await c.waitFor((m) => m.type === 'message_end' && m.role === 'assistant');
@@ -76,6 +80,49 @@ describe('fast-first session load', () => {
     c2.send({ type: 'message', message: 'again', sessionId: created.sessionId });
     const end = await c2.waitFor((m) => m.type === 'message_end' && m.role === 'assistant', 30_000);
     expect(end.content).toBe('second reply');
+  }, 60_000);
+
+  it('a leave sent right after a load, before the read finishes, stops that load: nothing painted, nothing attached', async () => {
+    // The web's 🔍 (and the logo) leave a session that is still loading. The
+    // client then has no sessionId yet, and the server is still inside the
+    // load's first await (the cheap read). Frames of one socket are not
+    // serialized, so the leave lands DURING that await: the load must notice it
+    // was superseded and stop, or it paints the session and attaches the socket
+    // as a hidden viewer of a session the user left.
+    h = await startHarness({ initial: { kind: 'reply', text: 'warm' }, idleTimeoutMs: 300_000 });
+    const { c, sessionFile, sessionId } = await seedSession(h);
+
+    const c2 = await h.connect();
+    await c2.waitForType('connected');
+    c2.send({ type: 'session_load', sessionFile });
+    c2.send({ type: 'session_leave', sessionId: '' });
+    await new Promise((r) => setTimeout(r, 1_500));
+    expect(c2.messages.some((m) => m.type === 'session_created')).toBe(false);
+    expect(c2.messages.some((m) => m.type === 'message_history')).toBe(false);
+    expect(c2.messages.some((m) => m.type === 'session_error')).toBe(false);
+
+    // Not attached as a viewer either: a turn in that session reaches the
+    // client driving it, never the one that left.
+    h.setNext({ kind: 'reply', text: 'only for c' });
+    c.send({ type: 'message', message: 'again', sessionId });
+    await c.waitFor((m) => m.type === 'message_end' && m.role === 'assistant' && m.content === 'only for c', 30_000);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(c2.messages.some((m) => m.type === 'agent_start' || m.type === 'message_end')).toBe(false);
+  }, 60_000);
+
+  it('a newer load during the read of an earlier one: only the newer one paints', async () => {
+    h = await startHarness({ initial: { kind: 'reply', text: 'warm' }, idleTimeoutMs: 300_000 });
+    const a = await seedSession(h);
+    h.setNext({ kind: 'reply', text: 'b' });
+    const b = await seedSession(h, 'b-folder');
+
+    const c2 = await h.connect();
+    await c2.waitForType('connected');
+    c2.send({ type: 'session_load', sessionFile: a.sessionFile });
+    c2.send({ type: 'session_load', sessionFile: b.sessionFile });
+    await c2.waitFor((m) => m.type === 'session_ready' && m.sessionFile === b.sessionFile, 20_000);
+    await new Promise((r) => setTimeout(r, 1_000));
+    expect(c2.messages.some((m) => m.type === 'session_created' && m.sessionFile === a.sessionFile)).toBe(false);
   }, 60_000);
 
   it('a warm (resident) session loads without a pending phase', async () => {

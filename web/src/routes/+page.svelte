@@ -100,7 +100,11 @@
 	import {onMount} from 'svelte';
 	import {version} from '$app/environment';
 	import {url} from '$lib/core/utils/web/path';
-	import {decideHashJoin, isSearchActive} from '$lib/core/view-mode';
+	import {
+		decideHashJoin,
+		isSearchActive,
+		webSearchShortcutShown,
+	} from '$lib/core/view-mode';
 	import {decideReturn, runBoot} from '$lib/core/instant-resume';
 
 	let sidebarOpen = $state(false);
@@ -628,8 +632,15 @@
 	// search box). isSearchActive treats a session that is loading/resyncing, or a
 	// hash pointing at a session we are about to open, as NOT the search state even
 	// though sessionFile is briefly still null.
-	let searchActive = $derived(
-		isSearchActive({
+	// `window.location.hash` is not reactive: bumped where this page clears the
+	// hash itself (startSearch), so the two checks below re-read it at once even
+	// when nothing else changes (a hash whose auto-join has not fired yet).
+	let hashVersion = $state(0);
+	// One set of inputs for both checks, so the composer's search mode and the
+	// top bar's 🔍 can never disagree.
+	let viewInputs = $derived.by(() => {
+		void hashVersion;
+		return {
 			connected,
 			searchConfigured: !!searchFolder,
 			hasSession: !!sessionInfo.sessionFile,
@@ -638,8 +649,12 @@
 			hasSessionHash: typeof window !== 'undefined' && !!window.location.hash,
 			loadFailed:
 				!!sError && !loadingSession && !resyncing && !sessionInfo.sessionFile,
-		}),
-	);
+		};
+	});
+	let searchActive = $derived(isSearchActive(viewInputs));
+
+	// The top bar's 🔍: also while a session is still loading (see the helper).
+	let showWebSearchShortcut = $derived(webSearchShortcutShown(viewInputs));
 
 	// Search-mode model picker. Options mirror the sidebar new-session list; the
 	// selection is seeded from the search folder's server-resolved default (which
@@ -683,7 +698,7 @@
 		}
 	});
 
-	// ⋯ "Search the web" (active-session case): leave the session and focus the
+	// 🔍 "Search the web" (top bar): leave the session (or a load in flight) and focus the
 	// search composer SYNCHRONOUSLY inside this gesture so the mobile virtual
 	// keyboard rises (focusing later from a reactive effect would not, esp. iOS).
 	function startSearch() {
@@ -693,6 +708,7 @@
 		if (typeof window !== 'undefined' && window.location.hash) {
 			window.location.hash = '';
 		}
+		hashVersion++;
 		leaveSession();
 		chatInput?.focusInput();
 	}
@@ -868,7 +884,7 @@
 						active={currentTab === 'search'}
 						onclick={() => onRailTab('search')}
 					>
-						{#snippet icon()}<span aria-hidden="true">🔎</span>{/snippet}
+						{#snippet icon()}<span aria-hidden="true">🕘</span>{/snippet}
 					</SidebarTab>
 				</div>
 				<div class="flex h-9 w-10">
@@ -1142,7 +1158,7 @@
 						active={currentTab === 'search'}
 						onclick={() => onTab('search')}
 					>
-						{#snippet icon()}<span aria-hidden="true">🔎</span>{/snippet}
+						{#snippet icon()}<span aria-hidden="true">🕘</span>{/snippet}
 					</SidebarTab>
 					<SidebarTab
 						label="Read-only sessions"
@@ -1177,7 +1193,7 @@
 							class="mx-2 mt-1.5 flex flex-shrink-0 items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-brand-blue transition-colors hover:bg-brand-surface-3/50"
 							title="Search the read-only conversations"
 						>
-							<span aria-hidden="true">🔎</span>
+							<span aria-hidden="true">🕘</span>
 							<span>Search these conversations</span>
 							<span class="ml-auto" aria-hidden="true">→</span>
 						</button>
@@ -1201,7 +1217,8 @@
 		     with an amber dot whenever anything waits for you, then the open
 		     session's title (listing label, else folder) with its state dot,
 		     folder · model, "read-only" and the connection state under it. With
-		     no session open, today's status text. Then ☆ (desktop only) and ⋯,
+		     no session open, today's status text. Then 🔍 Search the web (also
+		     while a session loads), ☆ (desktop only) and ⋯,
 		     the session menu (chat-session-menu), which holds every other
 		     action and the per-chat / per-device settings. -->
 		<div
@@ -1278,6 +1295,20 @@
 				</div>
 			{/if}
 
+			<!-- 🔍 Search the web: leave the session for the web-search screen.
+			     Shown with a session open AND while one is still loading, so it
+			     never waits for the transcript (webSearchShortcutShown). -->
+			{#if showWebSearchShortcut}
+				<button
+					type="button"
+					onclick={startSearch}
+					class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border border-brand-border bg-brand-surface-2 text-base text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
+					title="Search the web (leaves this session)"
+					aria-label="Search the web"
+				>
+					🔍
+				</button>
+			{/if}
 			<!-- Star the open session: "come back to this". The natural moment is
 			     right after this session hands a prompt to a new one, which will take
 			     the top of the list. The star also shows on the session's sidebar row.
@@ -1303,15 +1334,13 @@
 			{/if}
 
 			<!-- ⋯ the session menu (ChatSessionMenu.svelte): model, star, rename,
-			     copy link, close, search the web, reset the assistant, "This chat"
+			     copy link, close, reset the assistant, "This chat"
 			     and "On this device" settings, context and versions. With no
 			     session open, only "On this device". -->
 			<ChatSessionMenu
 				listed={currentListed}
 				title={currentTitle}
-				searchWeb={connected && !!searchFolder}
 				viewingAssistant={connected && viewingAssistant}
-				onStartSearch={startSearch}
 			/>
 		</div>
 

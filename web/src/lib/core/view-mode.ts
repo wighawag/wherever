@@ -51,6 +51,18 @@ export function isSearchActive(
 	);
 }
 
+/**
+ * Whether the top bar shows its 🔍 "Search the web" shortcut: connected, a
+ * search folder configured, and not already on the web-search screen. So it
+ * shows with a session open AND while one is still loading (leaving cancels the
+ * in-flight load, see the client's `leaveSession`), not only once it is loaded.
+ */
+export function webSearchShortcutShown(
+	i: SessionViewInputs & {searchConfigured: boolean},
+): boolean {
+	return i.connected && i.searchConfigured && !isSearchActive(i);
+}
+
 export interface HashJoinInputs {
 	connected: boolean;
 	/** Session id from the URL hash ('' when there is none). */

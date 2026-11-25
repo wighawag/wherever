@@ -5,8 +5,8 @@
  *
  * Sections, in order:
  * - session actions (no title): Model, Star / Unstar, Rename, Copy link, Open in
- *   new tab (desktop), Close / Reopen (not read-only), Search the web (when
- *   configured), Reset the assistant (when viewing it);
+ *   new tab (desktop), Close / Reopen (not read-only), Reset the assistant (when
+ *   viewing it); Search the web is the top bar's 🔍, not here;
  * - "This chat": Beep when done (tri-state, only on a drivable session) and
  *   Conversation mode (per conversation, following the default unless set);
  * - "On this device": Hide thinking, Enter sends, Wide chat (desktop: the
@@ -28,7 +28,6 @@ export type ChatMenuItem =
 	| 'open-new-tab'
 	| 'close'
 	| 'reopen'
-	| 'search-web'
 	| 'reset-assistant'
 	| 'beep'
 	| 'conversation'
@@ -57,8 +56,6 @@ export interface ChatMenuInput {
 	desktop: boolean;
 	/** The session reports a model (the Model item; pickable or text). */
 	hasModel: boolean;
-	/** Web search is configured and the socket is up (today's 🔍). */
-	searchWeb: boolean;
 	/** The open session is the assistant's current one, connected (↺ Reset). */
 	viewingAssistant: boolean;
 	/** Context usage is known (the context line). */
@@ -83,7 +80,6 @@ export function chatMenuSections(input: ChatMenuInput): ChatMenuSection[] {
 	session.push('copy-link');
 	if (input.desktop) session.push('open-new-tab');
 	if (!input.readOnly) session.push(input.closed ? 'reopen' : 'close');
-	if (input.searchWeb) session.push('search-web');
 	if (input.viewingAssistant) session.push('reset-assistant');
 
 	const thisChat: ChatMenuItem[] = [];
