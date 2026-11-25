@@ -15,7 +15,6 @@
 		sessionError,
 		resendMessage,
 		discardMessage,
-		cancelSteer,
 		pendingSteering,
 		beepEnabled,
 		beepSessionOverride,
@@ -515,8 +514,22 @@
 		}
 	}
 
+	// The list's height as last seen by the ResizeObserver below (0 until it has
+	// run once).
+	let observedListHeight = 0;
+
 	function handleScroll() {
 		if (messageList) {
+			// A scroll event fired by the list's box changing size (Chrome fires one
+			// when a phone keyboard or the growing composer shrinks it) is not the
+			// user scrolling away: leave shouldAutoScroll for the ResizeObserver to
+			// act on, or the shrink would unpin the latest message.
+			if (
+				observedListHeight !== 0 &&
+				messageList.clientHeight !== observedListHeight
+			) {
+				return;
+			}
 			shouldAutoScroll = isScrolledToBottom(messageList);
 		}
 	}
@@ -535,6 +548,23 @@
 	}
 
 	onMount(scrollToBottom);
+
+	// Keep the latest message in view when the list's box SHRINKS under it: the
+	// pill composer growing with its text (up to about 40% of the screen), or a
+	// phone keyboard resizing the layout. Shrinking keeps scrollTop, which would
+	// otherwise push the bottom of the conversation out of sight. Only re-pins
+	// when the user was already at the bottom (shouldAutoScroll is not updated by
+	// a resize, since no scroll event fires).
+	$effect(() => {
+		const el = messageList;
+		if (!el || typeof ResizeObserver === 'undefined') return;
+		const ro = new ResizeObserver(() => {
+			if (shouldAutoScroll) scrollToBottom();
+			observedListHeight = el.clientHeight;
+		});
+		ro.observe(el);
+		return () => ro.disconnect();
+	});
 
 	$effect(() => {
 		if (messageList) {
@@ -2088,8 +2118,11 @@
 				<span>{conversationOn ? 'Conversation: On' : 'Conversation: Off'}</span>
 			</button>
 
-			<!-- Context-window usage, e.g. "11.3% / 1.0M" -->
-			{#if contextLabel}
+			<!-- Context-window usage, e.g. "11.3% / 1.0M". Only on a READ-ONLY
+			     session: everywhere else the composer's context ring shows it above the
+			     pill (ChatInput), and a read-only session has no composer. Moves to the
+			     top bar's session menu with chat-session-menu. -->
+			{#if $isReadOnly && contextLabel}
 				<div
 					class="flex items-center gap-1 text-xs text-brand-text-muted"
 					title={$piState.contextUsage?.tokens != null
@@ -2101,32 +2134,22 @@
 				</div>
 			{/if}
 		</div>
-		<div class="flex items-center gap-2">
-			<!-- Cancel ALL queued steers without aborting the running turn. pi's
-			     clearQueue() is all-or-nothing, so this is a single session-level
-			     action (not per-message). Shown only when something is queued. -->
-			{#if $pendingSteering.length > 0}
+		<!-- Abort stays here ONLY for a read-only session, where the composer (and so
+		     its ■ Stop) is not mounted; a drivable session stops from the pill, and
+		     "Cancel queued" sits above the pill. Moves to the top bar with
+		     chat-top-bar. -->
+		{#if $isReadOnly}
+			<div class="flex items-center gap-2">
 				<button
-					onclick={cancelSteer}
-					class="rounded border border-amber-400/50 bg-brand-surface-3 px-3 py-1.5 text-xs text-brand-text-muted transition-colors hover:bg-rose-500/80 hover:text-brand-text"
-					title="Cancel the queued steer message{$pendingSteering.length > 1
-						? 's'
-						: ''} (does not abort the current turn)"
+					onclick={abort}
+					disabled={!streaming}
+					class="rounded bg-rose-500 px-3 py-1.5 text-xs text-brand-text transition-colors hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+					title="Abort"
 				>
-					Cancel queued{$pendingSteering.length > 1
-						? ` (${$pendingSteering.length})`
-						: ''}
+					Abort
 				</button>
-			{/if}
-			<button
-				onclick={abort}
-				disabled={!streaming}
-				class="rounded bg-rose-500 px-3 py-1.5 text-xs text-brand-text transition-colors hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
-				title="Abort"
-			>
-				Abort
-			</button>
-		</div>
+			</div>
+		{/if}
 	</div>
 
 	<!-- Custom Confirm Modal for Existing Folders -->

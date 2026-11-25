@@ -12,11 +12,16 @@
 		endFilePicker,
 		composerPrefill,
 		reloadResources,
+		abort,
+		cancelSteer,
+		pendingSteering,
 	} from '$lib/wherever';
 	import {isStreaming, isReadOnly, activeSessionInfo} from '$lib/wherever';
 	import {getConversationKnobs} from '$lib/wherever';
 	import {getBaseUrl, getToken} from '$lib/session-store';
 	import {decideComposeSend} from '$lib/core/compose-send';
+	import {contextRing, sendButtonState} from '$lib/core/composer-controls';
+	import {formatTokens} from './chat-message-helpers';
 	import {buildAttachmentMessage} from '$lib/core/attachments';
 	import {
 		attachmentBlocksSend,
@@ -86,7 +91,11 @@
 
 	let text = $state('');
 	let enterToSend = $state(true);
-	let isCollapsed = $state(false);
+	// The pill's ＋ menu (Attach file, Save as draft, Drafts, Enter sends).
+	let plusMenuOpen = $state(false);
+	// A fine pointer with hover (a desktop): only there does the placeholder say
+	// what Enter does (a phone keyboard has no Shift+Enter to speak of).
+	let finePointer = $state(false);
 
 	// Hands-free mic-reopen loop (`micReopensAfterReply` knob). The SpeechButton
 	// child owns the engine + the programmatic recording start; ChatInput owns the
@@ -229,6 +238,59 @@
 			(text.trim().length > 0 || attachments.length > 0),
 	);
 
+	// The pill's right end: ➤ send / ➤ steer (+ ■ Stop beside) / ■ Stop /
+	// Search. See core/composer-controls.ts for the rule (Stop follows only
+	// `streaming`, like the old strip's Abort).
+	let buttons = $derived(
+		sendButtonState({
+			searchMode,
+			streaming,
+			hasContent: text.trim().length > 0 || attachments.length > 0,
+			canSend,
+		}),
+	);
+
+	// Context ring above the pill (chat mode only: the search composer has no
+	// session). Replaces the settings strip's "🧠 11.3% / 1.0M" label.
+	let ring = $derived(
+		searchMode ? null : contextRing(appState.contextUsage, formatTokens),
+	);
+	const RING_R = 6;
+	const RING_C = 2 * Math.PI * RING_R;
+
+	let queuedSteers = $derived(searchMode ? 0 : $pendingSteering.length);
+
+	let placeholderText = $derived.by(() => {
+		if (searchMode) return placeholder ?? 'Search the web...';
+		if (!connected) {
+			return appState.connecting
+				? 'Reconnecting... you can keep typing'
+				: 'Disconnected - you can type, sending resumes once reconnected';
+		}
+		if (readOnly) return 'Read-only mode';
+		if (!sessionInfo.sessionId) return 'Select a session first...';
+		// On a phone the pill is narrow: keep the running hint short enough for
+		// one line, so the empty pill stays one line tall.
+		if (!finePointer) return streaming ? 'Steer the agent...' : 'Message...';
+		const base = streaming ? 'Message (steers the agent)...' : 'Message...';
+		return enterToSend
+			? `${base} (Enter to send, Shift+Enter for a new line)`
+			: `${base} (Shift+Enter to send, Enter for a new line)`;
+	});
+
+	function closePlusMenu() {
+		plusMenuOpen = false;
+	}
+
+	function pickFile() {
+		plusMenuOpen = false;
+		// Mark the picker active before it opens so the page-hidden suspend timer
+		// doesn't tear down the session while the user takes a photo / browses
+		// files. Still inside the tap gesture, so the native picker may open.
+		beginFilePicker();
+		fileInput?.click();
+	}
+
 	let textarea = $state<HTMLTextAreaElement>();
 
 	// Persist the in-progress draft so it is never lost when this composer is
@@ -258,6 +320,9 @@
 			enterToSend = stored === 'true';
 		}
 		drafts = readCachedDrafts();
+		finePointer =
+			typeof window !== 'undefined' &&
+			!!window.matchMedia?.('(hover: hover) and (pointer: fine)').matches;
 	});
 
 	// --- Saved drafts (save instead of send) --------------------------------
@@ -434,7 +499,6 @@
 		draftSource = {id: draft.id, text: draft.text};
 		pendingDraft = null;
 		draftsOpen = false;
-		if (isCollapsed) isCollapsed = false;
 		queueMicrotask(() => {
 			if (!textarea) return;
 			textarea.focus();
@@ -521,7 +585,6 @@
 			// saves this prefilled draft rather than being skipped/overwritten.
 			hydratedKey = draftKey;
 			text = prefillText;
-			if (isCollapsed) isCollapsed = false;
 			queueMicrotask(() => textarea?.focus());
 		});
 	});
@@ -559,7 +622,6 @@
 	// Exposed so a parent can focus the textarea SYNCHRONOUSLY inside a user
 	// gesture (required to raise the mobile virtual keyboard, esp. iOS Safari).
 	export function focusInput() {
-		if (isCollapsed) isCollapsed = false;
 		textarea?.focus();
 	}
 
@@ -902,6 +964,11 @@
 			closeDrafts();
 			return;
 		}
+		if (plusMenuOpen && e.key === 'Escape') {
+			e.preventDefault();
+			closePlusMenu();
+			return;
+		}
 		// Skill autocomplete owns the navigation keys while the menu is open. The
 		// first Enter/Tab ACCEPTS the highlighted command (inserting `/skill:<name> `)
 		// and is swallowed, so a second Enter is needed to actually send, matching the
@@ -952,7 +1019,7 @@
      760px, centered; see ChatMessageList): the side padding grows so the
      content is never wider than 760px, while the top border stays full width. -->
 <div
-	class="relative border-t border-brand-border px-[max(1rem,calc((100%-760px)/2))] py-4"
+	class="relative border-t border-brand-border px-[max(1rem,calc((100%-760px)/2))] pt-2 pb-3"
 >
 	{#if draftsOpen}
 		<!-- Saved drafts. Floats ABOVE the composer (like the skill menu) so opening
@@ -1094,350 +1161,434 @@
 			{/if}
 		</div>
 	{/if}
-	{#if isCollapsed}
-		<div class="flex items-center">
-			<button
-				type="button"
-				onclick={() => {
-					isCollapsed = false;
-					setTimeout(() => textarea?.focus(), 50);
-				}}
-				class="flex w-full items-center justify-between rounded-lg border border-brand-border bg-brand-surface-2 px-4 py-2.5 text-sm text-brand-text-muted transition-all hover:bg-brand-surface-3 hover:text-brand-text"
-			>
-				<span class="flex items-center gap-2">
-					<span>{searchMode ? '🔍' : '💬'}</span>
-					<span>
-						{#if searchMode}
-							{placeholder ?? 'Search the web...'}
-						{:else if streaming}
-							Agent is working, tap to Steer...
-						{:else if readOnly}
-							Read-only mode
-						{:else if !sessionInfo.sessionId}
-							Select a session first...
-						{:else}
-							Tap to type a message...
-						{/if}
-					</span>
-				</span>
-				<span
-					class="rounded bg-brand-surface-3 px-2 py-1 text-xs font-medium text-brand-text transition-colors hover:bg-brand-surface-2"
-					>Expand ▲</span
+	{#if attachments.length > 0}
+		<div class="mb-3 flex flex-wrap gap-2">
+			{#each attachments as attachment (attachment.id)}
+				<!-- Chip state comes ONLY from uploadFile's onProgress, mapped by
+				     core/upload-chip.ts (chipView); a search-held file has no upload. -->
+				{@const view = attachment.upload ? chipView(attachment.upload) : null}
+				{@const inFlight = attachment.upload
+					? isUploadInFlight(attachment.upload.state)
+					: false}
+				<div
+					class="flex items-center gap-2 rounded border bg-brand-surface-2 px-2.5 py-1.5 text-xs {inFlight
+						? 'border-brand-blue'
+						: 'border-brand-border'}"
 				>
-			</button>
-		</div>
-	{:else}
-		{#if attachments.length > 0}
-			<div class="mb-3 flex flex-wrap gap-2">
-				{#each attachments as attachment (attachment.id)}
-					<!-- Chip state comes ONLY from uploadFile's onProgress, mapped by
-					     core/upload-chip.ts (chipView); a search-held file has no upload. -->
-					{@const view = attachment.upload ? chipView(attachment.upload) : null}
-					{@const inFlight = attachment.upload
-						? isUploadInFlight(attachment.upload.state)
-						: false}
-					<div
-						class="flex items-center gap-2 rounded border bg-brand-surface-2 px-2.5 py-1.5 text-xs {inFlight
-							? 'border-brand-blue'
-							: 'border-brand-border'}"
+					<span
+						class="max-w-[150px] truncate font-medium text-brand-text"
+						title={attachment.name}
 					>
+						{attachment.name}
+					</span>
+					{#if attachment.file}
+						<!-- Search mode: held locally, uploaded when the search creates
+						     its session. -->
 						<span
-							class="max-w-[150px] truncate font-medium text-brand-text"
-							title={attachment.name}
+							class="text-brand-text-muted"
+							title="Will be uploaded with the search">📎</span
 						>
-							{attachment.name}
-						</span>
-						{#if attachment.file}
-							<!-- Search mode: held locally, uploaded when the search creates
-							     its session. -->
+					{:else if view?.kind === 'pending' || view?.kind === 'indeterminate'}
+						<span
+							class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-brand-blue border-t-transparent"
+						></span>
+					{:else if view?.kind === 'waiting'}
+						<!-- Queued or paused: the upload continues on its own once the
+						     socket is back and the session has rejoined (no re-attach). -->
+						<span
+							class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-brand-text-muted border-t-transparent"
+						></span>
+						<span
+							class="text-[10px] text-brand-text-muted"
+							title="The upload continues once reconnected"
+							>Paused, waiting for connection</span
+						>
+					{:else if view?.kind === 'progress' || view?.kind === 'finishing'}
+						<span
+							class="h-1.5 w-16 overflow-hidden rounded-full bg-brand-surface-3"
+							role="progressbar"
+							aria-valuemin={0}
+							aria-valuemax={100}
+							aria-valuenow={view.percent}
+						>
 							<span
-								class="text-brand-text-muted"
-								title="Will be uploaded with the search">📎</span
-							>
-						{:else if view?.kind === 'pending' || view?.kind === 'indeterminate'}
+								class="block h-full rounded-full bg-brand-blue transition-[width]"
+								style="width: {view.percent}%"
+							></span>
+						</span>
+						<span class="text-[10px] text-brand-text-muted tabular-nums"
+							>{view.percent}%</span
+						>
+						{#if view.kind === 'finishing'}
 							<span
 								class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-brand-blue border-t-transparent"
+								title="Finishing"
 							></span>
-						{:else if view?.kind === 'waiting'}
-							<!-- Queued or paused: the upload continues on its own once the
-							     socket is back and the session has rejoined (no re-attach). -->
-							<span
-								class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-brand-text-muted border-t-transparent"
-							></span>
-							<span
-								class="text-[10px] text-brand-text-muted"
-								title="The upload continues once reconnected"
-								>Paused, waiting for connection</span
-							>
-						{:else if view?.kind === 'progress' || view?.kind === 'finishing'}
-							<span
-								class="h-1.5 w-16 overflow-hidden rounded-full bg-brand-surface-3"
-								role="progressbar"
-								aria-valuemin={0}
-								aria-valuemax={100}
-								aria-valuenow={view.percent}
-							>
-								<span
-									class="block h-full rounded-full bg-brand-blue transition-[width]"
-									style="width: {view.percent}%"
-								></span>
-							</span>
-							<span class="text-[10px] text-brand-text-muted tabular-nums"
-								>{view.percent}%</span
-							>
-							{#if view.kind === 'finishing'}
-								<span
-									class="inline-block h-3 w-3 animate-spin rounded-full border-2 border-brand-blue border-t-transparent"
-									title="Finishing"
-								></span>
-							{/if}
-						{:else if view?.kind === 'failed'}
-							<span
-								class="flex items-center gap-1 text-[10px] font-medium text-rose-400"
-								title={view.message}
-							>
-								<span class="max-w-[120px] truncate">⚠️ {view.message}</span>
-								{#if view.pickAgain}
-									<span class="shrink-0 text-brand-text-muted"
-										>Pick the file again</span
-									>
-								{:else if attachment.url}
-									<a
-										href={attachment.url}
-										target="_blank"
-										class="ml-1 shrink-0 font-semibold text-brand-blue underline hover:opacity-80"
-									>
-										[Test Link]
-									</a>
-								{/if}
-							</span>
-							{#if view.retry && attachment.retryFile}
-								<button
-									type="button"
-									onclick={() => retryUpload(attachment.id)}
-									class="rounded bg-brand-surface-3 px-1.5 py-0.5 text-[10px] font-medium text-brand-text hover:bg-brand-surface-3/70"
-								>
-									Retry
-								</button>
-							{/if}
-						{:else}
-							<span class="text-emerald-400">✓</span>
 						{/if}
-						{#if inFlight}
+					{:else if view?.kind === 'failed'}
+						<span
+							class="flex items-center gap-1 text-[10px] font-medium text-rose-400"
+							title={view.message}
+						>
+							<span class="max-w-[120px] truncate">⚠️ {view.message}</span>
+							{#if view.pickAgain}
+								<span class="shrink-0 text-brand-text-muted"
+									>Pick the file again</span
+								>
+							{:else if attachment.url}
+								<a
+									href={attachment.url}
+									target="_blank"
+									class="ml-1 shrink-0 font-semibold text-brand-blue underline hover:opacity-80"
+								>
+									[Test Link]
+								</a>
+							{/if}
+						</span>
+						{#if view.retry && attachment.retryFile}
 							<button
 								type="button"
-								onclick={() => cancelUpload(attachment.id)}
-								class="rounded bg-brand-surface-3 px-1.5 py-0.5 text-[10px] font-medium text-brand-text-muted hover:text-brand-text"
+								onclick={() => retryUpload(attachment.id)}
+								class="rounded bg-brand-surface-3 px-1.5 py-0.5 text-[10px] font-medium text-brand-text hover:bg-brand-surface-3/70"
 							>
-								Cancel
+								Retry
 							</button>
 						{/if}
+					{:else}
+						<span class="text-emerald-400">✓</span>
+					{/if}
+					{#if inFlight}
 						<button
 							type="button"
-							onclick={() => removeAttachment(attachment.id)}
-							class="ml-1 font-bold text-brand-text-muted hover:text-brand-text"
-							title="Remove"
+							onclick={() => cancelUpload(attachment.id)}
+							class="rounded bg-brand-surface-3 px-1.5 py-0.5 text-[10px] font-medium text-brand-text-muted hover:text-brand-text"
 						>
-							×
+							Cancel
 						</button>
-					</div>
-				{/each}
-			</div>
-		{/if}
-		{#if searchMode && searchModels.length > 0}
-			<!-- Model picker for search mode. Lets the user override the search
-			     folder's default model before pressing Search. -->
-			<div class="mb-2 flex items-center gap-2">
-				<label
-					for="search-model"
-					class="text-xs font-medium text-brand-text-muted">Model</label
-				>
-				<select
-					id="search-model"
-					bind:value={searchModel}
-					disabled={effectivelyDisabled}
-					class="min-w-0 flex-1 rounded-lg border border-brand-border bg-brand-surface-2 px-2 py-1.5 text-xs text-brand-text focus:border-brand-blue focus:outline-none disabled:opacity-50"
-				>
-					{#each searchModels as m}
-						<option value={m.value}>{m.label}</option>
-					{/each}
-				</select>
-			</div>
-		{/if}
-		<form
-			onsubmit={(e) => {
-				e.preventDefault();
-				handleSend();
-			}}
-			class="flex items-stretch gap-3"
-		>
-			<div class="relative min-w-0 flex-1">
-				{#if skillMenuOpen && skillMatches.length > 0}
-					<!-- Skill-command autocomplete. Floats above the composer. Selecting an
-					     item only inserts `/skill:<name> ` (see applySkill); it never sends. -->
-					<ul
-						class="absolute bottom-full left-0 z-20 mb-1 max-h-56 w-full overflow-y-auto rounded-lg border border-brand-border bg-brand-surface-2 py-1 shadow-lg"
-						role="listbox"
-					>
-						{#each skillMatches as skill, i (skill.name)}
-							<li>
-								<button
-									type="button"
-									role="option"
-									aria-selected={i === skillMenuIndex}
-									onmousedown={(e) => {
-										// mousedown (not click) so the textarea doesn't blur first and
-										// tear the menu down before the selection lands.
-										e.preventDefault();
-										applySkill(skill.name);
-									}}
-									onmouseenter={() => (skillMenuIndex = i)}
-									class="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left text-sm {i ===
-									skillMenuIndex
-										? 'bg-brand-surface-3 text-brand-text'
-										: 'text-brand-text-muted hover:bg-brand-surface-3/60'}"
-								>
-									<span class="font-mono text-brand-text">/{skill.name}</span>
-									{#if skill.description}
-										<span class="line-clamp-1 text-[11px] text-brand-text-muted"
-											>{skill.description}</span
-										>
-									{/if}
-								</button>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-				<textarea
-					bind:this={textarea}
-					bind:value={text}
-					onkeydown={handleKeydown}
-					disabled={effectivelyDisabled}
-					rows={1}
-					placeholder={searchMode
-						? (placeholder ?? 'Search the web...')
-						: !connected
-							? appState.connecting
-								? 'Reconnecting... you can keep typing'
-								: 'Disconnected - you can type, sending resumes once reconnected'
-							: streaming
-								? 'Agent is working, Steer to interrupt...'
-								: readOnly
-									? 'Read-only mode'
-									: !sessionInfo.sessionId
-										? 'Select a session first...'
-										: 'Type a message...'}
-					class="h-full max-h-48 min-h-[120px] w-full resize-none overflow-y-auto rounded-lg border border-brand-border bg-brand-surface-2 px-4 py-3 leading-relaxed text-brand-text placeholder-brand-text-muted focus:border-brand-blue focus:outline-none disabled:opacity-50"
-				></textarea>
-			</div>
-
-			<div class="flex w-[80px] shrink-0 flex-col justify-end gap-2">
-				{#if showAttach}
+					{/if}
 					<button
 						type="button"
-						onclick={() => {
-							// Mark the picker active before it opens so the page-hidden
-							// suspend timer doesn't tear down the session while the user
-							// takes a photo / browses files.
-							beginFilePicker();
-							fileInput?.click();
-						}}
-						disabled={effectivelyDisabled}
-						class="flex h-[40px] w-full items-center justify-center rounded-lg border border-brand-border bg-brand-surface-2 text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text disabled:cursor-not-allowed disabled:opacity-50"
-						title="Attach file (image or document)"
+						onclick={() => removeAttachment(attachment.id)}
+						class="ml-1 font-bold text-brand-text-muted hover:text-brand-text"
+						title="Remove"
 					>
-						📎
+						×
 					</button>
-					<input
-						bind:this={fileInput}
-						type="file"
-						multiple
-						onchange={handleFileChange}
-						class="hidden"
-					/>
-				{/if}
-				<div class="flex w-full justify-center">
-					<SpeechButton
-						bind:this={speechButton}
-						bind:text
-						bind:activeEngine={speechEngine}
-						disabled={effectivelyDisabled}
-						onSend={handleSend}
-					/>
 				</div>
-				<button
-					type="submit"
-					disabled={!canSend}
-					title={!searchMode && streaming
-						? 'Steer the agent now (injected at the next step, before the next model call)'
-						: undefined}
-					class="flex h-[40px] w-full items-center justify-center rounded-lg bg-gradient-to-r from-brand-cyan to-brand-blue text-xs font-medium text-brand-text transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:bg-brand-surface-3 disabled:from-brand-surface-3 disabled:to-brand-surface-3 disabled:opacity-50"
-				>
-					{#if searchMode}
-						{submitLabel ?? 'Search'}
-					{:else if streaming}
-						Steer
-					{:else}
-						Send
-					{/if}
-				</button>
-			</div>
-		</form>
-
-		<div
-			class="mt-2 flex flex-wrap items-center justify-between gap-y-1.5 px-1 text-[11px] text-brand-text-muted select-none"
-		>
+			{/each}
+		</div>
+	{/if}
+	{#if searchMode && searchModels.length > 0}
+		<!-- Model picker for search mode. Lets the user override the search
+		     folder's default model before pressing Search. -->
+		<div class="mb-2 flex items-center gap-2">
 			<label
-				class="flex cursor-pointer items-center gap-1.5 hover:text-brand-text"
+				for="search-model"
+				class="text-xs font-medium text-brand-text-muted">Model</label
 			>
-				<input
-					type="checkbox"
-					checked={enterToSend}
-					onchange={toggleEnterToSend}
-					class="rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-0 focus:ring-offset-0"
-				/>
-				<span>Press Enter to send</span>
-			</label>
-			<div class="flex items-center gap-3">
-				<!-- Drafts are available in EVERY composer mode, including the no-session
-				     home page: a draft carries no session dependency, and the home page is
-				     exactly where you want to pull up something written yesterday and fire
-				     it into a new session. Saving needs the server (it is the store), so
-				     the button is disabled while disconnected. -->
-				<button
-					type="button"
-					onclick={saveCurrentAsDraft}
-					disabled={text.trim().length === 0 || !connected}
-					title={connected
-						? 'Save this message as a draft instead of sending it'
-						: 'Drafts are stored on the server, which is not reachable right now'}
-					class="rounded bg-brand-surface-3/50 px-2 py-0.5 text-xs text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text disabled:cursor-not-allowed disabled:opacity-40"
-				>
-					{draftSavedFlash ? '✓ Saved' : '💾 Save draft'}
-				</button>
-				<button
-					type="button"
-					onclick={toggleDrafts}
-					title="Open saved drafts"
-					aria-expanded={draftsOpen}
-					aria-controls="drafts-panel"
-					class="rounded bg-brand-surface-3/50 px-2 py-0.5 text-xs text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
-				>
-					🗂 Drafts{drafts.length > 0 ? ` (${drafts.length})` : ''}
-				</button>
-				<button
-					type="button"
-					onclick={() => (isCollapsed = true)}
-					class="rounded bg-brand-surface-3/50 px-2 py-0.5 text-xs text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
-				>
-					Collapse ▽
-				</button>
-				{#if !enterToSend}
-					<span class="hidden font-mono opacity-60 sm:inline">
-						Shift+Enter to send
+			<select
+				id="search-model"
+				bind:value={searchModel}
+				disabled={effectivelyDisabled}
+				class="min-w-0 flex-1 rounded-lg border border-brand-border bg-brand-surface-2 px-2 py-1.5 text-xs text-brand-text focus:border-brand-blue focus:outline-none disabled:opacity-50"
+			>
+				{#each searchModels as m}
+					<option value={m.value}>{m.label}</option>
+				{/each}
+			</select>
+		</div>
+	{/if}
+	<!-- Above the pill: the context ring (always, in every composer state: it is
+	     outside the pill, so neither the keyboard nor the pill growing to its cap
+	     can push it away), "Cancel queued (N)" while steers wait, a transient
+	     "Draft saved", and "Drafts (N)" when there are any. -->
+	{#if ring || queuedSteers > 0 || drafts.length > 0 || draftSavedFlash}
+		<div
+			class="mb-1.5 flex min-h-[20px] items-center justify-between gap-3 px-1 text-[11px] text-brand-text-muted select-none"
+		>
+			<div class="flex min-w-0 items-center gap-1.5">
+				{#if ring}
+					<span
+						class="flex items-center gap-1.5 whitespace-nowrap tabular-nums"
+						title={ring.title}
+						data-testid="context-ring"
+					>
+						<svg viewBox="0 0 16 16" class="h-3.5 w-3.5 shrink-0 -rotate-90">
+							<circle
+								cx="8"
+								cy="8"
+								r={RING_R}
+								fill="none"
+								stroke="currentColor"
+								stroke-width="2.5"
+								class="opacity-25"
+							/>
+							<circle
+								cx="8"
+								cy="8"
+								r={RING_R}
+								fill="none"
+								stroke-width="2.5"
+								stroke-linecap="round"
+								stroke-dasharray={RING_C}
+								stroke-dashoffset={RING_C * (1 - ring.fraction)}
+								class={ring.tone === 'high'
+									? 'stroke-rose-400'
+									: ring.tone === 'warn'
+										? 'stroke-amber-400'
+										: 'stroke-brand-blue'}
+							/>
+						</svg>
+						<span>{ring.label}</span>
 					</span>
+				{/if}
+			</div>
+			<div class="flex shrink-0 items-center gap-3">
+				{#if draftSavedFlash}
+					<span class="text-emerald-400">✓ Draft saved</span>
+				{/if}
+				<!-- Cancel ALL queued steers without aborting the running turn. pi's
+				     clearQueue() is all-or-nothing, so this is a single session-level
+				     action (not per-message). -->
+				{#if queuedSteers > 0}
+					<button
+						type="button"
+						onclick={cancelSteer}
+						class="rounded border border-amber-400/50 px-2 py-0.5 text-amber-300 transition-colors hover:bg-rose-500/80 hover:text-brand-text"
+						title="Cancel the queued steer message{queuedSteers > 1
+							? 's'
+							: ''} (does not abort the current turn)"
+					>
+						Cancel queued ({queuedSteers})
+					</button>
+				{/if}
+				{#if drafts.length > 0}
+					<button
+						type="button"
+						onclick={toggleDrafts}
+						aria-expanded={draftsOpen}
+						aria-controls="drafts-panel"
+						class="hover:text-brand-text"
+						title="Open saved drafts">Drafts ({drafts.length})</button
+					>
 				{/if}
 			</div>
 		</div>
 	{/if}
+	<!-- The pill: ＋, the text, 🎤, and the send button (➤ / ■ Stop / Search).
+	     The textarea grows with its content up to about 40% of the viewport
+	     height, then scrolls. -->
+	<form
+		onsubmit={(e) => {
+			e.preventDefault();
+			handleSend();
+		}}
+		class="relative flex items-end gap-1 rounded-3xl border border-brand-border bg-brand-surface-2 py-1 pr-1 pl-1 transition-colors focus-within:border-brand-blue"
+	>
+		{#if skillMenuOpen && skillMatches.length > 0}
+			<!-- Skill-command autocomplete. Floats above the composer. Selecting an
+			     item only inserts `/skill:<name> ` (see applySkill); it never sends. -->
+			<ul
+				class="absolute bottom-full left-0 z-20 mb-1 max-h-56 w-full overflow-y-auto rounded-lg border border-brand-border bg-brand-surface-2 py-1 shadow-lg"
+				role="listbox"
+			>
+				{#each skillMatches as skill, i (skill.name)}
+					<li>
+						<button
+							type="button"
+							role="option"
+							aria-selected={i === skillMenuIndex}
+							onmousedown={(e) => {
+								// mousedown (not click) so the textarea doesn't blur first and
+								// tear the menu down before the selection lands.
+								e.preventDefault();
+								applySkill(skill.name);
+							}}
+							onmouseenter={() => (skillMenuIndex = i)}
+							class="flex w-full flex-col items-start gap-0.5 px-3 py-1.5 text-left text-sm {i ===
+							skillMenuIndex
+								? 'bg-brand-surface-3 text-brand-text'
+								: 'text-brand-text-muted hover:bg-brand-surface-3/60'}"
+						>
+							<span class="font-mono text-brand-text">/{skill.name}</span>
+							{#if skill.description}
+								<span class="line-clamp-1 text-[11px] text-brand-text-muted"
+									>{skill.description}</span
+								>
+							{/if}
+						</button>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+		<div class="relative shrink-0">
+			<button
+				type="button"
+				onclick={() => (plusMenuOpen = !plusMenuOpen)}
+				aria-haspopup="menu"
+				aria-expanded={plusMenuOpen}
+				aria-label="More: attach file, drafts"
+				title="Attach file, save as draft, drafts"
+				class="flex h-9 w-9 items-center justify-center rounded-full text-xl leading-none text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
+			>
+				＋
+			</button>
+			{#if plusMenuOpen}
+				<!-- Click-outside backdrop for the ＋ menu. -->
+				<button
+					type="button"
+					class="fixed inset-0 z-30 cursor-default"
+					aria-label="Close menu"
+					tabindex="-1"
+					onclick={closePlusMenu}
+				></button>
+				<div
+					role="menu"
+					class="absolute bottom-full left-0 z-40 mb-2 w-60 overflow-hidden rounded-lg border border-brand-border bg-brand-surface-2 py-1 text-sm shadow-lg"
+				>
+					{#if showAttach}
+						<button
+							type="button"
+							role="menuitem"
+							onclick={pickFile}
+							disabled={effectivelyDisabled}
+							class="flex w-full items-center gap-2 px-3 py-2 text-left text-brand-text hover:bg-brand-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
+							title="Attach file (image or document)"
+						>
+							<span>📎</span><span>Attach file</span>
+						</button>
+					{/if}
+					<!-- Drafts are available in EVERY composer mode, including the
+					     no-session home page: a draft carries no session dependency, and
+					     the home page is exactly where you want to pull up something
+					     written yesterday and fire it into a new session. Saving needs
+					     the server (it is the store), so it is disabled while
+					     disconnected. -->
+					<button
+						type="button"
+						role="menuitem"
+						onclick={() => {
+							closePlusMenu();
+							void saveCurrentAsDraft();
+						}}
+						disabled={text.trim().length === 0 || !connected}
+						title={connected
+							? 'Save this message as a draft instead of sending it'
+							: 'Drafts are stored on the server, which is not reachable right now'}
+						class="flex w-full items-center gap-2 px-3 py-2 text-left text-brand-text hover:bg-brand-surface-3 disabled:cursor-not-allowed disabled:opacity-50"
+					>
+						<span>💾</span><span>Save as draft</span>
+					</button>
+					<button
+						type="button"
+						role="menuitem"
+						onclick={() => {
+							closePlusMenu();
+							toggleDrafts();
+						}}
+						aria-controls="drafts-panel"
+						class="flex w-full items-center gap-2 px-3 py-2 text-left text-brand-text hover:bg-brand-surface-3"
+						title="Open saved drafts"
+					>
+						<span>🗂</span><span
+							>Drafts{drafts.length > 0 ? ` (${drafts.length})` : ''}</span
+						>
+					</button>
+					<!-- Enter sends lives here until the ⋯ session menu takes it. -->
+					<label
+						class="flex w-full cursor-pointer items-center gap-2 border-t border-brand-border px-3 py-2 text-brand-text hover:bg-brand-surface-3"
+					>
+						<input
+							type="checkbox"
+							role="menuitemcheckbox"
+							aria-checked={enterToSend}
+							checked={enterToSend}
+							onchange={toggleEnterToSend}
+							class="rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-0 focus:ring-offset-0"
+						/>
+						<span>Enter sends</span>
+					</label>
+				</div>
+			{/if}
+			{#if showAttach}
+				<input
+					bind:this={fileInput}
+					type="file"
+					multiple
+					onchange={handleFileChange}
+					class="hidden"
+				/>
+			{/if}
+		</div>
+		<textarea
+			bind:this={textarea}
+			bind:value={text}
+			onkeydown={handleKeydown}
+			disabled={effectivelyDisabled}
+			rows={1}
+			placeholder={placeholderText}
+			aria-label={searchMode ? 'Search query' : 'Message'}
+			class="max-h-[40vh] min-h-9 min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent px-1 py-1.5 leading-relaxed text-brand-text placeholder-brand-text-muted focus:ring-0 focus:outline-none disabled:opacity-50"
+		></textarea>
+		<SpeechButton
+			bind:this={speechButton}
+			bind:text
+			bind:activeEngine={speechEngine}
+			disabled={effectivelyDisabled}
+			onSend={handleSend}
+			compact
+		/>
+		{#if buttons.stopBeside}
+			<button
+				type="button"
+				onclick={abort}
+				disabled={!streaming}
+				class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-rose-500 text-brand-text transition-colors hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+				title="Stop the agent"
+				aria-label="Stop"
+			>
+				<span class="block h-3 w-3 rounded-[2px] bg-current"></span>
+			</button>
+		{/if}
+		{#if buttons.primary === 'stop'}
+			<button
+				type="button"
+				onclick={abort}
+				disabled={buttons.primaryDisabled}
+				class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-rose-500 text-brand-text transition-colors hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+				title="Stop the agent"
+				aria-label="Stop"
+			>
+				<span class="block h-3 w-3 rounded-[2px] bg-current"></span>
+			</button>
+		{:else if buttons.primary === 'search'}
+			<button
+				type="submit"
+				disabled={buttons.primaryDisabled}
+				class="flex h-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-r from-brand-cyan to-brand-blue px-4 text-xs font-medium text-brand-text transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:from-brand-surface-3 disabled:to-brand-surface-3 disabled:opacity-50"
+			>
+				{submitLabel ?? 'Search'}
+			</button>
+		{:else}
+			<button
+				type="submit"
+				disabled={buttons.primaryDisabled}
+				title={buttons.primary === 'steer'
+					? 'Steer the agent now (injected at the next step, before the next model call)'
+					: 'Send'}
+				aria-label={buttons.primary === 'steer' ? 'Steer' : 'Send'}
+				class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-blue text-brand-text transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:bg-brand-surface-3 disabled:opacity-50"
+			>
+				<svg
+					viewBox="0 0 24 24"
+					class="h-4 w-4"
+					fill="currentColor"
+					aria-hidden="true"
+					><path
+						d="M3.4 20.4 21 12 3.4 3.6 3.39 10.13 15 12 3.39 13.87z"
+					/></svg
+				>
+			</button>
+		{/if}
+	</form>
 </div>
