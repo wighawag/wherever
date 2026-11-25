@@ -37,3 +37,19 @@ covers: [12, 13, 14, 15, 16, 17]
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/update-toasts-and-list-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+All recorded in `work/notes/observations/update-toasts-and-list-decisions.md`. Each is easy to reverse:
+1. The update rules are a separate module next to the question one, not merged into it. The old notifications store is removed.
+2. Every update you haven't opened or dismissed is saved, including the one on screen and the queued ones. After a reload they all come back in the list without showing a toast again. The 50 cap drops the oldest update that is not on screen.
+3. Clear all empties only the list. The toast on screen and the queue stay, so nothing unseen is lost.
+4. A question toast and an update toast can now show at the same time, since they sit in different places.
+5. The update toast has no swipe to dismiss, only ✕ and tap.
+6. The title "<source>: <title>" shows the source in bold and the rest muted. The icon is 🔔 for every update, not the mockup's ☑, which only fits "finished".
+7. Bar wording: an updates-only bar is blue, "🔔 N updates … View ›". With both, the bar is amber and each part is its own button.
+8. In the list, Open only appears when the update has a target. Dismiss keeps the list open. The list closes itself once empty. Clear all is not shown in red.
+9. `/#` now opens the main screen in place.
+10. A repeated update push (same tag) is ignored. Pushes from an older server have no tag, so each one counts as new.
+
+The done record is the runner's job. Please copy the browser check from the decisions note into it.
