@@ -64,6 +64,8 @@
 		isFirstClassTool,
 		isAssociatedWithForceCommand,
 		shouldAutoExpand,
+		messageLayout,
+		toolChipStatus,
 		isScrolledToBottom,
 		lastAssistantReply,
 		speechLocale,
@@ -464,6 +466,22 @@
 
 	function toggleRaw(id: string) {
 		rawMessages[id] = !rawMessages[id];
+	}
+
+	// The message whose action row (Copy, Raw / Rendered, Fork) is pinned open
+	// by a tap. On desktop the row shows on hover / focus; a touch screen has no
+	// hover, so tapping a message pins its row open (tapping it again, or
+	// another message, moves or clears it). Never long-press only. A tap that
+	// lands on a link / button / media control, or that ends a text selection,
+	// is left alone so it keeps doing what it does.
+	let revealedActionsId = $state<string | null>(null);
+
+	function revealActions(e: MouseEvent, id: string) {
+		const target = e.target as Element | null;
+		if (target?.closest('a, button, input, textarea, select, audio, video'))
+			return;
+		if (window.getSelection()?.toString()) return;
+		revealedActionsId = revealedActionsId === id ? null : id;
 	}
 
 	// Per-message "copied!" confirmation. Set to the message id briefly after a
@@ -1016,611 +1034,617 @@
 				</div>
 			{/if}
 			{#each msgList as msg (msg.id)}
+				<!-- Layout (spec chat-compact-layout, stories 25 to 30): every row sits
+				     in a centered column of about 760px (the composer in ChatInput is
+				     aligned to the same width). Assistant text is a full-width
+				     'document' with no bubble, the user's message a compact
+				     right-aligned 'bubble', a generic tool call a one-line 'chip', and
+				     the rest keep their 'card' (see messageLayout). The timestamp and
+				     the per-message action row sit UNDER the content, outside it. -->
+				{@const layout = messageLayout(msg, $piState.hideTools)}
+				{@const actionsShown = revealedActionsId === msg.id}
 				<div
 					data-msg-id={msg.id}
-					class="flex {msg.role === 'user' ? 'justify-end' : 'justify-start'}"
+					class="mx-auto flex w-full max-w-[760px] {layout === 'bubble'
+						? 'justify-end'
+						: 'justify-start'}"
 				>
+					<!-- A tap pins this message's action row open (touch has no hover);
+					     keyboard users reach the same buttons by Tab (focus-within). -->
+					<!-- svelte-ignore a11y_click_events_have_key_events -->
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
-						class="max-w-[85%] rounded-lg px-4 py-3 {msg.role === 'user'
-							? msg.delivery === 'sending'
-								? 'bg-brand-blue/40 text-brand-text ring-1 ring-brand-blue/50'
-								: msg.delivery === 'failed'
-									? 'bg-brand-blue/30 text-brand-text ring-1 ring-amber-400/50'
-									: 'bg-brand-blue/80 text-brand-text'
-							: msg.role === 'thinking'
-								? 'border-l-2 border-brand-border bg-brand-surface/30 text-sm text-brand-text-muted'
-								: msg.role === 'tool' && isFirstClassTool(msg.toolName)
-									? 'bg-transparent p-0 text-brand-text'
-									: msg.role === 'tool'
-										? $piState.hideTools && !isAssociatedWithForceCommand(msg)
-											? 'border-l-2 border-brand-border bg-brand-surface/30 text-sm text-brand-text-muted'
-											: `border-l-2 bg-brand-surface-2 font-mono text-sm text-brand-text ${
-													msg.isStreaming
-														? 'border-amber-400'
-														: msg.isError
-															? 'border-rose-400'
-															: msg.interrupted
-																? 'border-brand-border'
-																: 'border-emerald-400'
-												}`
-										: msg.role === 'assistant'
-											? 'border-l-2 border-brand-purple bg-brand-purple/10 text-brand-text'
-											: msg.role === 'shipmates'
-												? 'border-l-2 border-amber-400/60 bg-brand-surface-2 text-brand-text'
-												: msg.content === '' && msg.isStreaming
-													? 'bg-brand-surface-3 text-brand-text-muted italic'
-													: 'bg-brand-surface-2 text-brand-text'}"
+						class="group/msg flex min-w-0 flex-col {layout === 'bubble'
+							? 'max-w-[85%] items-end'
+							: layout === 'card'
+								? 'max-w-[85%]'
+								: 'w-full'}"
+						onclick={(e) => revealActions(e, msg.id)}
 					>
-						{#if msg.role === 'thinking'}
-							{#if msg.content === 'FALLBACK_THINKING_LOADER'}
-								<div
-									class="flex items-center gap-2 font-sans text-sm text-brand-text-muted italic select-none"
-								>
-									<svg
-										class="h-4 w-4 animate-spin text-brand-cyan"
-										xmlns="http://www.w3.org/2000/svg"
-										fill="none"
-										viewBox="0 0 24 24"
+						<div
+							class="min-w-0 {layout === 'document' || layout === 'chip'
+								? 'text-brand-text'
+								: layout === 'bubble'
+									? `rounded-2xl px-3.5 py-2 text-brand-text ${
+											msg.delivery === 'sending'
+												? 'bg-brand-blue/40 ring-1 ring-brand-blue/50'
+												: msg.delivery === 'failed'
+													? 'bg-brand-blue/30 ring-1 ring-amber-400/50'
+													: 'bg-brand-blue/80'
+										}`
+									: msg.role === 'thinking'
+										? 'rounded-lg border-l-2 border-brand-border bg-brand-surface/30 px-4 py-3 text-sm text-brand-text-muted'
+										: msg.role === 'tool' && isFirstClassTool(msg.toolName)
+											? 'bg-transparent p-0 text-brand-text'
+											: msg.role === 'tool'
+												? 'rounded-lg border-l-2 border-brand-border bg-brand-surface/30 px-4 py-3 text-sm text-brand-text-muted'
+												: msg.role === 'shipmates'
+													? 'rounded-lg border-l-2 border-amber-400/60 bg-brand-surface-2 px-4 py-3 text-brand-text'
+													: msg.content === '' && msg.isStreaming
+														? 'rounded-lg bg-brand-surface-3 px-4 py-3 text-brand-text-muted italic'
+														: 'rounded-lg bg-brand-surface-2 px-4 py-3 text-brand-text'}"
+						>
+							{#if msg.role === 'thinking'}
+								{#if msg.content === 'FALLBACK_THINKING_LOADER'}
+									<div
+										class="flex items-center gap-2 font-sans text-sm text-brand-text-muted italic select-none"
 									>
-										<circle
-											class="opacity-25"
-											cx="12"
-											cy="12"
-											r="10"
-											stroke="currentColor"
-											stroke-width="4"
-										></circle>
-										<path
-											class="opacity-75"
-											fill="currentColor"
-											d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-										></path>
-									</svg>
-									<span>Agent is thinking...</span>
-								</div>
-							{:else if msg.content === 'FALLBACK_LOADER'}
-								<div
-									class="flex items-center gap-2 font-sans text-sm text-brand-text-muted italic select-none"
-								>
-									<svg
-										class="h-4 w-4 animate-spin text-brand-cyan"
-										xmlns="http://www.w3.org/2000/svg"
-										fill="none"
-										viewBox="0 0 24 24"
-									>
-										<circle
-											class="opacity-25"
-											cx="12"
-											cy="12"
-											r="10"
-											stroke="currentColor"
-											stroke-width="4"
-										></circle>
-										<path
-											class="opacity-75"
-											fill="currentColor"
-											d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-										></path>
-									</svg>
-									<span>Agent working...</span>
-								</div>
-							{:else if $piState.hideThinking}
-								<div
-									class="flex items-center gap-2 font-sans text-sm text-brand-text-muted italic select-none"
-								>
-									<svg
-										class="h-4 w-4 animate-spin text-brand-cyan"
-										xmlns="http://www.w3.org/2000/svg"
-										fill="none"
-										viewBox="0 0 24 24"
-									>
-										<circle
-											class="opacity-25"
-											cx="12"
-											cy="12"
-											r="10"
-											stroke="currentColor"
-											stroke-width="4"
-										></circle>
-										<path
-											class="opacity-75"
-											fill="currentColor"
-											d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-										></path>
-									</svg>
-									<span>Agent is thinking...</span>
-								</div>
-							{:else}
-								<div class="flex flex-col gap-1">
-									{#if msg.isStreaming}
-										<div
-											class="mb-1 flex items-center gap-1.5 text-[10px] font-bold tracking-wider text-brand-cyan uppercase select-none"
+										<svg
+											class="h-4 w-4 animate-spin text-brand-cyan"
+											xmlns="http://www.w3.org/2000/svg"
+											fill="none"
+											viewBox="0 0 24 24"
 										>
-											<span
-												class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-brand-cyan"
-											></span>
-											<span>Thinking</span>
-										</div>
-									{/if}
-									<div class="font-mono text-sm whitespace-pre-wrap">
-										{msg.content}
+											<circle
+												class="opacity-25"
+												cx="12"
+												cy="12"
+												r="10"
+												stroke="currentColor"
+												stroke-width="4"
+											></circle>
+											<path
+												class="opacity-75"
+												fill="currentColor"
+												d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+											></path>
+										</svg>
+										<span>Agent is thinking...</span>
 									</div>
-								</div>
-							{/if}
-						{:else if msg.role === 'tool'}
-							{#if $piState.hideTools && !isFirstClassTool(msg.toolName) && !isAssociatedWithForceCommand(msg)}
-								<div
-									class="flex items-center gap-2 font-sans text-sm text-brand-text-muted italic select-none"
-								>
-									<svg
-										class="h-4 w-4 animate-spin text-amber-500"
-										xmlns="http://www.w3.org/2000/svg"
-										fill="none"
-										viewBox="0 0 24 24"
+								{:else if msg.content === 'FALLBACK_LOADER'}
+									<div
+										class="flex items-center gap-2 font-sans text-sm text-brand-text-muted italic select-none"
 									>
-										<circle
-											class="opacity-25"
-											cx="12"
-											cy="12"
-											r="10"
-											stroke="currentColor"
-											stroke-width="4"
-										></circle>
-										<path
-											class="opacity-75"
-											fill="currentColor"
-											d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-										></path>
-									</svg>
-									<span
-										>Running tool: <span
-											class="rounded bg-brand-surface-3 px-1 py-0.5 font-mono text-xs font-semibold"
-											>{msg.toolName || 'agent'}</span
-										>...</span
-									>
-									{#if toolDuration(msg, now)}
-										<span
-											class="font-mono text-xs text-brand-text-muted tabular-nums"
-											>{toolDuration(msg, now)}</span
+										<svg
+											class="h-4 w-4 animate-spin text-brand-cyan"
+											xmlns="http://www.w3.org/2000/svg"
+											fill="none"
+											viewBox="0 0 24 24"
 										>
-									{/if}
-								</div>
-							{:else}
-								{@const parsed = parseToolMessage(msg)}
-								{@const isExpanded =
-									expandedMessages[msg.id] !== undefined
-										? expandedMessages[msg.id]
-										: shouldAutoExpand(msg, msgList)}
-								{@const dlPath = parsed.downloadPath}
-								{@const dlUrl = dlPath ? downloadFileUrl(dlPath) : null}
-								{@const dlKind = dlPath ? mediaKind(dlPath) : null}
-								{@const isAttachTool = parsed.toolName === 'attach_file'}
-								{@const isSayTool = parsed.toolName === 'say'}
-								{#if isAttachTool}
-									<!-- attach_file rendered as a first-class ATTACHMENT, not a
+											<circle
+												class="opacity-25"
+												cx="12"
+												cy="12"
+												r="10"
+												stroke="currentColor"
+												stroke-width="4"
+											></circle>
+											<path
+												class="opacity-75"
+												fill="currentColor"
+												d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+											></path>
+										</svg>
+										<span>Agent working...</span>
+									</div>
+								{:else if $piState.hideThinking}
+									<div
+										class="flex items-center gap-2 font-sans text-sm text-brand-text-muted italic select-none"
+									>
+										<svg
+											class="h-4 w-4 animate-spin text-brand-cyan"
+											xmlns="http://www.w3.org/2000/svg"
+											fill="none"
+											viewBox="0 0 24 24"
+										>
+											<circle
+												class="opacity-25"
+												cx="12"
+												cy="12"
+												r="10"
+												stroke="currentColor"
+												stroke-width="4"
+											></circle>
+											<path
+												class="opacity-75"
+												fill="currentColor"
+												d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+											></path>
+										</svg>
+										<span>Agent is thinking...</span>
+									</div>
+								{:else}
+									<div class="flex flex-col gap-1">
+										{#if msg.isStreaming}
+											<div
+												class="mb-1 flex items-center gap-1.5 text-[10px] font-bold tracking-wider text-brand-cyan uppercase select-none"
+											>
+												<span
+													class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-brand-cyan"
+												></span>
+												<span>Thinking</span>
+											</div>
+										{/if}
+										<div class="font-mono text-sm whitespace-pre-wrap">
+											{msg.content}
+										</div>
+									</div>
+								{/if}
+							{:else if msg.role === 'tool'}
+								{#if $piState.hideTools && !isFirstClassTool(msg.toolName) && !isAssociatedWithForceCommand(msg)}
+									<div
+										class="flex items-center gap-2 font-sans text-sm text-brand-text-muted italic select-none"
+									>
+										<svg
+											class="h-4 w-4 animate-spin text-amber-500"
+											xmlns="http://www.w3.org/2000/svg"
+											fill="none"
+											viewBox="0 0 24 24"
+										>
+											<circle
+												class="opacity-25"
+												cx="12"
+												cy="12"
+												r="10"
+												stroke="currentColor"
+												stroke-width="4"
+											></circle>
+											<path
+												class="opacity-75"
+												fill="currentColor"
+												d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+											></path>
+										</svg>
+										<span
+											>Running tool: <span
+												class="rounded bg-brand-surface-3 px-1 py-0.5 font-mono text-xs font-semibold"
+												>{msg.toolName || 'agent'}</span
+											>...</span
+										>
+										{#if toolDuration(msg, now)}
+											<span
+												class="font-mono text-xs text-brand-text-muted tabular-nums"
+												>{toolDuration(msg, now)}</span
+											>
+										{/if}
+									</div>
+								{:else}
+									{@const parsed = parseToolMessage(msg)}
+									{@const isExpanded =
+										expandedMessages[msg.id] !== undefined
+											? expandedMessages[msg.id]
+											: shouldAutoExpand(msg, msgList)}
+									{@const dlPath = parsed.downloadPath}
+									{@const dlUrl = dlPath ? downloadFileUrl(dlPath) : null}
+									{@const dlKind = dlPath ? mediaKind(dlPath) : null}
+									{@const isAttachTool = parsed.toolName === 'attach_file'}
+									{@const isSayTool = parsed.toolName === 'say'}
+									{#if isAttachTool}
+										<!-- attach_file rendered as a first-class ATTACHMENT, not a
 									     generic tool card: the agent explicitly offered this file
 									     for the (remote) user to download. Three states: streaming
 									     (attaching...), error (could not attach), success (download
 									     link). A failed attach shows the tool's error text so the
 									     agent/user can see WHY (e.g. file not found). -->
-									{@const fileName = dlPath
-										? dlPath.split('/').pop() || dlPath
-										: ''}
-									<div class="flex max-w-full min-w-[240px] flex-col">
-										{#if msg.isStreaming}
-											<div
-												class="flex items-center gap-3 rounded-lg border border-brand-border bg-brand-surface-2 px-3 py-2.5 text-brand-text-muted"
-											>
-												<span class="animate-pulse text-2xl leading-none"
-													>📎</span
+										{@const fileName = dlPath
+											? dlPath.split('/').pop() || dlPath
+											: ''}
+										<div class="flex max-w-full min-w-[240px] flex-col">
+											{#if msg.isStreaming}
+												<div
+													class="flex items-center gap-3 rounded-lg border border-brand-border bg-brand-surface-2 px-3 py-2.5 text-brand-text-muted"
 												>
-												<span class="truncate text-sm">Attaching file…</span>
-											</div>
-										{:else if parsed.isError}
-											<div
-												class="flex items-start gap-3 rounded-lg border border-rose-400/40 bg-rose-400/10 px-3 py-2.5 text-brand-text"
-											>
-												<span class="text-2xl leading-none">📎</span>
-												<span class="flex min-w-0 flex-1 flex-col gap-0.5">
-													<span class="text-sm font-semibold text-rose-300"
-														>Could not attach file</span
+													<span class="animate-pulse text-2xl leading-none"
+														>📎</span
 													>
-													{#if parsed.toolOutput}
-														<span
-															class="text-xs break-words text-brand-text-muted"
-															>{parsed.toolOutput}</span
+													<span class="truncate text-sm">Attaching file…</span>
+												</div>
+											{:else if parsed.isError}
+												<div
+													class="flex items-start gap-3 rounded-lg border border-rose-400/40 bg-rose-400/10 px-3 py-2.5 text-brand-text"
+												>
+													<span class="text-2xl leading-none">📎</span>
+													<span class="flex min-w-0 flex-1 flex-col gap-0.5">
+														<span class="text-sm font-semibold text-rose-300"
+															>Could not attach file</span
 														>
-													{/if}
-												</span>
-											</div>
-										{:else if dlUrl}
-											<a
-												href={dlUrl}
-												download={fileName}
-												class="flex items-center gap-3 rounded-lg border border-brand-cyan/40 bg-brand-cyan/10 px-3 py-2.5 text-brand-text no-underline transition-colors hover:bg-brand-cyan/20"
-												title={`Download ${dlPath}`}
-											>
-												<span class="text-2xl leading-none">📎</span>
-												<span class="flex min-w-0 flex-1 flex-col">
-													<span class="truncate text-sm font-semibold"
-														>{fileName}</span
-													>
-													<span
-														class="truncate text-xs text-brand-text-muted"
-														title={dlPath}>{dlPath}</span
-													>
-												</span>
-												<span
-													class="flex shrink-0 items-center gap-1 rounded-md bg-brand-cyan/20 px-2.5 py-1 text-xs font-medium text-brand-cyan"
-													>⬇️ Download</span
+														{#if parsed.toolOutput}
+															<span
+																class="text-xs break-words text-brand-text-muted"
+																>{parsed.toolOutput}</span
+															>
+														{/if}
+													</span>
+												</div>
+											{:else if dlUrl}
+												<a
+													href={dlUrl}
+													download={fileName}
+													class="flex items-center gap-3 rounded-lg border border-brand-cyan/40 bg-brand-cyan/10 px-3 py-2.5 text-brand-text no-underline transition-colors hover:bg-brand-cyan/20"
+													title={`Download ${dlPath}`}
 												>
-											</a>
-										{:else}
-											<div
-												class="flex items-center gap-3 rounded-lg border border-brand-border bg-brand-surface-2 px-3 py-2.5 text-brand-text-muted"
-											>
-												<span class="text-2xl leading-none">📎</span>
-												<span class="flex min-w-0 flex-1 flex-col">
-													<span class="truncate text-sm font-semibold"
-														>{fileName}</span
+													<span class="text-2xl leading-none">📎</span>
+													<span class="flex min-w-0 flex-1 flex-col">
+														<span class="truncate text-sm font-semibold"
+															>{fileName}</span
+														>
+														<span
+															class="truncate text-xs text-brand-text-muted"
+															title={dlPath}>{dlPath}</span
+														>
+													</span>
+													<span
+														class="flex shrink-0 items-center gap-1 rounded-md bg-brand-cyan/20 px-2.5 py-1 text-xs font-medium text-brand-cyan"
+														>⬇️ Download</span
 													>
-													<span class="truncate text-xs"
-														>No active session to download from</span
-													>
-												</span>
-											</div>
-										{/if}
+												</a>
+											{:else}
+												<div
+													class="flex items-center gap-3 rounded-lg border border-brand-border bg-brand-surface-2 px-3 py-2.5 text-brand-text-muted"
+												>
+													<span class="text-2xl leading-none">📎</span>
+													<span class="flex min-w-0 flex-1 flex-col">
+														<span class="truncate text-sm font-semibold"
+															>{fileName}</span
+														>
+														<span class="truncate text-xs"
+															>No active session to download from</span
+														>
+													</span>
+												</div>
+											{/if}
 
-										<!-- Inline image preview for an attached image, sourced from the
+											<!-- Inline image preview for an attached image, sourced from the
 										     SAME token-gated download URL as the chip above (NOT from
 										     embedded bytes). Additive: the download chip stays; this is a
 										     tap-to-open, lazy-loaded preview so the image is viewable
 										     without leaving the chat. -->
-										{#if !msg.isStreaming && !parsed.isError && dlUrl && dlKind === 'image'}
-											<a
-												href={dlUrl}
-												target="_blank"
-												rel="noopener noreferrer"
-												class="mt-2 block"
-												title={`Open ${dlPath}`}
-											>
-												<img
-													src={dlUrl}
-													alt={dlPath}
-													loading="lazy"
-													class="max-h-96 max-w-full rounded border border-brand-border/40 bg-brand-dark/60 object-contain"
-												/>
-											</a>
-										{/if}
+											{#if !msg.isStreaming && !parsed.isError && dlUrl && dlKind === 'image'}
+												<a
+													href={dlUrl}
+													target="_blank"
+													rel="noopener noreferrer"
+													class="mt-2 block"
+													title={`Open ${dlPath}`}
+												>
+													<img
+														src={dlUrl}
+														alt={dlPath}
+														loading="lazy"
+														class="max-h-96 max-w-full rounded border border-brand-border/40 bg-brand-dark/60 object-contain"
+													/>
+												</a>
+											{/if}
 
-										<!-- Inline AUDIO player for an attached audio file, sourced
+											<!-- Inline AUDIO player for an attached audio file, sourced
 										     from the SAME token-gated download URL as the chip above (NOT
 										     from embedded bytes). Additive: the download chip stays; this
 										     lets the user listen without leaving the chat. `preload`
 										     metadata only, and an unsupported format degrades to the chip
 										     (the browser renders the empty player; the chip above always
 										     remains for save/share). -->
-										{#if !msg.isStreaming && !parsed.isError && dlUrl && dlKind === 'audio'}
-											<audio
-												controls
-												preload="metadata"
-												src={dlUrl}
-												title={dlPath}
-												class="mt-2 block w-full max-w-full"
-											></audio>
-										{/if}
+											{#if !msg.isStreaming && !parsed.isError && dlUrl && dlKind === 'audio'}
+												<audio
+													controls
+													preload="metadata"
+													src={dlUrl}
+													title={dlPath}
+													class="mt-2 block w-full max-w-full"
+												></audio>
+											{/if}
 
-										<!-- Inline VIDEO player for an attached video file, sourced
+											<!-- Inline VIDEO player for an attached video file, sourced
 										     from the SAME token-gated download URL as the chip above (NOT
 										     from embedded bytes). Additive: the download chip stays; this
 										     lets the user watch (and SEEK — the server honours HTTP Range)
 										     without leaving the chat. `playsinline` keeps iOS from going
 										     fullscreen; `preload` metadata only; an unsupported format
 										     degrades to the chip (empty player, chip always remains). -->
-										{#if !msg.isStreaming && !parsed.isError && dlUrl && dlKind === 'video'}
-											<video
-												controls
-												playsinline
-												preload="metadata"
-												src={dlUrl}
-												title={dlPath}
-												class="mt-2 block max-h-96 w-full max-w-full rounded border border-brand-border/40 bg-brand-dark/60"
-											></video>
-										{/if}
-									</div>
-								{:else if isSayTool}
-									<!-- say rendered as a first-class "spoken:" card, not a generic
+											{#if !msg.isStreaming && !parsed.isError && dlUrl && dlKind === 'video'}
+												<video
+													controls
+													playsinline
+													preload="metadata"
+													src={dlUrl}
+													title={dlPath}
+													class="mt-2 block max-h-96 w-full max-w-full rounded border border-brand-border/40 bg-brand-dark/60"
+												></video>
+											{/if}
+										</div>
+									{:else if isSayTool}
+										<!-- say rendered as a first-class "spoken:" card, not a generic
 									     tool card: the agent EXPLICITLY offered this SHORT spoken-form
 									     reply (the 🔊 pill) so the user can visually compare it against
 									     the FULL written reply, which always remains present in the
 									     transcript above/below. The card is ADDITIVE: it never replaces
 									     or hides the full reply. TTS (when speakReplies is active) fires
 									     off the SAME text via the $effect below, not from here. -->
-									<div class="flex max-w-full min-w-[240px] flex-col">
-										{#if parsed.isError}
-											<div
-												class="flex items-start gap-3 rounded-lg border border-rose-400/40 bg-rose-400/10 px-3 py-2.5 text-brand-text"
-											>
-												<span class="text-2xl leading-none">🔇</span>
-												<span class="flex min-w-0 flex-1 flex-col gap-0.5">
-													<span class="text-sm font-semibold text-rose-300"
-														>Could not speak</span
-													>
-													{#if parsed.toolOutput}
-														<span
-															class="text-xs break-words text-brand-text-muted"
-															>{parsed.toolOutput}</span
-														>
-													{/if}
-												</span>
-											</div>
-										{:else if parsed.sayText}
-											<div
-												class="flex items-start gap-3 rounded-lg border border-brand-cyan/40 bg-brand-cyan/10 px-3 py-2.5 text-brand-text"
-											>
-												<span class="text-2xl leading-none">🔊</span>
-												<span class="flex min-w-0 flex-1 flex-col gap-1">
-													<span
-														class="text-[11px] font-semibold tracking-wide text-brand-cyan uppercase select-none"
-														>spoken:</span
-													>
-													<span class="text-sm break-words text-brand-text"
-														>{parsed.sayText}</span
-													>
-												</span>
-											</div>
-										{/if}
-									</div>
-								{:else}
-									<div
-										class="flex max-w-full min-w-[280px] flex-col sm:min-w-[400px] md:min-w-[550px]"
-									>
-										<!-- Header of tool execution. The collapse toggle (button) and an
-									     optional download link (anchor) are SIBLINGS in a flex row so
-									     the anchor is never nested inside the button. -->
-										<div class="flex w-full items-center gap-1">
-											<button
-												onclick={() => toggleMessage(msg.id, isExpanded)}
-												class="flex min-w-0 flex-1 items-center justify-between gap-3 rounded p-1 text-left transition-colors hover:bg-brand-surface-3/30 focus:outline-none"
-											>
+										<div class="flex max-w-full min-w-[240px] flex-col">
+											{#if parsed.isError}
 												<div
-													class="flex flex-1 items-center gap-2 overflow-hidden"
+													class="flex items-start gap-3 rounded-lg border border-rose-400/40 bg-rose-400/10 px-3 py-2.5 text-brand-text"
 												>
-													<!-- Status icon -->
-													{#if msg.isStreaming}
-														<!-- Running -->
+													<span class="text-2xl leading-none">🔇</span>
+													<span class="flex min-w-0 flex-1 flex-col gap-0.5">
+														<span class="text-sm font-semibold text-rose-300"
+															>Could not speak</span
+														>
+														{#if parsed.toolOutput}
+															<span
+																class="text-xs break-words text-brand-text-muted"
+																>{parsed.toolOutput}</span
+															>
+														{/if}
+													</span>
+												</div>
+											{:else if parsed.sayText}
+												<div
+													class="flex items-start gap-3 rounded-lg border border-brand-cyan/40 bg-brand-cyan/10 px-3 py-2.5 text-brand-text"
+												>
+													<span class="text-2xl leading-none">🔊</span>
+													<span class="flex min-w-0 flex-1 flex-col gap-1">
 														<span
-															class="inline-block animate-spin font-bold text-amber-400"
-															>⚡</span
+															class="text-[11px] font-semibold tracking-wide text-brand-cyan uppercase select-none"
+															>spoken:</span
 														>
-													{:else if parsed.isError}
-														<!-- Error -->
-														<span class="font-bold text-rose-400" title="Failed"
-															>❌</span
+														<span class="text-sm break-words text-brand-text"
+															>{parsed.sayText}</span
 														>
-													{:else if parsed.interrupted}
+													</span>
+												</div>
+											{/if}
+										</div>
+									{:else}
+										{@const chipStatus = toolChipStatus(msg, parsed)}
+										{@const chipDuration = toolDuration(msg, now)}
+										<div class="flex w-full min-w-0 flex-col items-start">
+											<!-- One-line tool CHIP: status, tool name, short args, duration.
+										     Tapping it expands today's arguments and output below. The
+										     collapse toggle (button) and an optional download link
+										     (anchor) are SIBLINGS in a flex row so the anchor is never
+										     nested inside the button. -->
+											<div class="flex max-w-full min-w-0 items-center gap-1">
+												<button
+													type="button"
+													onclick={() => toggleMessage(msg.id, isExpanded)}
+													aria-expanded={isExpanded}
+													class="flex max-w-full min-w-0 items-center gap-1.5 rounded-md border bg-brand-surface/40 px-2 py-1 text-left font-mono text-xs text-brand-text-muted transition-colors hover:bg-brand-surface-3/40 hover:text-brand-text focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue {chipStatus ===
+													'running'
+														? 'border-amber-400/50'
+														: chipStatus === 'error'
+															? 'border-rose-400/50'
+															: 'border-brand-border'}"
+													title={isExpanded
+														? 'Hide the arguments and output'
+														: 'Show the arguments and output'}
+												>
+													{#if chipStatus === 'running'}
+														<span
+															class="inline-block shrink-0 animate-spin text-amber-400"
+															title="Running">⟳</span
+														>
+													{:else if chipStatus === 'error'}
+														<span class="shrink-0 text-rose-400" title="Failed"
+															>✗</span
+														>
+													{:else if chipStatus === 'interrupted'}
 														<!-- Interrupted: no result (e.g. a CLI took over and the
-												     running tool was killed). Outcome unknown: neither
-												     success nor failure. -->
+													     running tool was killed). Outcome unknown: neither
+													     success nor failure. -->
 														<span
-															class="font-bold text-brand-text-muted"
+															class="shrink-0"
 															title="Interrupted, no result (the running tool was stopped, e.g. by a CLI takeover)"
 															>⊘</span
 														>
 													{:else}
-														<!-- Success -->
 														<span
-															class="font-bold text-emerald-400"
-															title="Succeeded">✅</span
+															class="shrink-0 text-emerald-400"
+															title="Succeeded">✓</span
 														>
 													{/if}
-
-													<span
-														class="font-mono text-sm font-bold text-brand-text"
+													<span class="shrink-0 font-semibold text-brand-text"
+														>{parsed.toolName}</span
 													>
-														{parsed.toolName}
-													</span>
-
 													{#if parsed.smartTitleArgs}
+														<span class="shrink-0 opacity-60">·</span>
 														<span
-															class="max-w-[180px] truncate font-mono text-xs text-brand-text-muted sm:max-w-[300px] md:max-w-[450px]"
+															class="min-w-0 truncate"
 															title={parsed.smartTitleArgs}
+															>{parsed.smartTitleArgs}</span
 														>
-															{parsed.smartTitleArgs}
-														</span>
 													{/if}
-
-													{#if toolDuration(msg, now)}
+													{#if chipDuration}
 														<span
-															class="shrink-0 font-mono text-xs tabular-nums {msg.isStreaming
+															class="shrink-0 tabular-nums {chipStatus ===
+															'running'
 																? 'text-amber-400'
-																: 'text-brand-text-muted'}"
-															title={msg.isStreaming
+																: ''}"
+															title={chipStatus === 'running'
 																? 'Elapsed time'
-																: 'Time taken'}
+																: 'Time taken'}>· {chipDuration}</span
 														>
-															{msg.isStreaming ? 'Elapsed' : 'Took'}
-															{toolDuration(msg, now)}
-														</span>
 													{/if}
-												</div>
+													<span class="shrink-0 font-sans text-[9px] opacity-60"
+														>{isExpanded ? '▲' : '▼'}</span
+													>
+												</button>
 
-												<div
-													class="flex shrink-0 items-center gap-1 font-sans text-xs font-medium whitespace-nowrap text-brand-text-muted select-none hover:text-brand-text"
-												>
-													{#if isExpanded}
-														Collapse <span class="text-[10px]">▲</span>
+												{#if dlPath}
+													{#if dlUrl}
+														<a
+															href={dlUrl}
+															download={dlPath.split('/').pop() || ''}
+															class="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs text-brand-cyan transition-colors hover:bg-brand-cyan/15"
+															title={`Download ${dlPath}`}
+															aria-label={`Download ${dlPath}`}
+														>
+															<span class="text-sm">⬇️</span>
+														</a>
 													{:else}
-														Expand <span class="text-[10px]">▼</span>
+														<span
+															class="shrink-0 px-1.5 py-1 text-xs text-brand-text-muted opacity-40"
+															title="No active session to download from"
+															>⬇️</span
+														>
 													{/if}
-												</div>
-											</button>
-
-											{#if dlPath}
-												{#if dlUrl}
-													<a
-														href={dlUrl}
-														download={dlPath.split('/').pop() || ''}
-														class="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 text-xs text-brand-cyan transition-colors hover:bg-brand-cyan/15"
-														title={`Download ${dlPath}`}
-														aria-label={`Download ${dlPath}`}
-													>
-														<span class="text-sm">⬇️</span>
-													</a>
-												{:else}
-													<span
-														class="shrink-0 px-1.5 py-1 text-xs text-brand-text-muted opacity-40"
-														title="No active session to download from">⬇️</span
-													>
 												{/if}
-											{/if}
-										</div>
+											</div>
 
-										<!-- Inline image preview from the DOWNLOAD URL (not embedded
+											<!-- Inline image preview from the DOWNLOAD URL (not embedded
 									     bytes), for a file-oriented tool (now only `read`) whose path
 									     is an image. Rendered OUTSIDE the collapsible section so it
 									     survives collapse, and tap-to-open + lazy-loaded. De-duped
 									     against the model-facing `msg.images` path below: when the
 									     tool result already embeds image blocks we render ONLY those,
 									     so a `read`-on-image shows exactly one preview. -->
-										{#if !(msg.images && msg.images.length > 0) && dlUrl && dlKind === 'image'}
-											<a
-												href={dlUrl}
-												target="_blank"
-												rel="noopener noreferrer"
-												class="mt-2 block"
-												title={`Open ${dlPath}`}
-											>
-												<img
-													src={dlUrl}
-													alt={dlPath}
-													loading="lazy"
-													class="max-h-96 max-w-full rounded border border-brand-border/40 bg-brand-dark/60 object-contain"
-												/>
-											</a>
-										{/if}
+											{#if !(msg.images && msg.images.length > 0) && dlUrl && dlKind === 'image'}
+												<a
+													href={dlUrl}
+													target="_blank"
+													rel="noopener noreferrer"
+													class="mt-2 block"
+													title={`Open ${dlPath}`}
+												>
+													<img
+														src={dlUrl}
+														alt={dlPath}
+														loading="lazy"
+														class="max-h-96 max-w-full rounded border border-brand-border/40 bg-brand-dark/60 object-contain"
+													/>
+												</a>
+											{/if}
 
-										<!-- Inline AUDIO player from the DOWNLOAD URL (not embedded
+											<!-- Inline AUDIO player from the DOWNLOAD URL (not embedded
 									     bytes), for a file-oriented tool (now only `read`) whose path
 									     is audio. Rendered OUTSIDE the collapsible section so it
 									     survives collapse; `preload` metadata only. The download chip
 									     stays, so an unsupported format degrades gracefully to it. -->
-										{#if dlUrl && dlKind === 'audio'}
-											<audio
-												controls
-												preload="metadata"
-												src={dlUrl}
-												title={dlPath}
-												class="mt-2 block w-full max-w-full"
-											></audio>
-										{/if}
+											{#if dlUrl && dlKind === 'audio'}
+												<audio
+													controls
+													preload="metadata"
+													src={dlUrl}
+													title={dlPath}
+													class="mt-2 block w-full max-w-full"
+												></audio>
+											{/if}
 
-										<!-- Inline VIDEO player from the DOWNLOAD URL (not embedded
+											<!-- Inline VIDEO player from the DOWNLOAD URL (not embedded
 									     bytes), for a file-oriented tool (now only `read`) whose path
 									     is video. Rendered OUTSIDE the collapsible section so it
 									     survives collapse; `playsinline` keeps iOS inline; `preload`
 									     metadata only. The server honours HTTP Range so seeking works.
 									     The download chip stays, so an unsupported format degrades to
 									     it. -->
-										{#if dlUrl && dlKind === 'video'}
-											<video
-												controls
-												playsinline
-												preload="metadata"
-												src={dlUrl}
-												title={dlPath}
-												class="mt-2 block max-h-96 w-full max-w-full rounded border border-brand-border/40 bg-brand-dark/60"
-											></video>
-										{/if}
+											{#if dlUrl && dlKind === 'video'}
+												<video
+													controls
+													playsinline
+													preload="metadata"
+													src={dlUrl}
+													title={dlPath}
+													class="mt-2 block max-h-96 w-full max-w-full rounded border border-brand-border/40 bg-brand-dark/60"
+												></video>
+											{/if}
 
-										<!-- Tool image attachments (e.g. read on an image file) that
+											<!-- Tool image attachments (e.g. read on an image file) that
 									     ALSO produced model-facing image blocks (base64). Rendered
 									     OUTSIDE the collapsible section so images stay visible even
 									     when the tool details are collapsed; the args/output below
 									     remain collapsible. -->
-										{#if msg.images && msg.images.length > 0}
-											<div class="mt-2 flex flex-col gap-1">
-												<div class="flex flex-wrap gap-2">
-													{#each msg.images as img}
-														<!-- Inline bytes, or a by-reference image loaded lazily
+											{#if msg.images && msg.images.length > 0}
+												<div class="mt-2 flex flex-col gap-1">
+													<div class="flex flex-wrap gap-2">
+														{#each msg.images as img}
+															<!-- Inline bytes, or a by-reference image loaded lazily
 														     (and cached by the browser) from /session/tool-image. -->
-														{@const imgSrc = toolImageSrc(img)}
-														{#if imgSrc}
-															<a
-																href={imgSrc}
-																target="_blank"
-																rel="noopener noreferrer"
-																class="block"
-															>
-																<img
-																	src={imgSrc}
-																	alt="Tool output"
-																	loading="lazy"
-																	class="max-h-96 max-w-full rounded border border-brand-border/40 bg-brand-dark/60 object-contain"
-																/>
-															</a>
-														{/if}
-													{/each}
+															{@const imgSrc = toolImageSrc(img)}
+															{#if imgSrc}
+																<a
+																	href={imgSrc}
+																	target="_blank"
+																	rel="noopener noreferrer"
+																	class="block"
+																>
+																	<img
+																		src={imgSrc}
+																		alt="Tool output"
+																		loading="lazy"
+																		class="max-h-96 max-w-full rounded border border-brand-border/40 bg-brand-dark/60 object-contain"
+																	/>
+																</a>
+															{/if}
+														{/each}
+													</div>
 												</div>
-											</div>
-										{/if}
+											{/if}
 
-										<!-- Tool Output (collapsible) -->
-										{#if isExpanded}
-											<div
-												class="mt-2 flex flex-col gap-3 overflow-hidden border-t border-brand-border/40 pt-2"
-											>
-												<!-- Full Arguments section -->
-												{#if parsed.fullArgs && parsed.fullArgs !== '{}'}
+											<!-- Tool Output (collapsible) -->
+											{#if isExpanded}
+												<div
+													class="mt-1.5 flex flex-col gap-3 self-stretch overflow-hidden rounded-md border border-brand-border/60 bg-brand-surface-2 p-2 font-mono text-sm"
+												>
+													<!-- Full Arguments section -->
+													{#if parsed.fullArgs && parsed.fullArgs !== '{}'}
+														<div class="flex flex-col gap-1">
+															<span
+																class="font-sans text-[10px] font-bold tracking-wider text-brand-text-muted uppercase"
+																>Arguments</span
+															>
+															<pre
+																class="max-h-40 overflow-x-auto rounded border border-brand-border/30 bg-brand-dark/60 p-1.5 font-mono text-[11px] whitespace-pre-wrap text-amber-400">{parsed.fullArgs}</pre>
+														</div>
+													{/if}
+
+													<!-- Tool Output section -->
 													<div class="flex flex-col gap-1">
 														<span
 															class="font-sans text-[10px] font-bold tracking-wider text-brand-text-muted uppercase"
-															>Arguments</span
+															>Output</span
 														>
-														<pre
-															class="max-h-40 overflow-x-auto rounded border border-brand-border/30 bg-brand-dark/60 p-1.5 font-mono text-[11px] whitespace-pre-wrap text-amber-400">{parsed.fullArgs}</pre>
+														{#if parsed.toolOutput}
+															<pre
+																class="max-h-96 overflow-x-auto rounded border border-brand-border/40 bg-brand-dark/60 p-2 font-mono text-xs whitespace-pre-wrap text-brand-text">{parsed.toolOutput}</pre>
+														{:else if msg.isStreaming}
+															<div
+																class="animate-pulse p-1 text-xs text-brand-text-muted italic"
+															>
+																Running and waiting for output...
+															</div>
+														{:else if parsed.interrupted}
+															<div
+																class="p-1 text-xs text-brand-text-muted italic"
+															>
+																Interrupted before a result was returned (the
+																running tool was stopped, e.g. by a CLI
+																takeover). Its outcome is unknown.
+															</div>
+														{:else}
+															<div
+																class="p-1 text-xs text-brand-text-muted italic"
+															>
+																No output returned
+															</div>
+														{/if}
 													</div>
-												{/if}
-
-												<!-- Tool Output section -->
-												<div class="flex flex-col gap-1">
-													<span
-														class="font-sans text-[10px] font-bold tracking-wider text-brand-text-muted uppercase"
-														>Output</span
-													>
-													{#if parsed.toolOutput}
-														<pre
-															class="max-h-96 overflow-x-auto rounded border border-brand-border/40 bg-brand-dark/60 p-2 font-mono text-xs whitespace-pre-wrap text-brand-text">{parsed.toolOutput}</pre>
-													{:else if msg.isStreaming}
-														<div
-															class="animate-pulse p-1 text-xs text-brand-text-muted italic"
-														>
-															Running and waiting for output...
-														</div>
-													{:else if parsed.interrupted}
-														<div
-															class="p-1 text-xs text-brand-text-muted italic"
-														>
-															Interrupted before a result was returned (the
-															running tool was stopped, e.g. by a CLI takeover).
-															Its outcome is unknown.
-														</div>
-													{:else}
-														<div
-															class="p-1 text-xs text-brand-text-muted italic"
-														>
-															No output returned
-														</div>
-													{/if}
 												</div>
-											</div>
-										{/if}
-									</div>
+											{/if}
+										</div>
+									{/if}
 								{/if}
-							{/if}
-						{:else if msg.role === 'assistant' && msg.content !== ''}
-							{#if msg.isStreaming}
-								<!-- While streaming, render plain text. Re-parsing markdown on
+							{:else if msg.role === 'assistant' && msg.content !== ''}
+								{#if msg.isStreaming}
+									<!-- While streaming, render plain text. Re-parsing markdown on
 								     every token would rebuild the DOM and collapse any active
 								     selection; the finalized branch renders once and stays stable.
 								     `wrap-anywhere` mirrors `.markdown-body`'s overflow-wrap so an
@@ -1628,12 +1652,12 @@
 								     overflowing the bubble: without it the tail of such a line was
 								     pushed off-screen on a narrow viewport and read as "words are
 								     missing", until the message finalized and re-rendered wrapped. -->
-								<pre
-									class="chat-selectable font-sans text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap">{msg.content}<span
-										class="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-brand-cyan align-text-bottom"
-									></span></pre>
-							{:else}
-								<!-- Conversation mode's collapseLongReplies knob: when ACTIVE
+									<pre
+										class="chat-selectable font-sans text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap">{msg.content}<span
+											class="ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-brand-cyan align-text-bottom"
+										></span></pre>
+								{:else}
+									<!-- Conversation mode's collapseLongReplies knob: when ACTIVE
 								     (which requires the master conversationMode on too), a LONG
 								     written reply is DE-EMPHASISED so the short spoken summary is
 								     the focus and the transcript stays glanceable. Display-only:
@@ -1643,276 +1667,297 @@
 								     Expanding is the reader's escape hatch: an opened reply renders
 								     in full and is never re-collapsed. With the knob inactive,
 								     replies render exactly as today. -->
-								{@const replyExpanded = expandedMessages[msg.id] === true}
-								{@const replyCollapsed = shouldCollapseReply({
-									active: collapseActive,
-									expanded: replyExpanded,
-									content: msg.content,
-								})}
-								{@const showRaw = rawMessages[msg.id] === true}
-								<div class="group flex flex-col">
-									{#if showRaw}
-										<!-- Raw view: the verbatim markdown source, unrendered. -->
-										<pre
-											class="chat-selectable overflow-x-auto rounded border border-brand-border/40 bg-brand-dark/60 p-2 font-mono text-xs whitespace-pre-wrap text-brand-text {replyCollapsed
-												? 'relative max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)] opacity-80'
-												: ''}">{msg.content}</pre>
-									{:else}
-										<!-- eslint-disable-next-line svelte/no-at-html-tags -- output sanitized via DOMPurify in renderMarkdown -->
-										<div
-											class="chat-selectable markdown-body text-sm leading-relaxed {replyCollapsed
-												? 'relative max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)] opacity-80'
-												: ''}"
-										>
-											{@html renderAssistant(msg.id, msg.content)}
-										</div>
-									{/if}
-									<!-- Per-message actions: copy the raw markdown, and toggle
-									     between the rendered view and the raw source. Kept subtle
-									     (muted, revealed on hover) so they don't clutter the
-									     transcript. -->
-									<div
-										class="mt-1 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
-									>
-										<button
-											type="button"
-											onclick={() => copyMessage(msg.id, msg.content)}
-											class="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-brand-text-muted transition-colors select-none hover:bg-brand-surface-3/30 hover:text-brand-text"
-											title="Copy this message to the clipboard"
-										>
-											{#if copiedMessageId === msg.id}
-												<svg
-													xmlns="http://www.w3.org/2000/svg"
-													viewBox="0 0 24 24"
-													fill="none"
-													stroke="currentColor"
-													stroke-width="2"
-													stroke-linecap="round"
-													stroke-linejoin="round"
-													class="text-brand-green h-3.5 w-3.5"
-													><path d="M20 6 9 17l-5-5" /></svg
-												>
-												Copied
-											{:else}
-												<svg
-													xmlns="http://www.w3.org/2000/svg"
-													viewBox="0 0 24 24"
-													fill="none"
-													stroke="currentColor"
-													stroke-width="2"
-													stroke-linecap="round"
-													stroke-linejoin="round"
-													class="h-3.5 w-3.5"
-													><rect
-														width="14"
-														height="14"
-														x="8"
-														y="8"
-														rx="2"
-														ry="2"
-													/><path
-														d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
-													/></svg
-												>
-												Copy
-											{/if}
-										</button>
-										<button
-											type="button"
-											onclick={() => toggleRaw(msg.id)}
-											class="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-brand-text-muted transition-colors select-none hover:bg-brand-surface-3/30 hover:text-brand-text"
-											title={showRaw
-												? 'Show the rendered markdown'
-												: 'Show the raw markdown source'}
-										>
-											{#if showRaw}
-												<svg
-													xmlns="http://www.w3.org/2000/svg"
-													viewBox="0 0 24 24"
-													fill="none"
-													stroke="currentColor"
-													stroke-width="2"
-													stroke-linecap="round"
-													stroke-linejoin="round"
-													class="h-3.5 w-3.5"
-													><path
-														d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"
-													/><circle cx="12" cy="12" r="3" /></svg
-												>
-												Rendered
-											{:else}
-												<svg
-													xmlns="http://www.w3.org/2000/svg"
-													viewBox="0 0 24 24"
-													fill="none"
-													stroke="currentColor"
-													stroke-width="2"
-													stroke-linecap="round"
-													stroke-linejoin="round"
-													class="h-3.5 w-3.5"
-													><path d="m18 16 4-4-4-4" /><path
-														d="m6 8-4 4 4 4"
-													/><path d="m14.5 4-5 16" /></svg
-												>
-												Raw
-											{/if}
-										</button>
+									{@const replyExpanded = expandedMessages[msg.id] === true}
+									{@const replyCollapsed = shouldCollapseReply({
+										active: collapseActive,
+										expanded: replyExpanded,
+										content: msg.content,
+									})}
+									{@const showRaw = rawMessages[msg.id] === true}
+									<div class="flex flex-col">
+										{#if showRaw}
+											<!-- Raw view: the verbatim markdown source, unrendered. -->
+											<pre
+												class="chat-selectable overflow-x-auto rounded border border-brand-border/40 bg-brand-dark/60 p-2 font-mono text-xs whitespace-pre-wrap text-brand-text {replyCollapsed
+													? 'relative max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)] opacity-80'
+													: ''}">{msg.content}</pre>
+										{:else}
+											<!-- eslint-disable-next-line svelte/no-at-html-tags -- output sanitized via DOMPurify in renderMarkdown -->
+											<div
+												class="chat-selectable markdown-body text-sm leading-relaxed {replyCollapsed
+													? 'relative max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)] opacity-80'
+													: ''}"
+											>
+												{@html renderAssistant(msg.id, msg.content)}
+											</div>
+										{/if}
+										{#if replyCollapsed}
+											<button
+												type="button"
+												onclick={() => toggleMessage(msg.id, replyExpanded)}
+												class="mt-1 flex w-fit items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-brand-text-muted transition-colors select-none hover:bg-brand-surface-3/30 hover:text-brand-text"
+												title="Show the full written reply (collapsed while conversation mode focuses the spoken summary)"
+											>
+												Show full reply <span class="text-[10px]">▼</span>
+											</button>
+										{:else if collapseActive && replyExpanded && isLongReply(msg.content)}
+											<button
+												type="button"
+												onclick={() => toggleMessage(msg.id, replyExpanded)}
+												class="mt-1 flex w-fit items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-brand-text-muted transition-colors select-none hover:bg-brand-surface-3/30 hover:text-brand-text"
+												title="Collapse this long reply again"
+											>
+												Collapse <span class="text-[10px]">▲</span>
+											</button>
+										{/if}
 									</div>
-									{#if replyCollapsed}
-										<button
-											type="button"
-											onclick={() => toggleMessage(msg.id, replyExpanded)}
-											class="mt-1 flex w-fit items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-brand-text-muted transition-colors select-none hover:bg-brand-surface-3/30 hover:text-brand-text"
-											title="Show the full written reply (collapsed while conversation mode focuses the spoken summary)"
-										>
-											Show full reply <span class="text-[10px]">▼</span>
-										</button>
-									{:else if collapseActive && replyExpanded && isLongReply(msg.content)}
-										<button
-											type="button"
-											onclick={() => toggleMessage(msg.id, replyExpanded)}
-											class="mt-1 flex w-fit items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-brand-text-muted transition-colors select-none hover:bg-brand-surface-3/30 hover:text-brand-text"
-											title="Collapse this long reply again"
-										>
-											Collapse <span class="text-[10px]">▲</span>
-										</button>
-									{/if}
-								</div>
-							{/if}
-						{:else if msg.role === 'shipmates'}
-							<ShipmatesCard {msg} />
-						{:else}
-							{@const parsedUserMsg = parseUserMessage(msg.content)}
-							{#if parsedUserMsg.skill}
-								<!-- A `/skill:<name> <args>` invocation. The message is stored/
+								{/if}
+							{:else if msg.role === 'shipmates'}
+								<ShipmatesCard {msg} />
+							{:else}
+								{@const parsedUserMsg = parseUserMessage(msg.content)}
+								{#if parsedUserMsg.skill}
+									<!-- A `/skill:<name> <args>` invocation. The message is stored/
 								     echoed EXPANDED (the full skill body). Display the compact
 								     invocation instead: a skill chip with the skill name, plus the
 								     trailing args the user typed after the skill name (if any). -->
-								<div class="chat-selectable flex flex-col gap-1.5">
-									<span
-										class="inline-flex w-fit items-center gap-1.5 rounded bg-brand-blue/25 px-2 py-0.5 font-mono text-xs font-medium text-brand-text ring-1 ring-brand-blue/40"
-										title="Skill invocation (expanded for the agent)"
-									>
-										<svg
-											xmlns="http://www.w3.org/2000/svg"
-											viewBox="0 0 24 24"
-											fill="none"
-											stroke="currentColor"
-											stroke-width="2"
-											stroke-linecap="round"
-											stroke-linejoin="round"
-											class="h-3.5 w-3.5"
-											><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" /></svg
+									<div class="chat-selectable flex flex-col gap-1.5">
+										<span
+											class="inline-flex w-fit items-center gap-1.5 rounded bg-brand-blue/25 px-2 py-0.5 font-mono text-xs font-medium text-brand-text ring-1 ring-brand-blue/40"
+											title="Skill invocation (expanded for the agent)"
 										>
-										<span>skill:{parsedUserMsg.skill.skillName}</span>
-									</span>
-									{#if parsedUserMsg.skill.args}
-										<div
-											class="text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap"
-										>
-											{parsedUserMsg.skill.args}
-										</div>
-									{/if}
-								</div>
-							{:else}
-								<!-- User + thinking bubbles are plain text too: same wrap-anywhere
+											<svg
+												xmlns="http://www.w3.org/2000/svg"
+												viewBox="0 0 24 24"
+												fill="none"
+												stroke="currentColor"
+												stroke-width="2"
+												stroke-linecap="round"
+												stroke-linejoin="round"
+												class="h-3.5 w-3.5"
+												><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" /></svg
+											>
+											<span>skill:{parsedUserMsg.skill.skillName}</span>
+										</span>
+										{#if parsedUserMsg.skill.args}
+											<div
+												class="text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap"
+											>
+												{parsedUserMsg.skill.args}
+											</div>
+										{/if}
+									</div>
+								{:else}
+									<!-- User + thinking bubbles are plain text too: same wrap-anywhere
 								     guard so a long path/URL cannot push the rest of the line out of
 								     the bubble. -->
-								<div
-									class="chat-selectable text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap"
-								>
-									{#if parsedUserMsg.cleanContent}
-										{@const userHtml = renderUser(parsedUserMsg.cleanContent)}
-										{#if userHtml}
-											<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized via DOMPurify in linkifyText -->
-											<span>{@html userHtml}</span>
-										{:else}
-											{parsedUserMsg.cleanContent}
-										{/if}
-									{:else if parsedUserMsg.attachments.length > 0}
-										<span class="text-brand-text-muted italic"
-											>Shared file{parsedUserMsg.attachments.length > 1
-												? 's'
-												: ''} with agent:</span
-										>
-									{:else}
-										{msg.content || (msg.isStreaming ? 'Thinking...' : '')}
-									{/if}
-									{#if msg.isStreaming && streaming}
-										<span
-											class="ml-1 inline-block h-4 w-1.5 animate-pulse bg-brand-cyan"
-										></span>
-									{/if}
-								</div>
-							{/if}
-							{#if parsedUserMsg.attachments.length > 0}
-								<div
-									class="mt-2 flex flex-col gap-1 border-t border-brand-blue/20 pt-2"
-								>
-									{#each parsedUserMsg.attachments as filePath}
-										<div
-											class="flex items-center gap-1.5 rounded bg-brand-blue/20 px-2 py-1 font-mono text-xs text-brand-text select-all"
-										>
-											<span>📎</span>
-											<span class="truncate" title={filePath}>{filePath}</span>
-										</div>
-									{/each}
-								</div>
-							{/if}
-						{/if}
-						{#if msg.role !== 'thinking' && msg.role !== 'tool'}
-							<div
-								class="mt-1 flex items-center gap-1.5 text-xs opacity-50 {msg.role ===
-								'user'
-									? 'justify-end text-brand-text-muted'
-									: msg.role === 'assistant'
-										? 'text-brand-purple'
-										: 'text-brand-text-muted'}"
-							>
-								{#if msg.role === 'user' && msg.delivery === 'sending'}
-									<span
-										class="inline-block h-3 w-3 animate-spin rounded-full border border-brand-text-muted border-t-transparent"
-										title="Sending, awaiting confirmation"
-										aria-label="Sending"
-									></span>
-									<span title="Sending, awaiting confirmation">Sending</span>
-									<span>·</span>
-								{/if}
-								{formatTime(msg.timestamp)}
-							</div>
-							{#if msg.role === 'user' && msg.entryId && sessionInfo.sessionId && !readOnly && msg.delivery === undefined && !$pendingSteering.includes(msg.content)}
-								<!-- Fork-from-here lives OUTSIDE the opacity-50 footer above, so it is
-								     fully opaque and its hover state is clearly visible (a parent
-								     opacity would otherwise cap the child's hover:opacity-100). -->
-								<div class="mt-1 flex justify-end">
-									<button
-										type="button"
-										onclick={() => handleFork(msg.entryId)}
-										class="inline-flex items-center gap-1 rounded border border-brand-border/60 bg-brand-surface-3/60 px-2 py-0.5 text-xs font-medium text-brand-text-muted transition-colors hover:border-brand-blue hover:bg-brand-blue/15 hover:text-brand-blue"
-										title="Fork the conversation from this message (edit and resend)"
-										aria-label="Fork from this message"
+									<div
+										class="chat-selectable text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap"
 									>
-										<svg
-											xmlns="http://www.w3.org/2000/svg"
-											viewBox="0 0 24 24"
-											fill="none"
-											stroke="currentColor"
-											stroke-width="2"
-											stroke-linecap="round"
-											stroke-linejoin="round"
-											class="h-3.5 w-3.5"
-											><circle cx="6" cy="6" r="2.2" /><circle
-												cx="6"
-												cy="18"
-												r="2.2"
-											/><circle cx="18" cy="8" r="2.2" /><path
-												d="M6 8.2v7.6"
-											/><path d="M18 10.2c0 3-3 3.8-6 3.8" /></svg
-										>
-										Fork
-									</button>
-								</div>
+										{#if parsedUserMsg.cleanContent}
+											{@const userHtml = renderUser(parsedUserMsg.cleanContent)}
+											{#if userHtml}
+												<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized via DOMPurify in linkifyText -->
+												<span>{@html userHtml}</span>
+											{:else}
+												{parsedUserMsg.cleanContent}
+											{/if}
+										{:else if parsedUserMsg.attachments.length > 0}
+											<span class="text-brand-text-muted italic"
+												>Shared file{parsedUserMsg.attachments.length > 1
+													? 's'
+													: ''} with agent:</span
+											>
+										{:else}
+											{msg.content || (msg.isStreaming ? 'Thinking...' : '')}
+										{/if}
+										{#if msg.isStreaming && streaming}
+											<span
+												class="ml-1 inline-block h-4 w-1.5 animate-pulse bg-brand-cyan"
+											></span>
+										{/if}
+									</div>
+								{/if}
+								{#if parsedUserMsg.attachments.length > 0}
+									<div
+										class="mt-2 flex flex-col gap-1 border-t border-brand-blue/20 pt-2"
+									>
+										{#each parsedUserMsg.attachments as filePath}
+											<div
+												class="flex items-center gap-1.5 rounded bg-brand-blue/20 px-2 py-1 font-mono text-xs text-brand-text select-all"
+											>
+												<span>📎</span>
+												<span class="truncate" title={filePath}>{filePath}</span
+												>
+											</div>
+										{/each}
+									</div>
+								{/if}
 							{/if}
+						</div>
+						{#if msg.role !== 'thinking' && msg.role !== 'tool'}
+							{@const canCopy =
+								msg.role === 'assistant' &&
+								msg.content !== '' &&
+								!msg.isStreaming}
+							{@const showRaw = rawMessages[msg.id] === true}
+							{@const canFork =
+								msg.role === 'user' &&
+								!!msg.entryId &&
+								!!sessionInfo.sessionId &&
+								!readOnly &&
+								msg.delivery === undefined &&
+								!$pendingSteering.includes(msg.content)}
+							<!-- Footer: the timestamp (always visible) and the per-message ACTION
+						     ROW: Copy and Raw / Rendered on a finished assistant reply, Fork
+						     (edit and resend) on a delivered user message. The row shows on
+						     hover / keyboard focus on desktop and stays pinned open after a tap
+						     on the message (touch has no hover); hidden, it ignores taps on a
+						     coarse pointer so a tap never fires an action nobody could see. -->
+							<div
+								class="mt-1 flex flex-wrap items-center gap-1.5 text-xs {layout ===
+								'bubble'
+									? 'justify-end'
+									: ''}"
+							>
+								<span
+									class="flex items-center gap-1.5 text-brand-text-muted opacity-50"
+								>
+									{#if msg.role === 'user' && msg.delivery === 'sending'}
+										<span
+											class="inline-block h-3 w-3 animate-spin rounded-full border border-brand-text-muted border-t-transparent"
+											title="Sending, awaiting confirmation"
+											aria-label="Sending"
+										></span>
+										<span title="Sending, awaiting confirmation">Sending</span>
+										<span>·</span>
+									{/if}
+									{formatTime(msg.timestamp)}
+								</span>
+								{#if canCopy || canFork}
+									<div
+										class="flex items-center gap-1 transition-opacity {layout ===
+										'bubble'
+											? 'order-first'
+											: ''} {actionsShown
+											? 'opacity-100'
+											: 'opacity-0 group-hover/msg:opacity-100 focus-within:opacity-100 pointer-coarse:pointer-events-none'}"
+									>
+										{#if canCopy}
+											<button
+												type="button"
+												onclick={() => copyMessage(msg.id, msg.content)}
+												class="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-brand-text-muted transition-colors select-none hover:bg-brand-surface-3/30 hover:text-brand-text"
+												title="Copy this message to the clipboard"
+											>
+												{#if copiedMessageId === msg.id}
+													<svg
+														xmlns="http://www.w3.org/2000/svg"
+														viewBox="0 0 24 24"
+														fill="none"
+														stroke="currentColor"
+														stroke-width="2"
+														stroke-linecap="round"
+														stroke-linejoin="round"
+														class="text-brand-green h-3.5 w-3.5"
+														><path d="M20 6 9 17l-5-5" /></svg
+													>
+													Copied
+												{:else}
+													<svg
+														xmlns="http://www.w3.org/2000/svg"
+														viewBox="0 0 24 24"
+														fill="none"
+														stroke="currentColor"
+														stroke-width="2"
+														stroke-linecap="round"
+														stroke-linejoin="round"
+														class="h-3.5 w-3.5"
+														><rect
+															width="14"
+															height="14"
+															x="8"
+															y="8"
+															rx="2"
+															ry="2"
+														/><path
+															d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
+														/></svg
+													>
+													Copy
+												{/if}
+											</button>
+											<button
+												type="button"
+												onclick={() => toggleRaw(msg.id)}
+												class="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-brand-text-muted transition-colors select-none hover:bg-brand-surface-3/30 hover:text-brand-text"
+												title={showRaw
+													? 'Show the rendered markdown'
+													: 'Show the raw markdown source'}
+											>
+												{#if showRaw}
+													<svg
+														xmlns="http://www.w3.org/2000/svg"
+														viewBox="0 0 24 24"
+														fill="none"
+														stroke="currentColor"
+														stroke-width="2"
+														stroke-linecap="round"
+														stroke-linejoin="round"
+														class="h-3.5 w-3.5"
+														><path
+															d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"
+														/><circle cx="12" cy="12" r="3" /></svg
+													>
+													Rendered
+												{:else}
+													<svg
+														xmlns="http://www.w3.org/2000/svg"
+														viewBox="0 0 24 24"
+														fill="none"
+														stroke="currentColor"
+														stroke-width="2"
+														stroke-linecap="round"
+														stroke-linejoin="round"
+														class="h-3.5 w-3.5"
+														><path d="m18 16 4-4-4-4" /><path
+															d="m6 8-4 4 4 4"
+														/><path d="m14.5 4-5 16" /></svg
+													>
+													Raw
+												{/if}
+											</button>
+										{:else if canFork}
+											<button
+												type="button"
+												onclick={() => handleFork(msg.entryId)}
+												class="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-brand-text-muted transition-colors select-none hover:bg-brand-blue/15 hover:text-brand-blue"
+												title="Fork the conversation from this message (edit and resend)"
+												aria-label="Fork from this message"
+											>
+												<svg
+													xmlns="http://www.w3.org/2000/svg"
+													viewBox="0 0 24 24"
+													fill="none"
+													stroke="currentColor"
+													stroke-width="2"
+													stroke-linecap="round"
+													stroke-linejoin="round"
+													class="h-3.5 w-3.5"
+													><circle cx="6" cy="6" r="2.2" /><circle
+														cx="6"
+														cy="18"
+														r="2.2"
+													/><circle cx="18" cy="8" r="2.2" /><path
+														d="M6 8.2v7.6"
+													/><path d="M18 10.2c0 3-3 3.8-6 3.8" /></svg
+												>
+												Fork
+											</button>
+										{/if}
+									</div>
+								{/if}
+							</div>
 							{#if msg.role === 'user' && $pendingSteering.includes(msg.content)}
 								<!-- This user message is a mid-stream steer that is still QUEUED on
 								     the server (pi injects it at the next step boundary). Show a

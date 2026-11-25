@@ -231,6 +231,43 @@ export function isAssociatedWithForceCommand(msg: ChatMessage): boolean {
 	return msg.role === 'tool' && msg.forceCommand === true;
 }
 
+// How a message is laid out in the chat column (spec chat-compact-layout,
+// stories 25 to 28):
+//   - 'document': assistant text, full column width, no bubble chrome.
+//   - 'bubble':   the user's own message, a compact right-aligned bubble.
+//   - 'chip':     a generic tool call, a one-line chip that expands on tap.
+//   - 'card':     everything that keeps its own card: thinking blocks, the
+//                 shipmates card, first-class tools (attach_file, say) and the
+//                 hide-tools "Running tool" row (a `!command` stays a chip there,
+//                 since hide-tools never hides it).
+export type MessageLayout = 'document' | 'bubble' | 'chip' | 'card';
+export function messageLayout(
+	msg: ChatMessage,
+	hideTools: boolean,
+): MessageLayout {
+	if (msg.role === 'assistant') return 'document';
+	if (msg.role === 'user') return 'bubble';
+	if (msg.role === 'tool') {
+		if (isFirstClassTool(msg.toolName)) return 'card';
+		if (hideTools && !isAssociatedWithForceCommand(msg)) return 'card';
+		return 'chip';
+	}
+	return 'card';
+}
+
+// The status a tool chip shows in front of its name. `interrupted` is a tool
+// that ended with no result (e.g. killed by a CLI takeover): outcome unknown.
+export type ToolChipStatus = 'running' | 'error' | 'interrupted' | 'done';
+export function toolChipStatus(
+	msg: {isStreaming?: boolean},
+	parsed: {isError: boolean; interrupted?: boolean},
+): ToolChipStatus {
+	if (msg.isStreaming) return 'running';
+	if (parsed.isError) return 'error';
+	if (parsed.interrupted) return 'interrupted';
+	return 'done';
+}
+
 export function shouldAutoExpand(
 	msg: ChatMessage,
 	list: ChatMessage[],
