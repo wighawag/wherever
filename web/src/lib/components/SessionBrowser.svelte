@@ -28,6 +28,8 @@
 	import {liveSessions} from '$lib/core/live-sessions';
 	import LiveStrip from './LiveStrip.svelte';
 	import SessionRow from './SessionRow.svelte';
+	import StateDot from './StateDot.svelte';
+	import {stateDotLabel} from '$lib/core/state-dot';
 	// The folder list: text filter, fork tree, closed sessions hidden unless
 	// "Show closed" (unit-tested in core).
 	import {
@@ -45,6 +47,8 @@
 		ownerGroupExpanded,
 		ownerGroupRows,
 		ownerGroupSummaryText,
+		ownerGroupSessionsText,
+		ownerGroupSummaryDots,
 		ownerRowHint,
 		ownerTree,
 		parseCollapsedGroups,
@@ -987,12 +991,23 @@
 						<button
 							type="button"
 							onclick={() => toggleGroup(rootPath)}
-							class="ml-4 block truncate text-left text-[10px] {group.hasWaitingForHuman
+							class="ml-4 flex max-w-full items-center gap-2 text-left text-[10px] {group.hasWaitingForHuman
 								? 'text-amber-400'
 								: 'text-brand-text-muted'} hover:underline"
-							title="Expand group"
+							title="Expand group: {ownerGroupSummaryText(group.summary)}"
+							aria-label="Expand group: {ownerGroupSummaryText(group.summary)}"
 						>
-							{ownerGroupSummaryText(group.summary)}
+							<span class="truncate"
+								>{ownerGroupSessionsText(group.summary)}</span
+							>
+							{#each ownerGroupSummaryDots(group.summary) as dot (dot.state)}
+								<span class="inline-flex items-center gap-1">
+									<StateDot
+										dot={dot.state}
+										label="{dot.count} {stateDotLabel(dot.state)}"
+									/>{dot.count}
+								</span>
+							{/each}
 						</button>
 					{/if}
 				</div>

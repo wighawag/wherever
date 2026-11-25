@@ -45,3 +45,13 @@ None, can start immediately.
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/state-dot-legend-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+These are recorded in `work/notes/observations/state-dot-legend-decisions.md`:
+1. The helper takes the row's `closed` flag as an argument rather than reading it off the session, to match what `SessionRow` already shows as closed.
+2. In the dot legend, `idle` means "loaded, idle" (green), and a session that is not loaded is `not-loaded` (grey). This is narrower than `idle` in the presence states, where it means "not live".
+3. The long-press label is a bubble shown for about 1.8 seconds, after a 450ms press or a context-menu event. As a side effect, right-clicking a dot on desktop shows the label instead of the link menu.
+4. `anyoneWaitsForYou` takes the whole shipmates state plus the listed sessions, and only listed sessions count.
+5. `liveCountDots` (with the order "waiting for you, waiting on a session, running") is exported so the Live strip task can reuse it.
+6. The brighter "not loaded" grey described above.
