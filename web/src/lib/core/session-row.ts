@@ -50,6 +50,7 @@ export type RowMenuItem =
 	| 'close'
 	| 'reopen'
 	| 'star'
+	| 'rename'
 	| 'copy-link'
 	| 'open-new-tab'
 	| 'separator'
@@ -57,10 +58,9 @@ export type RowMenuItem =
 
 /**
  * The row ⋯ menu's items, in order: Close (Reopen on a closed row), Star /
- * Unstar, Copy link, Open in new tab (desktop only, where the menu is a
- * popover), then a separator and Delete…. The read-only page keeps only the
- * harmless ones: Star, Copy link, Open in new tab. (Rename slots in after
- * Star once it lands.)
+ * Unstar, Rename, Copy link, Open in new tab (desktop only, where the menu is
+ * a popover), then a separator and Delete…. The read-only page keeps only the
+ * harmless ones: Star, Copy link, Open in new tab (no Rename).
  */
 export function rowMenuItems(opts: {
 	readOnly: boolean;
@@ -69,7 +69,9 @@ export function rowMenuItems(opts: {
 }): RowMenuItem[] {
 	const items: RowMenuItem[] = [];
 	if (!opts.readOnly) items.push(opts.closed ? 'reopen' : 'close');
-	items.push('star', 'copy-link');
+	items.push('star');
+	if (!opts.readOnly) items.push('rename');
+	items.push('copy-link');
 	if (opts.desktop) items.push('open-new-tab');
 	if (!opts.readOnly) items.push('separator', 'delete');
 	return items;

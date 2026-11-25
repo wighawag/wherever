@@ -38,3 +38,13 @@ covers: [39]
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/session-row-rename-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+These are in `work/notes/observations/session-row-rename-decisions.md`, which also holds the full browser-check record for the done record:
+1. **Modal dialog, not a field inside the menu.** It uses the browser's own `<dialog>`, which floats above the page so the phone drawer can't clip it, and the chat ⋯ can reuse the same component. It sits 15% from the top so a phone keyboard doesn't cover it.
+2. **The row owns its prompt** and shows it only while it is open. `SessionBrowser` turns Rename off on the read-only page, and the menu helper leaves it out there too.
+3. **An unchanged name cancels**, so nothing is written. The client cleans the name the same way the server does but does not check the 200-character limit; the server's message covers a name that is too long.
+4. **A refusal keeps the prompt open** with what was typed. A reply that arrives after the prompt was closed is ignored.
+5. **Wording:** the title is "Rename session", with the row's label under it and the hint "An empty name cancels." The mockups show only the menu item, not the prompt.
+6. **Clicks and keys stop at the dialog**, so Escape or a click inside it doesn't also reach the row or the page.
