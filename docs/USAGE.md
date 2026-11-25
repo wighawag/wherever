@@ -236,6 +236,13 @@ Star or unstar a session ("come back to this"). Stars are stored on the server (
 * **Response (200 OK):** `{ "starred": [{ "sessionFile": "...", "starredAt": 1767225600000 }] }`, the whole list, most recently starred first.
 * **Errors:** `400` for a malformed body, a missing `sessionFile`, a non-boolean `starred`, or a path outside the sessions directory; `500` if the store cannot be read (nothing is written).
 
+### `POST /sessions/name`
+Rename a session. The name is written by whichever process owns the session file (ADR 0027): the server's own agent for a session it runs, the terminal pi through the bridge for a CLI-bridged session (that terminal's `@wherever-dev/pi` must be recent enough to advertise `cli_rename`), or a plain `session_info` append for a session that only exists on disk. Every open dashboard is told to re-list (`sessions_updated`) on success only. Conversation search shows the new name after memonaut's next index.
+* **Auth required:** Yes
+* **Body:** `{ "sessionFile": "/home/me/.pi/agent/sessions/.../x.jsonl", "name": "Release notes" }` (`name` is trimmed, whitespace runs collapsed to one space; 1 to 200 characters)
+* **Response (200 OK):** `{ "sessionFile": "...", "name": "Release notes" }`, the name as stored.
+* **Errors:** `400` for a malformed body, a missing `sessionFile`, an empty or over-long `name`, or a path outside the sessions directory; `404` if the session file does not exist; `409` when the rename cannot be done safely: the session has no message yet (pi writes nothing to the file before the first one), a load or reload of it is in progress, or it runs in a terminal whose wherever extension is too old ("update the wherever extension in that terminal"); `502` if the terminal refused or disconnected; `504` if the terminal did not answer within 10 seconds.
+
 ### `POST /session/new`
 Start a session inside a directory. If that folder already has a live session with at least one attached viewer, this returns THAT session instead of creating a second agent beside it. (The WebSocket `session_new` message is the other intent: it always creates a new conversation.)
 

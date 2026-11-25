@@ -322,6 +322,32 @@ export async function setSessionStarred(
 	}
 }
 
+/**
+ * Rename a session (POST /sessions/name, ADR 0027). NOT optimistic: the name is
+ * written by whichever process owns the file (the server's agent, the terminal
+ * pi through the bridge, or an append on disk), and the server broadcasts
+ * `sessions_updated` on success, so the new name arrives through the normal
+ * relist on every dashboard. A refusal (an old terminal extension, a session
+ * with no message yet, a load or reload in progress) REJECTS with the server's
+ * error text, for the rename prompt to show in place. Resolves to the name as
+ * stored (trimmed, whitespace collapsed).
+ */
+export async function renameSession(
+	sessionFile: string,
+	name: string,
+): Promise<{sessionFile: string; name: string}> {
+	const res = await fetch(apiUrl('/sessions/name'), {
+		method: 'POST',
+		headers: {'Content-Type': 'application/json'},
+		body: JSON.stringify({sessionFile, name}),
+	});
+	if (!res.ok) {
+		const errData = await res.json().catch(() => ({}));
+		throw new Error(errData.error || `Rename failed with status ${res.status}`);
+	}
+	return (await res.json()) as {sessionFile: string; name: string};
+}
+
 // Patch one session's `closed` and `starred` flags in a folders store, in place.
 // `next` gets the current flags and returns the new ones. Returns the values
 // they had before (undefined when the session is not in this store), so a

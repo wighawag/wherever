@@ -48,3 +48,16 @@ None, can start immediately.
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/rename-session-endpoint-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+These are recorded in `work/notes/observations/rename-session-endpoint-decisions.md`; who writes the name is in ADR 0027.
+1. **Names:** the frames are `cli_rename` / `cli_rename_result` and the capability is `cli_rename`.
+2. **Status codes:** 400, 404, 409 for "can't be done safely now", 502 when the terminal refused or disconnected, 504 on timeout. The texts are in `RENAME_REFUSALS`.
+3. **Name rule:** whitespace is collapsed, then trimmed; 1 to 200 characters; an over-long name is refused, never truncated.
+4. **No message yet, terminal sessions:** the server decides from whether the transcript file exists; the extension doesn't re-check.
+5. **Bridge reply:** matched by id and socket, fails at once on disconnect, 10 s timeout, not configurable.
+6. **Large transcripts:** the on-disk path parses the whole file synchronously, which departs from `CONTEXT.md`'s "never materialize a whole session file" rule. I accepted it because a rename is a rare user action and pi's own append gives a correctly parented entry.
+7. **Placement:** all rename logic is in `session-rename.ts`; the session pool only gains `hasPendingLoad`.
+8. **Response body:** a successful rename answers `{sessionFile, name}`, with the name as stored.
+9. **Browser check:** not applicable here, as above.

@@ -21,6 +21,7 @@ import { Type } from "typebox";
 import { WhereverClient } from "@wherever-dev/client";
 import { createConversationModeSignal } from "./conversation-mode-hint.js";
 import { cliHumanInputMark, cliMessageContent, SHIPMATES_HUMAN_INPUT_EVENT } from "./cli-message.js";
+import { handleCliRename } from "./session-rename.js";
 import { BridgeShipmatesHostRegistration } from "./shipmates-host.js";
 import { isInsideWhereverServer } from "./server-process-marker.js";
 import {
@@ -1063,6 +1064,15 @@ export default async function (pi: ExtensionAPI) {
                 `This CLI now controls the session; continue here.`,
               "warning",
             );
+            break;
+          }
+          case "cli_rename": {
+            // wherever ADR 0027: this terminal owns the transcript, so the
+            // server asks us to write the name and waits for the result.
+            handleCliRename(msg, {
+              setSessionName: (name) => pi.setSessionName(name),
+              send: (frame) => client?.send(frame),
+            });
             break;
           }
           case "cli_model_change": {
