@@ -4,7 +4,7 @@ slug: rename-session-endpoint
 spec: sidebar-compact-layout
 blockedBy: []
 covers: [40, 41, 42, 43]
-needsAnswers: true
+needsAnswers: false
 ---
 
 ## What to build
@@ -61,3 +61,12 @@ These are recorded in `work/notes/observations/rename-session-endpoint-decisions
 7. **Placement:** all rename logic is in `session-rename.ts`; the session pool only gains `hasPendingLoad`.
 8. **Response body:** a successful rename answers `{sessionFile, name}`, with the name as stored.
 9. **Browser check:** not applicable here, as above.
+
+## Decisions (continued run, 2026-11-25)
+
+Recorded by the earlier attempt in `work/notes/observations/rename-session-endpoint-decisions.md` and linked from the done record's `## Decisions` block. Who writes the name is in `docs/adr/0027-a-rename-is-written-by-the-files-owner.md`. In short:
+- **Names:** the frames are `cli_rename` / `cli_rename_result` and the capability is `cli_rename`.
+- **Status codes:** 400, 404, 409 when it can't be done safely now, 502 when the terminal refused or disconnected, 504 on timeout.
+- **Name rule:** whitespace is collapsed and trimmed, 1 to 200 characters, and a name that is too long is refused rather than cut.
+- **Timeout:** 10 s, matched by request id and connection.
+- **Large files:** the disk-only path reads the whole file at once, which goes against a rule in `CONTEXT.md`. It was accepted because renames are rare.
