@@ -9,43 +9,46 @@ const idle = {
 };
 
 describe('sendButtonState', () => {
+	// The pill's right button only ever SENDS (➤ send, ➤ steer, or Search).
+	// ■ Stop is a labelled button in the row ABOVE the pill, away from 🎤: a
+	// recording mic and a Stop were two red circles side by side.
+
 	it('idle with an empty pill: a disabled ➤ send, no Stop', () => {
 		expect(sendButtonState(idle)).toEqual({
 			primary: 'send',
 			primaryDisabled: true,
-			stopBeside: false,
+			stop: false,
 		});
 	});
 
 	it('idle with text: an enabled ➤ send', () => {
 		expect(sendButtonState({...idle, hasContent: true, canSend: true})).toEqual(
-			{primary: 'send', primaryDisabled: false, stopBeside: false},
+			{primary: 'send', primaryDisabled: false, stop: false},
 		);
 	});
 
 	it('idle with text but sending blocked (disconnected, uploading): ➤ stays disabled', () => {
 		expect(
 			sendButtonState({...idle, hasContent: true, canSend: false}),
-		).toEqual({primary: 'send', primaryDisabled: true, stopBeside: false});
+		).toEqual({primary: 'send', primaryDisabled: true, stop: false});
 	});
 
-	it('running with an empty pill: only an ENABLED ■ Stop', () => {
+	it('running with an empty pill: a disabled ➤ steer, and Stop above the pill', () => {
 		expect(sendButtonState({...idle, streaming: true})).toEqual({
-			primary: 'stop',
-			primaryDisabled: false,
-			stopBeside: false,
+			primary: 'steer',
+			primaryDisabled: true,
+			stop: true,
 		});
 	});
 
-	it('■ Stop follows only streaming, not the send gate (Abort parity)', () => {
-		// canSend is false (e.g. the socket is reconnecting), yet Stop stays
-		// enabled, exactly like the old Abort button's `disabled={!streaming}`.
+	it('Stop follows only streaming, not the send gate (Abort parity)', () => {
+		// canSend is false (e.g. the socket is reconnecting), yet Stop shows,
+		// exactly like the old Abort button's `disabled={!streaming}`.
 		const s = sendButtonState({...idle, streaming: true, canSend: false});
-		expect(s.primary).toBe('stop');
-		expect(s.primaryDisabled).toBe(false);
+		expect(s.stop).toBe(true);
 	});
 
-	it('running with text: ➤ steer with ■ Stop beside it (Stop never hidden)', () => {
+	it('running with text: an enabled ➤ steer, Stop still above the pill', () => {
 		expect(
 			sendButtonState({
 				...idle,
@@ -53,10 +56,10 @@ describe('sendButtonState', () => {
 				hasContent: true,
 				canSend: true,
 			}),
-		).toEqual({primary: 'steer', primaryDisabled: false, stopBeside: true});
+		).toEqual({primary: 'steer', primaryDisabled: false, stop: true});
 	});
 
-	it('running with text but sending blocked: steer disabled, Stop still beside', () => {
+	it('running with text but sending blocked: steer disabled, Stop still shown', () => {
 		expect(
 			sendButtonState({
 				...idle,
@@ -64,14 +67,14 @@ describe('sendButtonState', () => {
 				hasContent: true,
 				canSend: false,
 			}),
-		).toEqual({primary: 'steer', primaryDisabled: true, stopBeside: true});
+		).toEqual({primary: 'steer', primaryDisabled: true, stop: true});
 	});
 
 	it('search mode: the Search button, gated on canSend, never a Stop', () => {
 		expect(sendButtonState({...idle, searchMode: true})).toEqual({
 			primary: 'search',
 			primaryDisabled: true,
-			stopBeside: false,
+			stop: false,
 		});
 		expect(
 			sendButtonState({
@@ -80,7 +83,7 @@ describe('sendButtonState', () => {
 				hasContent: true,
 				canSend: true,
 			}),
-		).toEqual({primary: 'search', primaryDisabled: false, stopBeside: false});
+		).toEqual({primary: 'search', primaryDisabled: false, stop: false});
 	});
 });
 
