@@ -19,6 +19,7 @@ import {
 	createSpeechSettings,
 	hasBrowserSpeechRecognition,
 } from './core/speech-settings';
+import {createEnterToSend} from './core/enter-to-send';
 import {shouldDropStaleHash} from './core/view-mode';
 import {fileStillReadable, postUpload} from './core/post-upload';
 import {adoptTokenFromUrlOnce} from './core/token-adoption';
@@ -339,6 +340,14 @@ export const speechSettings = createSpeechSettings({
 	browserSupported: hasBrowserSpeechRecognition(),
 });
 
+// --- Enter sends --------------------------------------------------------------
+// The ONE app instance of the "Enter sends" store (core/enter-to-send.ts): the
+// composer reads it, the chat ⋯ menu ("On this device") toggles it. Same
+// localStorage key as when it was ChatInput's local state.
+export const enterToSend = createEnterToSend({
+	storage: typeof localStorage !== 'undefined' ? localStorage : null,
+});
+
 // --- The master toggle: PER CONVERSATION, over a global default -------------
 // A spoken exchange is a property of the CONVERSATION you are having, not of the
 // app: turning conversation mode on in the bar while talking to one session must
@@ -503,7 +512,7 @@ export function getConversationKnobs(): {
 // Flip the master ON (bundling in the configured knobs) or OFF FOR THE
 // CONVERSATION BEING VIEWED. Mirrors bundleOn() from core/conversation-mode.ts:
 // turning it off dormant-izes the gated knobs but does NOT force
-// autoSendOnSpeechEnd off. This is what the top-bar toggle calls, so it writes
+// autoSendOnSpeechEnd off. This is what the ⋯ session menu toggle calls, so it writes
 // this session's own choice and never moves the global default (which lives in
 // Connection Settings as "default for new conversations").
 export function setConversationModeBundle(on: boolean) {

@@ -2,7 +2,6 @@
 	import {onMount} from 'svelte';
 	import {autoSendOnSpeechEnd, speechSettings} from '$lib/wherever';
 	import {hasBrowserSpeechRecognition} from '$lib/core/speech-settings';
-	import SpeechSettingsPanel from './SpeechSettingsPanel.svelte';
 	import {unlockTts} from '$lib/core/speak';
 	import {
 		createAutoStopDetector,
@@ -44,7 +43,6 @@
 	let isRecording = $state(false);
 	let isProcessing = $state(false);
 	let isHolding = $state(false);
-	let showSettings = $state(false);
 	// Engine, locale and the last error live in the shared speech settings store
 	// (core/speech-settings.ts, instance in wherever.ts), so the Speech Settings
 	// panel can be mounted anywhere and a change there applies here at once.
@@ -691,40 +689,10 @@
 		</svg>
 	</button>
 
-	<!-- Settings Cog Button -->
-	<button
-		type="button"
-		onclick={() => (showSettings = !showSettings)}
-		disabled={(disabled && !isRecording && !isProcessing) || isProcessing}
-		class="flex items-center justify-center rounded-lg border text-gray-400 hover:bg-gray-700 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 {compact
-			? 'h-9 w-5 border-transparent bg-transparent'
-			: 'h-[48px] w-[28px] border-gray-600 bg-gray-800'}"
-		title="Speech Settings"
-		aria-label="Speech settings"
-	>
-		<svg
-			xmlns="http://www.w3.org/2000/svg"
-			viewBox="0 0 24 24"
-			fill="none"
-			stroke="currentColor"
-			stroke-width="2"
-			stroke-linecap="round"
-			stroke-linejoin="round"
-			class="h-4 w-4 transition-transform duration-200 {showSettings
-				? 'rotate-45 text-white'
-				: ''}"
-		>
-			<circle cx="12" cy="12" r="3" />
-			<path
-				d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
-			/>
-		</svg>
-	</button>
-
 	<!-- Speech error, next to the mic (story 12): visible from the pill, not only
-	     inside the settings panel (which shows it itself while open). Cleared by
-	     the next recording or by its ×. -->
-	{#if speechError && !showSettings}
+	     inside the settings panel (now the chat ⋯ menu's "Voice settings…", which
+	     shows it too). Cleared by the next recording or by its ×. -->
+	{#if speechError}
 		<div
 			role="alert"
 			class="absolute right-0 bottom-full z-30 mb-2 flex w-max max-w-[min(16rem,80vw)] items-start gap-1.5 rounded-md border border-red-900/60 bg-red-950/90 py-1 pr-1 pl-2 text-[11px] leading-snug text-red-300 shadow-lg"
@@ -737,23 +705,6 @@
 				title="Dismiss"
 				aria-label="Dismiss speech error">×</button
 			>
-		</div>
-	{/if}
-
-	<!-- Settings Popover -->
-	{#if showSettings}
-		<!-- Click Outside Backdrop -->
-		<!-- svelte-ignore a11y_click_events_have_key_events -->
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div
-			class="fixed inset-0 z-40"
-			onclick={() => (showSettings = false)}
-		></div>
-
-		<div
-			class="absolute right-0 bottom-14 z-50 w-64 rounded-lg border border-gray-600 bg-gray-800 p-4 text-xs text-white shadow-xl"
-		>
-			<SpeechSettingsPanel />
 		</div>
 	{/if}
 </div>

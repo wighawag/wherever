@@ -5,7 +5,6 @@
 		activeSessionInfo,
 		createSession,
 		piState,
-		updateConfig,
 		loadMoreHistory,
 		hasMoreHistory,
 		isLoadingMoreHistory,
@@ -15,12 +14,7 @@
 		resendMessage,
 		discardMessage,
 		pendingSteering,
-		beepEnabled,
-		beepSessionOverride,
-		setBeepSessionOverride,
 		conversationMode,
-		conversationModeSessionOverride,
-		setConversationModeBundle,
 		speakReplies,
 		collapseLongReplies,
 		getConversationKnobs,
@@ -30,11 +24,7 @@
 		forkSession,
 	} from '$lib/wherever';
 	import {mediaKind} from '$lib/core/media-kind';
-	import {
-		armTtsGestureUnlock,
-		speakUtterance,
-		unlockTts,
-	} from '$lib/core/speak';
+	import {armTtsGestureUnlock, speakUtterance} from '$lib/core/speak';
 	import {
 		shouldSpeakFallback,
 		spokenFallbackText,
@@ -54,7 +44,6 @@
 	import {
 		renderAssistant,
 		renderUser,
-		formatTokens,
 		formatTime,
 		parseUserMessage,
 		parseToolMessage,
@@ -69,16 +58,6 @@
 		speechLocale,
 		filterMessages,
 	} from './chat-message-helpers';
-
-	// "11.3% / 1.0M". Percent omitted ("–") right after compaction when tokens are
-	// momentarily unknown.
-	let contextLabel = $derived.by(() => {
-		const u = $piState.contextUsage;
-		if (!u || !u.contextWindow) return null;
-		const window = formatTokens(u.contextWindow);
-		if (u.percent == null) return `– / ${window}`;
-		return `${u.percent.toFixed(1)}% / ${window}`;
-	});
 
 	let newFolderCwd = $state('');
 	let completions = $state<string[]>([]);
@@ -288,38 +267,6 @@
 		forkSession(sessionId, entryId);
 	}
 
-	// Per-session beep control is tri-state: undefined = follow the global
-	// default, true/false = an explicit choice that sticks to this session.
-	// Cycling order: Default -> On -> Off -> Default. Showing "Default" (rather
-	// than a plain on/off) is what signals the choice has NOT been set for this
-	// session, so it tracks the default live.
-	let beepOverride = $derived($beepSessionOverride);
-	let beepOn = $derived($beepEnabled);
-	// The Conversation Mode master toggle: one click flips the configured bundle
-	// of knobs ON at once (and back OFF). The knobs it gates are edited
-	// individually in Connection Settings.
-	let conversationOn = $derived($conversationMode);
-	// Whether THIS conversation is just following the global default (no explicit
-	// choice of its own). Surfaced in the toggle's tooltip so the per-conversation
-	// scope is legible: the same bar toggle in another conversation is independent.
-	let conversationFollowsDefault = $derived(
-		$conversationModeSessionOverride === undefined,
-	);
-	// This click handler is ALSO the TTS gesture-unlock point. Mobile Chrome / iOS
-	// Safari / installed PWAs only allow the FIRST speechSynthesis.speak() from
-	// inside a user gesture, and the `say` reply is spoken from a gesture-less
-	// WebSocket-driven $effect below -- so without priming here, mobile silently
-	// drops every spoken reply. Turning conversation mode ON is exactly the user
-	// opting into spoken replies, so it is the natural gesture to prime from. The
-	// priming is silent, idempotent and a no-op where speechSynthesis is absent
-	// (see core/speak.ts), so this is safe on the OFF direction too -- we prime
-	// unconditionally rather than only when turning on, since a user who toggles
-	// off and on again would otherwise depend on which tap primed.
-	function toggleConversationMode() {
-		unlockTts();
-		setConversationModeBundle(!conversationOn);
-	}
-
 	// Whether the `collapseLongReplies` knob is currently ACTIVE. Being a gated
 	// conversation knob, it is active only when the master conversationMode is ALSO
 	// on (see isKnobActive), so with conversation mode off (or the knob off) long
@@ -427,11 +374,6 @@
 		}
 		prevStreamingForSpeech = streamingNow;
 	});
-	function cycleBeep() {
-		if (beepOverride === undefined) setBeepSessionOverride(true);
-		else if (beepOverride === true) setBeepSessionOverride(false);
-		else setBeepSessionOverride(undefined);
-	}
 
 	// True when we hold a cached session (its file + messages) that is merely
 	// reconnecting/resyncing, not loading fresh. In this state the conversation
@@ -2037,103 +1979,6 @@
 			{/each}
 		</div>
 	{/if}
-
-	<div
-		class="app-chrome flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-brand-border p-2"
-	>
-		<div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-			<label
-				class="flex cursor-pointer items-center gap-1.5 text-xs text-brand-text-muted select-none hover:text-brand-text"
-			>
-				<input
-					type="checkbox"
-					checked={$piState.hideThinking}
-					onchange={(e) =>
-						updateConfig({
-							hideThinking: (e.currentTarget as HTMLInputElement).checked,
-						})}
-					class="h-3.5 w-3.5 rounded border-brand-border bg-brand-surface-3 text-brand-blue focus:ring-brand-blue"
-				/>
-				Hide Thinking
-			</label>
-
-			<!-- Per-session waiting-for-human beep, tri-state. Cycles
-			     Default -> On -> Off -> Default. "Default" means this session has no
-			     explicit choice and follows the global default live; On/Off stick to
-			     this session regardless of later default changes. Only for a live,
-			     drivable session. -->
-			{#if sessionInfo.sessionFile && !$isReadOnly}
-				<button
-					type="button"
-					onclick={cycleBeep}
-					class="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs select-none hover:text-brand-text {beepOverride ===
-					undefined
-						? 'text-brand-text-muted'
-						: 'text-brand-blue'}"
-					title={beepOverride === undefined
-						? `Beep when the agent is waiting: following the default (${beepOn ? 'on' : 'off'}). Click to set On for this session.`
-						: beepOverride === true
-							? 'Beep when the agent is waiting: ON for this session. Click to set Off.'
-							: 'Beep when the agent is waiting: OFF for this session. Click to follow the default.'}
-					aria-label="Cycle waiting-for-human beep for this session"
-				>
-					<span>{beepOn ? '🔔' : '🔕'}</span>
-					<span>
-						{beepOverride === undefined
-							? `Beep: Default (${beepOn ? 'on' : 'off'})`
-							: beepOverride
-								? 'Beep: On'
-								: 'Beep: Off'}
-					</span>
-				</button>
-			{/if}
-
-			<!-- Conversation Mode master toggle: flips the configured knob bundle on
-			     at once (speak replies, collapse long replies, hands-free mic re-open)
-			     FOR THIS CONVERSATION ONLY -- other conversations keep their own state,
-			     and untouched ones follow the default. With no conversation open there is
-			     nothing to scope to, so it edits that default instead. Individual knobs
-			     (and the default) are edited in Connection Settings. -->
-			<button
-				type="button"
-				onclick={toggleConversationMode}
-				class="flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs select-none hover:text-brand-text {conversationOn
-					? 'text-brand-blue'
-					: 'text-brand-text-muted'}"
-				title={`Conversation Mode for THIS conversation: ${
-					conversationOn ? 'ON' : 'OFF'
-				}${
-					conversationFollowsDefault
-						? ' (following your default)'
-						: ' (set for this conversation)'
-				}. ${
-					conversationOn
-						? 'Click to turn it off here (the configured knobs go dormant); other conversations are unaffected.'
-						: 'Click to flip your configured bundle of speech/voice knobs on here; other conversations are unaffected.'
-				} The default for conversations you have not toggled is in Connection Settings.`}
-				aria-label="Toggle conversation mode"
-			>
-				<span>{conversationOn ? '🗣️' : '💬'}</span>
-				<span>{conversationOn ? 'Conversation: On' : 'Conversation: Off'}</span>
-			</button>
-
-			<!-- Context-window usage, e.g. "11.3% / 1.0M". Only on a READ-ONLY
-			     session: everywhere else the composer's context ring shows it above the
-			     pill (ChatInput), and a read-only session has no composer. Moves to the
-			     top bar's session menu with chat-session-menu. -->
-			{#if $isReadOnly && contextLabel}
-				<div
-					class="flex items-center gap-1 text-xs text-brand-text-muted"
-					title={$piState.contextUsage?.tokens != null
-						? `${$piState.contextUsage.tokens.toLocaleString()} context tokens of ${$piState.contextUsage.contextWindow.toLocaleString()}`
-						: 'Context window size'}
-				>
-					<span class="flex-shrink-0">🧠</span>
-					<span class="whitespace-nowrap tabular-nums">{contextLabel}</span>
-				</div>
-			{/if}
-		</div>
-	</div>
 
 	<!-- Custom Confirm Modal for Existing Folders -->
 	{#if showGitInitConfirmModal}

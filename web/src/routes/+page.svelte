@@ -12,6 +12,7 @@
 	import ShipmatesInbox from '$lib/components/ShipmatesInbox.svelte';
 	import SidebarTab from '$lib/components/SidebarTab.svelte';
 	import StateDot from '$lib/components/StateDot.svelte';
+	import ChatSessionMenu from '$lib/components/ChatSessionMenu.svelte';
 	import {
 		activeTab,
 		openSessionDot,
@@ -60,7 +61,6 @@
 		leaveSession,
 		dismissSessionError,
 		dismissNotice,
-		changeModel,
 		joinSession,
 		switchSession,
 		isCreatingSession,
@@ -77,7 +77,6 @@
 		flushConversationCache,
 		clearConversationCache,
 		openAssistant,
-		resetAssistant,
 		abort,
 	} from '$lib/wherever';
 	import {
@@ -90,8 +89,6 @@
 		sessionFolders,
 		readOnlySessionFolders,
 		setSessionStarred,
-		setSessionClosed,
-		closeSession,
 		assistantStatusStore,
 		isAssistantSession,
 		shipmatesStore,
@@ -372,9 +369,8 @@
 	let wasSessionActive = $state(false);
 	let currentSessionId = $derived(sessionInfo.sessionId);
 
-	// Is the open session starred / closed? Read from the session LISTS (both
-	// flags live on the listing, server-side), checking the main and the
-	// read-only list.
+	// The open session's listing entry (name, starred, closed; all server-side),
+	// from the main or the read-only list. The ⋯ session menu reads it too.
 	let currentListed = $derived.by(() => {
 		const file = sessionInfo.sessionFile;
 		if (!file) return undefined;
@@ -387,7 +383,6 @@
 		return undefined;
 	});
 	let currentStarred = $derived(!!currentListed?.starred);
-	let currentClosed = $derived(!!currentListed?.closed);
 	// The open session's dot on the sidebar's current-session line.
 	let currentDot = $derived(
 		openSessionDot({
@@ -636,7 +631,7 @@
 		}
 	});
 
-	// Top-bar magnifier (active-session case): leave the session and focus the
+	// ⋯ "Search the web" (active-session case): leave the session and focus the
 	// search composer SYNCHRONOUSLY inside this gesture so the mobile virtual
 	// keyboard rises (focusing later from a reactive effect would not, esp. iOS).
 	function startSearch() {
@@ -1146,8 +1141,9 @@
 		     with an amber dot whenever anything waits for you, then the open
 		     session's title (listing label, else folder) with its state dot,
 		     folder · model, "read-only" and the connection state under it. With
-		     no session open, today's status text. The remaining actions sit to
-		     the right until chat-session-menu moves them into ⋯. -->
+		     no session open, today's status text. Then ☆ (desktop only) and ⋯,
+		     the session menu (chat-session-menu), which holds every other
+		     action and the per-chat / per-device settings. -->
 		<div
 			class="app-chrome flex items-center gap-2 border-b border-brand-border bg-brand-surface px-3 py-2 md:gap-3"
 		>
@@ -1222,57 +1218,10 @@
 				</div>
 			{/if}
 
-			<!-- Compact search affordance (active-session case): drop to the search
-			     empty-state. Hidden in the empty-state itself, where the bottom
-			     composer already IS the search input. -->
-			{#if connected && searchFolder && sessionInfo.sessionFile}
-				<button
-					type="button"
-					onclick={startSearch}
-					class="flex flex-shrink-0 items-center justify-center rounded border border-brand-border bg-brand-surface-2 px-2 py-1 text-sm text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
-					title="Search the web"
-					aria-label="Search the web"
-				>
-					🔍
-				</button>
-			{/if}
-
-			<!-- Model selector (the model name itself is in the subtitle). Not on a
-			     read-only session or without a model list, as before. -->
-			{#if sessionInfo.sessionFile && sessionInfo.model && models.length > 0 && !readOnly}
-				<select
-					value={sessionInfo.model}
-					oninput={(e) => changeModel(e.currentTarget.value)}
-					class="w-9 flex-shrink-0 truncate rounded border border-brand-border bg-brand-surface-2 px-1 py-1 text-xs text-brand-text focus:border-brand-blue focus:outline-none md:w-auto md:max-w-48"
-					title="Model: {sessionInfo.model}"
-					aria-label="Model"
-				>
-					{#each models as model}
-						<option value={`${model.provider}:${model.modelId}`}>
-							{model.label}
-						</option>
-					{/each}
-				</select>
-			{/if}
-
-			<!-- Reset the assistant: a fresh session in its folder becomes current
-			     (the old turn is aborted, its queue cleared). The folder is the
-			     memory, so this is cheap. Same effect as /new or /reset here. -->
-			{#if connected && viewingAssistant}
-				<button
-					type="button"
-					onclick={resetAssistant}
-					class="flex flex-shrink-0 items-center justify-center rounded border border-brand-border bg-brand-surface-2 px-2 py-1 text-xs text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
-					title="Reset the assistant: start a fresh session (its memory lives in its folder)"
-					aria-label="Reset the assistant"
-				>
-					↺<span class="hidden md:inline">&nbsp;Reset</span>
-				</button>
-			{/if}
-
 			<!-- Star the open session: "come back to this". The natural moment is
 			     right after this session hands a prompt to a new one, which will take
-			     the top of the list. The star also shows on the session's sidebar row. -->
+			     the top of the list. The star also shows on the session's sidebar row.
+			     Desktop only: on the phone Star / Unstar is in ⋯. -->
 			{#if sessionInfo.sessionFile}
 				<button
 					type="button"
@@ -1280,7 +1229,7 @@
 						setSessionStarred(sessionInfo.sessionFile!, !currentStarred).catch(
 							() => {},
 						)}
-					class="flex flex-shrink-0 items-center justify-center rounded border px-2 py-1 text-sm transition-colors {currentStarred
+					class="hidden h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border text-base transition-colors md:flex {currentStarred
 						? 'border-amber-400/50 bg-amber-400/10 text-amber-400 hover:bg-amber-400/20'
 						: 'border-brand-border bg-brand-surface-2 text-brand-text-muted hover:bg-brand-surface-3 hover:text-amber-400'}"
 					title={currentStarred
@@ -1293,30 +1242,17 @@
 				</button>
 			{/if}
 
-			<!-- Close the open session ("done with this": hidden from the list, not
-			     deleted), or reopen it. Not for a read-only session, which has no
-			     close control in its list either. -->
-			{#if sessionInfo.sessionFile && !readOnly}
-				<button
-					type="button"
-					onclick={() => {
-						// A close asks about owned sessions and shows the sidebar's undo banner.
-						if (currentClosed)
-							setSessionClosed(sessionInfo.sessionFile!, false).catch(() => {});
-						else void closeSession(sessionInfo.sessionFile!);
-					}}
-					class="flex flex-shrink-0 items-center justify-center rounded border px-2 py-1 text-sm transition-colors {currentClosed
-						? 'border-brand-blue/50 bg-brand-blue/10 text-brand-blue hover:bg-brand-blue/20'
-						: 'border-brand-border bg-brand-surface-2 text-brand-text-muted hover:bg-brand-surface-3 hover:text-brand-text'}"
-					title={currentClosed
-						? 'Closed. Click to reopen.'
-						: 'Close this session: done with it (hidden from the list, not deleted)'}
-					aria-label={currentClosed ? 'Reopen session' : 'Close session'}
-					aria-pressed={currentClosed}
-				>
-					{currentClosed ? '↺' : '⊘'}
-				</button>
-			{/if}
+			<!-- ⋯ the session menu (ChatSessionMenu.svelte): model, star, rename,
+			     copy link, close, search the web, reset the assistant, "This chat"
+			     and "On this device" settings, context and versions. With no
+			     session open, only "On this device". -->
+			<ChatSessionMenu
+				listed={currentListed}
+				title={currentTitle}
+				searchWeb={connected && !!searchFolder}
+				viewingAssistant={connected && viewingAssistant}
+				onStartSearch={startSearch}
+			/>
 		</div>
 
 		<!-- Interruption notification -->
