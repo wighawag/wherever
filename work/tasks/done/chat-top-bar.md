@@ -45,3 +45,14 @@ Rework the top bar in `+page.svelte` (the main column only):
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/chat-top-bar-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+Recorded in `work/notes/observations/chat-top-bar-decisions.md`:
+1. The helpers live in a new `core/chat-top-bar.ts`, and the subtitle dot reuses the sidebar's `openSessionDot` so the two cannot disagree.
+2. The title keeps `sessionListLabel`'s 40-character cut, as the task names it, so wide desktop titles cut off sooner than in the mockup.
+3. "disconnected" shows at every width and "connected" only on desktop, because the old phone bar showed "Not connected".
+4. The subtitle shows the state dot without the state word (`live.png` shows "running"); the word is the dot's tooltip and long-press label.
+5. The ☰ dot is always amber now, instead of blue for a non-blocking question.
+6. Until `chat-session-menu` moves them, the right-hand actions are compact on the phone: the model select is 36px wide and Reset shows only ↺.
+7. The read-only ■ Stop appears only while the agent runs, styled like the composer's ■ Stop.

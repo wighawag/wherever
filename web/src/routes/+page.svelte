@@ -24,6 +24,11 @@
 	} from '$lib/core/sidebar-rail';
 	import {anyoneWaitsForYou} from '$lib/core/state-dot';
 	import {
+		folderName,
+		openSessionTitle,
+		waitsForYouText,
+	} from '$lib/core/chat-top-bar';
+	import {
 		inboxBadge,
 		inboxCount,
 		presenceByFile,
@@ -73,6 +78,7 @@
 		clearConversationCache,
 		openAssistant,
 		resetAssistant,
+		abort,
 	} from '$lib/wherever';
 	import {
 		fetchSessions,
@@ -556,17 +562,10 @@
 			),
 		),
 	);
-	let waitsForYouTitle = $derived(
-		[
-			waitsForYou.inbox
-				? `${waitsForYou.inbox} question${waitsForYou.inbox === 1 ? '' : 's'} for you`
-				: '',
-			waitsForYou.sessions
-				? `${waitsForYou.sessions} session${waitsForYou.sessions === 1 ? '' : 's'} waiting for you`
-				: '',
-		]
-			.filter(Boolean)
-			.join(', '),
+	let waitsForYouTitle = $derived(waitsForYouText(waitsForYou));
+	// The top bar's title: the open session's listing label, else its folder.
+	let currentTitle = $derived(
+		openSessionTitle({listed: currentListed, cwd: sessionInfo.cwd}),
 	);
 	let viewingAssistant = $derived(
 		isAssistantSession($assistantStatusStore, sessionInfo.sessionFile),
@@ -1143,46 +1142,72 @@
 
 	<!-- Main content -->
 	<div class="flex min-w-0 flex-1 flex-col">
-		<!-- Top bar -->
+		<!-- Top bar (spec chat-compact-layout, stories 1 to 4, 6 and 7): ☰ (phone)
+		     with an amber dot whenever anything waits for you, then the open
+		     session's title (listing label, else folder) with its state dot,
+		     folder · model, "read-only" and the connection state under it. With
+		     no session open, today's status text. The remaining actions sit to
+		     the right until chat-session-menu moves them into ⋯. -->
 		<div
-			class="app-chrome flex items-center gap-3 border-b border-brand-border bg-brand-surface p-3"
+			class="app-chrome flex items-center gap-2 border-b border-brand-border bg-brand-surface px-3 py-2 md:gap-3"
 		>
 			<button
 				onclick={() => (sidebarOpen = !sidebarOpen)}
-				class="relative p-1 text-brand-text-muted hover:text-brand-text md:hidden"
+				class="relative flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border border-brand-border text-lg text-brand-text-muted hover:text-brand-text md:hidden"
+				title={waitsForYou.waiting
+					? `Sessions. Waiting for you: ${waitsForYouTitle}`
+					: 'Sessions'}
+				aria-label={waitsForYou.waiting
+					? `Open sessions. Waiting for you: ${waitsForYouTitle}`
+					: 'Open sessions'}
 			>
-				=
-				{#if shipmatesBadge}
-					<!-- shipmates: something needs the human (the sidebar holds the inbox). -->
+				☰
+				{#if waitsForYou.waiting}
+					<!-- Something waits for the human: an inbox question or a session
+					     whose presence is waiting-for-human (core/state-dot.ts). -->
 					<span
-						class="absolute -top-0.5 -right-1 h-2 w-2 rounded-full {shipmatesBadge.blocking
-							? 'bg-amber-500'
-							: 'bg-brand-blue'}"
-						title="{shipmatesBadge.count} question{shipmatesBadge.count === 1
-							? ''
-							: 's'} for you"
+						class="absolute -top-1 -right-1 h-2.5 w-2.5 rounded-full bg-amber-400 ring-2 ring-brand-surface"
+						aria-hidden="true"
 					></span>
 				{/if}
 			</button>
 
-			<!-- Compact search affordance (active-session case): drop to the search
-			     empty-state. Hidden in the empty-state itself, where the bottom
-			     composer already IS the search input. -->
-			{#if connected && searchFolder && sessionInfo.sessionFile}
-				<button
-					type="button"
-					onclick={startSearch}
-					class="flex flex-shrink-0 items-center justify-center rounded border border-brand-border bg-brand-surface-2 px-2.5 py-1.5 text-sm text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
-					title="Search the web"
-					aria-label="Search the web"
-				>
-					🔍
-				</button>
-			{/if}
-
-			<!-- Status indicator -->
-			{#if !connected || !sessionInfo.sessionFile}
-				<div class="flex min-w-0 items-center gap-2">
+			{#if sessionInfo.sessionFile}
+				<div class="flex min-w-0 flex-1 flex-col">
+					<div
+						class="truncate text-sm leading-5 font-semibold text-brand-text"
+						title={currentTitle}
+					>
+						{currentTitle}
+					</div>
+					<div
+						class="flex min-w-0 items-center gap-1.5 text-xs leading-4 text-brand-text-muted"
+					>
+						<StateDot dot={currentDot} />
+						<span
+							class="min-w-0 truncate"
+							title={[sessionInfo.cwd, sessionInfo.model]
+								.filter(Boolean)
+								.join(' · ')}
+							>{[folderName(sessionInfo.cwd), sessionInfo.model]
+								.filter(Boolean)
+								.join(' · ')}</span
+						>
+						{#if readOnly}
+							<span class="flex-shrink-0 text-yellow-400">· read-only</span>
+						{/if}
+						{#if !connected}
+							<span class="flex-shrink-0 text-rose-400">· disconnected</span>
+						{:else}
+							<span class="hidden flex-shrink-0 text-emerald-400 md:inline"
+								>· connected</span
+							>
+						{/if}
+					</div>
+				</div>
+			{:else}
+				<!-- Status indicator (no session open) -->
+				<div class="flex min-w-0 flex-1 items-center gap-2">
 					{#if connected && searchActive}
 						<span class="text-sm text-brand-text-muted"
 							>Search the web below, or pick a session from the sidebar</span
@@ -1197,56 +1222,37 @@
 				</div>
 			{/if}
 
-			<!-- Folder and model info -->
-			{#if sessionInfo.sessionFile}
-				<div class="flex min-w-0 flex-1 items-center gap-3">
-					<!-- Folder -->
-					{#if sessionInfo.cwd}
-						<div
-							class="flex min-w-0 items-center gap-1.5 text-xs text-brand-text-muted"
-						>
-							<span class="flex-shrink-0">📁</span>
-							<span class="truncate" title={sessionInfo.cwd}
-								>{sessionInfo.cwd.split('/').pop() || sessionInfo.cwd}</span
-							>
-						</div>
-					{/if}
+			<!-- Compact search affordance (active-session case): drop to the search
+			     empty-state. Hidden in the empty-state itself, where the bottom
+			     composer already IS the search input. -->
+			{#if connected && searchFolder && sessionInfo.sessionFile}
+				<button
+					type="button"
+					onclick={startSearch}
+					class="flex flex-shrink-0 items-center justify-center rounded border border-brand-border bg-brand-surface-2 px-2 py-1 text-sm text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
+					title="Search the web"
+					aria-label="Search the web"
+				>
+					🔍
+				</button>
+			{/if}
 
-					<!-- Model selector -->
-					{#if sessionInfo.model}
-						<div class="flex min-w-0 items-center gap-1.5 text-xs">
-							<span
-								class="relative flex flex-shrink-0 items-center justify-center text-sm"
-							>
-								<span>🤖</span>
-								<span
-									class="absolute -right-0.5 -bottom-0.5 h-2 w-2 rounded-full border border-brand-surface {appState.isStreaming
-										? 'animate-pulse bg-orange-500'
-										: 'bg-emerald-500'}"
-									title={appState.isStreaming ? 'Agent working...' : 'Ready'}
-								></span>
-							</span>
-							{#if models.length > 0 && !readOnly}
-								<select
-									value={sessionInfo.model}
-									oninput={(e) => changeModel(e.currentTarget.value)}
-									class="max-w-48 truncate rounded border border-brand-border bg-brand-surface-2 px-1.5 py-0.5 text-brand-text focus:border-brand-blue focus:outline-none"
-								>
-									{#each models as model}
-										<option value={`${model.provider}:${model.modelId}`}>
-											{model.label}
-										</option>
-									{/each}
-								</select>
-							{:else}
-								<span
-									class="truncate text-brand-text-muted"
-									title={sessionInfo.model}>{sessionInfo.model}</span
-								>
-							{/if}
-						</div>
-					{/if}
-				</div>
+			<!-- Model selector (the model name itself is in the subtitle). Not on a
+			     read-only session or without a model list, as before. -->
+			{#if sessionInfo.sessionFile && sessionInfo.model && models.length > 0 && !readOnly}
+				<select
+					value={sessionInfo.model}
+					oninput={(e) => changeModel(e.currentTarget.value)}
+					class="w-9 flex-shrink-0 truncate rounded border border-brand-border bg-brand-surface-2 px-1 py-1 text-xs text-brand-text focus:border-brand-blue focus:outline-none md:w-auto md:max-w-48"
+					title="Model: {sessionInfo.model}"
+					aria-label="Model"
+				>
+					{#each models as model}
+						<option value={`${model.provider}:${model.modelId}`}>
+							{model.label}
+						</option>
+					{/each}
+				</select>
 			{/if}
 
 			<!-- Reset the assistant: a fresh session in its folder becomes current
@@ -1260,7 +1266,7 @@
 					title="Reset the assistant: start a fresh session (its memory lives in its folder)"
 					aria-label="Reset the assistant"
 				>
-					↺ Reset
+					↺<span class="hidden md:inline">&nbsp;Reset</span>
 				</button>
 			{/if}
 
@@ -1310,13 +1316,6 @@
 				>
 					{currentClosed ? '↺' : '⊘'}
 				</button>
-			{/if}
-
-			{#if readOnly}
-				<span
-					class="flex-shrink-0 rounded bg-yellow-500/20 px-2 py-1 text-xs text-yellow-400"
-					>Read-only</span
-				>
 			{/if}
 		</div>
 
@@ -1455,10 +1454,23 @@
 			     warning, it is the absence of the folder. -->
 			<RestorePanel />
 		{:else if readOnly && sessionInfo.sessionFile}
+			<!-- No composer on a read-only session, so its ■ Stop lives here while
+			     the agent runs (the server accepts abort from a read-only client). -->
 			<div
-				class="border-t border-brand-border bg-brand-surface px-4 py-3 text-center text-xs text-brand-text-muted"
+				class="flex items-center justify-center gap-3 border-t border-brand-border bg-brand-surface px-4 py-3 text-center text-xs text-brand-text-muted"
 			>
-				👁️ Read-only session, observing only, no input.
+				<span>👁️ Read-only session, observing only, no input.</span>
+				{#if appState.isStreaming}
+					<button
+						type="button"
+						onclick={abort}
+						class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-rose-500 text-brand-text transition-colors hover:bg-rose-600"
+						title="Stop the agent"
+						aria-label="Stop"
+					>
+						<span class="block h-3 w-3 rounded-[2px] bg-current"></span>
+					</button>
+				{/if}
 			</div>
 		{:else}
 			<!-- Suspended/reconnecting: show a thin status banner ABOVE the composer
