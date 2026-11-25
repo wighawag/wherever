@@ -1,0 +1,9 @@
+# Concurrent acceptance gates on one host steal each other's test ports (not load)
+
+**Observed:** 2026-11-25, `drive-tasks` over the compact-layout tasks (conductor `wherever/drive-compact-layout`). With two or three `dorfl do --isolated` builds running at once, every gate that overlapped another failed in `server` real-server tests (6 to 10 failures per run, a different set each time: `ECONNREFUSED 127.0.0.1:22002`, timeouts, a 401). The same branches passed every suite when their gate ran alone. Affected attempts: `live-strip-two-line-rows`, `rename-session-endpoint`, `chat-pill-composer` (twice).
+
+**Cause.** `server/test/free-port.ts` gives each vitest worker a disjoint port band, `20000 + ((VITEST_POOL_ID - 1) % 12) * 1000`, and remembers issued ports per process. That makes workers of ONE vitest run disjoint, but two vitest runs on the same machine (two gates, or a gate plus a dev's `pnpm test`) compute the SAME bands, so their bind-probe-then-spawn windows overlap and a test's requests reach the other run's server (the 401 is the "wrong server answered" shape the file's own comment describes). This supersedes the "host load" reading in `server-suite-flakes-under-host-load.md`, `server-suite-timeouts-under-full-parallel-run.md` and `server-harness-timeouts-recur-2026-11-25.md`: the load average was a symptom of the parallel runs, not the cause.
+
+**Implication for drives.** Until fixed, never let two gates of this repo overlap on one host: `drive-tasks` here must dispatch one `do` at a time (parallel `--propose` builds are not safe for this repo even with disjoint files).
+
+**Possible fix (not done, out of scope for any task):** salt the band with something unique per run, e.g. derive the base from the vitest run's parent pid or a `WHEREVER_TEST_PORT_BASE` the gate sets, or replace bind-probe with handing the child a pre-bound listening socket. A follow-up task, not a conductor fix.
