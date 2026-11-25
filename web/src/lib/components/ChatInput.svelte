@@ -17,7 +17,7 @@
 		pendingSteering,
 	} from '$lib/wherever';
 	import {isStreaming, isReadOnly, activeSessionInfo} from '$lib/wherever';
-	import {getConversationKnobs} from '$lib/wherever';
+	import {getConversationKnobs, enterToSend} from '$lib/wherever';
 	import {getBaseUrl, getToken} from '$lib/session-store';
 	import {decideComposeSend} from '$lib/core/compose-send';
 	import {contextRing, sendButtonState} from '$lib/core/composer-controls';
@@ -90,8 +90,9 @@
 	} = $props();
 
 	let text = $state('');
-	let enterToSend = $state(true);
-	// The pill's ＋ menu (Attach file, Save as draft, Drafts, Enter sends).
+	// The pill's ＋ menu (Attach file, Save as draft, Drafts). "Enter sends" is
+	// the shared `enterToSend` store (core/enter-to-send.ts), toggled from the
+	// chat ⋯ menu's "On this device" section.
 	let plusMenuOpen = $state(false);
 	// A fine pointer with hover (a desktop): only there does the placeholder say
 	// what Enter does (a phone keyboard has no Shift+Enter to speak of).
@@ -273,7 +274,7 @@
 		// one line, so the empty pill stays one line tall.
 		if (!finePointer) return streaming ? 'Steer the agent...' : 'Message...';
 		const base = streaming ? 'Message (steers the agent)...' : 'Message...';
-		return enterToSend
+		return $enterToSend
 			? `${base} (Enter to send, Shift+Enter for a new line)`
 			: `${base} (Shift+Enter to send, Enter for a new line)`;
 	});
@@ -315,10 +316,6 @@
 	let hydratedKey = $state<string | null>(null);
 
 	onMount(() => {
-		const stored = localStorage.getItem('wherever-enter-to-send');
-		if (stored !== null) {
-			enterToSend = stored === 'true';
-		}
 		drafts = readCachedDrafts();
 		finePointer =
 			typeof window !== 'undefined' &&
@@ -658,11 +655,6 @@
 		});
 	});
 
-	function toggleEnterToSend() {
-		enterToSend = !enterToSend;
-		localStorage.setItem('wherever-enter-to-send', String(enterToSend));
-	}
-
 	$effect(() => {
 		if (textarea) {
 			// Trigger reactive updates when text changes
@@ -998,7 +990,7 @@
 			}
 		}
 		if (e.key === 'Enter') {
-			if (enterToSend) {
+			if ($enterToSend) {
 				// Default mode: Enter to send, Shift+Enter for newline
 				if (!e.shiftKey) {
 					e.preventDefault();
@@ -1494,20 +1486,6 @@
 							>Drafts{drafts.length > 0 ? ` (${drafts.length})` : ''}</span
 						>
 					</button>
-					<!-- Enter sends lives here until the ⋯ session menu takes it. -->
-					<label
-						class="flex w-full cursor-pointer items-center gap-2 border-t border-brand-border px-3 py-2 text-brand-text hover:bg-brand-surface-3"
-					>
-						<input
-							type="checkbox"
-							role="menuitemcheckbox"
-							aria-checked={enterToSend}
-							checked={enterToSend}
-							onchange={toggleEnterToSend}
-							class="rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-0 focus:ring-offset-0"
-						/>
-						<span>Enter sends</span>
-					</label>
 				</div>
 			{/if}
 			{#if showAttach}

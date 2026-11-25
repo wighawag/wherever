@@ -88,3 +88,17 @@ Every control today and its new home (some rows were done by earlier tasks; veri
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/chat-session-menu-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+All are in `work/notes/observations/chat-session-menu-decisions.md`, along with the browser check for the done record. The ones you are most likely to want to change:
+1. **Item order:** Search the web and Reset the assistant come after Close. The mockup has no place for them.
+2. **Toggles are check boxes, not switches:** the shared menu already draws check boxes, so I used them instead of the mockup's switches. Beep shows its three states as text on the right.
+3. **Model list and voice settings open inside the menu** rather than in a second popup.
+4. **Read-only sessions also lose Rename and Beep:** this matches the sidebar row and the old strip. Conversation mode stays.
+5. **No session open:** ⋯ shows only "On this device", with no context or versions line, and its label becomes "Settings on this device".
+6. **Context and versions share one line:** it now includes the pi version, and the "v" is dropped for a dev build whose id isn't a version number.
+7. **"Enter sends" is its own small store,** placed next to the speech settings store.
+8. **☆ is desktop-only** in the top bar.
+9. **Copy link's logic is copied** from the row menu rather than shared.
+10. **The phone sheet has no header,** since the top bar right above it already shows the title.

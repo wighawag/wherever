@@ -1,7 +1,7 @@
 <script lang="ts">
 	// The Speech Settings panel, extracted from SpeechButton so it can be mounted
-	// anywhere (today: the popover behind the speech button's ⚙; next: the ⋯
-	// session menu's "Voice settings…", task `chat-session-menu`). It holds no
+	// anywhere (it is shown by the chat ⋯ session menu's "Voice settings…",
+	// ChatSessionMenu.svelte; the ⚙ beside 🎤 is gone). It holds no
 	// state of its own: it reads and writes the shared speech settings store
 	// (engine, locale, last error) and the autoSendOnSpeechEnd store (Direct
 	// send), so a change here takes effect in the 🎤 button at once.
