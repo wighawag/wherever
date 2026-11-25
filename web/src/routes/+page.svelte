@@ -17,6 +17,7 @@
 	import UpdateToast from '$lib/components/UpdateToast.svelte';
 	import {
 		activeTab,
+		assistantButtonDot,
 		openSessionDot,
 		tapTab,
 		type SidebarTab as SidebarTabName,
@@ -25,7 +26,7 @@
 		readSidebarCollapsed,
 		writeSidebarCollapsed,
 	} from '$lib/core/sidebar-rail';
-	import {anyoneWaitsForYou} from '$lib/core/state-dot';
+	import {anyoneWaitsForYou, stateDotLabel} from '$lib/core/state-dot';
 	import {
 		folderName,
 		openSessionTitle,
@@ -595,6 +596,27 @@
 	let viewingAssistant = $derived(
 		isAssistantSession($assistantStatusStore, sessionInfo.sessionFile),
 	);
+	// The ✦ button's dot: the assistant session's live state, null when quiet.
+	let assistantDot = $derived.by(() => {
+		const file = $assistantStatusStore.currentSessionFile;
+		if (!file) return null;
+		const listed = [
+			...$sessionFolders.folders,
+			...$readOnlySessionFolders.folders,
+		]
+			.flatMap((f) => f.sessions)
+			.find((s) => s.path === file);
+		return assistantButtonDot(
+			listed,
+			presenceByFile($shipmatesStore.presence).get(file),
+		);
+	});
+	let assistantTitle = $derived(
+		($assistantStatusStore.timezone
+			? `Assistant: open the current assistant session (your timezone: ${$assistantStatusStore.timezone})`
+			: 'Assistant: open the current assistant session') +
+			(assistantDot ? ` · ${stateDotLabel(assistantDot)}` : ''),
+	);
 
 	// The bottom composer is always mounted but mode-switched: it acts as the
 	// search composer when connected, a search folder is configured, and no
@@ -725,7 +747,7 @@
 	</div>
 {/if}
 
-<!-- The Assistant's four-point sparkle in the brand gradient (the sidebar tab
+<!-- The Assistant's four-point sparkle in the brand gradient (the header button
      and the desktop rail; each needs its own gradient id). -->
 {#snippet sparkleIcon(gradientId: string)}
 	<svg viewBox="0 0 24 24" class="h-5 w-5" aria-hidden="true">
@@ -743,6 +765,31 @@
 	</svg>
 {/snippet}
 
+<!-- The ✦ Assistant button: an ACTION (it opens the assistant session in the
+     main area), so it sits with the header's buttons and above the rail's
+     tabs, never among the view tabs. A small dot shows the assistant's live
+     state (running, waiting on a session, waiting for you). -->
+{#snippet assistantButton(gradientId: string, onopen: () => void)}
+	<button
+		type="button"
+		onclick={onopen}
+		disabled={!connected}
+		class="relative flex h-8 w-8 items-center justify-center rounded border transition-colors disabled:cursor-not-allowed disabled:opacity-40 {viewingAssistant
+			? 'border-brand-blue/60 bg-brand-blue/15'
+			: 'border-brand-border hover:bg-brand-surface-2'}"
+		title={assistantTitle}
+		aria-label={assistantTitle}
+		aria-current={viewingAssistant ? 'true' : undefined}
+	>
+		{@render sparkleIcon(gradientId)}
+		{#if assistantDot}
+			<span class="absolute -top-1 -right-1 flex" aria-hidden="true">
+				<StateDot dot={assistantDot} />
+			</span>
+		{/if}
+	</button>
+{/snippet}
+
 <div
 	class="fixed inset-0 flex overflow-hidden overscroll-none bg-brand-dark text-brand-text"
 >
@@ -755,8 +802,10 @@
 			: 'md:w-72'}"
 	>
 		{#if sidebarCollapsed}
-			<!-- The desktop rail: », the tab icons, + new session, and an amber dot
-			     when anything waits for you. A tab or + expands the sidebar first.
+			<!-- The desktop rail: », the amber dot when anything waits for you, the
+			     ✦ Assistant action (opens the assistant, does not expand) above a
+			     divider, the view tab icons, + new session. A view tab or + expands
+			     the sidebar first.
 			     Hidden on the phone, where the drawer shows the full sidebar. -->
 			<nav
 				class="hidden h-full flex-col items-center gap-1 py-2 md:flex"
@@ -780,21 +829,13 @@
 					></span>
 				{/if}
 				{#if assistantActive}
-					<div class="flex h-9 w-10">
-						<SidebarTab
-							label="Assistant"
-							title={$assistantStatusStore.timezone
-								? `Assistant: open the current assistant session (your timezone: ${$assistantStatusStore.timezone})`
-								: 'Assistant: open the current assistant session'}
-							disabled={!connected}
-							highlighted={viewingAssistant}
-							onclick={() => openAssistant()}
-						>
-							{#snippet icon()}{@render sparkleIcon(
-									'assistant-sparkle-rail',
-								)}{/snippet}
-						</SidebarTab>
+					<!-- An action, not a tab: apart from the tabs below the divider. -->
+					<div class="mt-1">
+						{@render assistantButton('assistant-sparkle-rail', () =>
+							openAssistant(),
+						)}
 					</div>
+					<div class="my-1 h-px w-6 bg-brand-border" aria-hidden="true"></div>
 				{/if}
 				{#if $shipmatesStore.available}
 					<div class="flex h-9 w-10">
@@ -894,6 +935,12 @@
 							{/if}
 						</div>
 						<div class="flex flex-shrink-0 items-center gap-1.5">
+							{#if assistantActive}
+								{@render assistantButton('assistant-sparkle', () => {
+									openAssistant();
+									sidebarOpen = false;
+								})}
+							{/if}
 							<button
 								onclick={() => (showSettings = true)}
 								class="flex h-8 w-8 items-center justify-center rounded border border-brand-border text-sm text-brand-text-muted transition-colors hover:bg-brand-surface-2 hover:text-brand-text"
@@ -1061,29 +1108,12 @@
 				</div>
 
 				<!-- Sidebar navigation: icon-only tabs. Inbox, search and read-only are
-			     views (the active one is marked, tapping it goes back); the Assistant
-			     is an action that opens the assistant session. -->
+			     views (the active one is marked, tapping it goes back). The
+			     Assistant is an action, so it is a header button, not a tab. -->
 				<nav
 					class="flex items-center gap-1 border-b border-brand-border/50 px-2 py-1"
 					aria-label="Sidebar navigation"
 				>
-					{#if assistantActive}
-						<SidebarTab
-							label="Assistant"
-							title={$assistantStatusStore.timezone
-								? `Assistant: open the current assistant session (your timezone: ${$assistantStatusStore.timezone})`
-								: 'Assistant: open the current assistant session'}
-							disabled={!connected}
-							highlighted={viewingAssistant}
-							onclick={() => {
-								openAssistant();
-								sidebarOpen = false;
-							}}
-						>
-							{#snippet icon()}{@render sparkleIcon('assistant-sparkle')}
-							{/snippet}
-						</SidebarTab>
-					{/if}
 					{#if $shipmatesStore.available}
 						<SidebarTab
 							label="Needs you"

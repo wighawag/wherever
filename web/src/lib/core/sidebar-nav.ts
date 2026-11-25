@@ -6,9 +6,11 @@
  * The tabs replace the old navigation rows and their "Back to ..." rows: a
  * tab shows the view it opens as active, and tapping the active tab goes back
  * (to the read-only page for a search opened from it, else to the main list).
- * The Assistant tab is not here: it is an action (open the assistant session),
- * not a view.
+ * The Assistant is not a tab: it is an action (open the assistant session),
+ * not a view, so it is a button in the sidebar header (and above the rail's
+ * tabs), with a live-state dot from `assistantButtonDot`.
  */
+import {sessionLiveState, type LiveState} from './live-sessions';
 import {sessionDotState, type DotState} from './state-dot';
 import type {ShipmatesPresence} from './shipmates';
 
@@ -74,4 +76,19 @@ export function openSessionDot(input: {
 		presence,
 		!!listed?.closed,
 	);
+}
+
+/**
+ * The dot on the header's ✦ Assistant button: the assistant session's live
+ * state (running, waiting on a session, waiting for you), or null when it is
+ * idle or not listed, so a quiet assistant shows a plain ✦. Uses
+ * `sessionLiveState`, the single source of live state, like every other dot.
+ */
+export function assistantButtonDot(
+	listed: {isWorking?: boolean} | undefined,
+	presence: Pick<ShipmatesPresence, 'state'> | undefined,
+): LiveState | null {
+	if (!listed && !presence) return null;
+	const live = sessionLiveState(listed ?? {}, presence);
+	return live === 'idle' ? null : live;
 }

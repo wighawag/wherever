@@ -11,7 +11,6 @@
 		label,
 		title,
 		active = false,
-		highlighted = false,
 		disabled = false,
 		onclick,
 		icon,
@@ -23,8 +22,6 @@
 		title?: string;
 		/** The tab's view is the one shown (tapping it goes back). */
 		active?: boolean;
-		/** Emphasised without being a view (the Assistant while viewing it). */
-		highlighted?: boolean;
 		disabled?: boolean;
 		onclick: () => void;
 		icon: Snippet;
@@ -58,9 +55,7 @@
 	type="button"
 	class="relative flex h-9 flex-1 items-center justify-center rounded text-base transition-colors select-none disabled:opacity-50 {active
 		? 'bg-brand-surface-3 text-brand-text'
-		: highlighted
-			? 'bg-brand-blue/15 text-brand-text'
-			: 'text-brand-text-muted hover:bg-brand-surface-3/50 hover:text-brand-text'}"
+		: 'text-brand-text-muted hover:bg-brand-surface-3/50 hover:text-brand-text'}"
 	style="-webkit-touch-callout: none; -webkit-user-select: none;"
 	title={title ?? label}
 	aria-label={label}

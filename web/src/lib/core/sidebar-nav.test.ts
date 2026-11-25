@@ -1,6 +1,7 @@
 import {describe, it, expect} from 'vitest';
 import {
 	activeTab,
+	assistantButtonDot,
 	openSessionDot,
 	tapTab,
 	type SidebarNav,
@@ -132,5 +133,23 @@ describe('openSessionDot', () => {
 				presence: {state: 'waiting-for-session'},
 			}),
 		).toBe('waiting-for-session');
+	});
+});
+
+describe('assistantButtonDot', () => {
+	it('is null for an idle or unknown assistant session', () => {
+		expect(assistantButtonDot(undefined, undefined)).toBe(null);
+		expect(assistantButtonDot({isWorking: false}, undefined)).toBe(null);
+		expect(assistantButtonDot({}, {state: 'idle'})).toBe(null);
+	});
+	it('shows running, waiting on a session and waiting for you', () => {
+		expect(assistantButtonDot({isWorking: true}, undefined)).toBe('running');
+		expect(assistantButtonDot(undefined, {state: 'running'})).toBe('running');
+		expect(assistantButtonDot({}, {state: 'waiting-for-session'})).toBe(
+			'waiting-for-session',
+		);
+		expect(
+			assistantButtonDot({isWorking: true}, {state: 'waiting-for-human'}),
+		).toBe('waiting-for-human');
 	});
 });
