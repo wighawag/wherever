@@ -2,7 +2,6 @@
 	import {
 		messages,
 		isStreaming,
-		abort,
 		activeSessionInfo,
 		createSession,
 		piState,
@@ -2134,22 +2133,6 @@
 				</div>
 			{/if}
 		</div>
-		<!-- Abort stays here ONLY for a read-only session, where the composer (and so
-		     its ■ Stop) is not mounted; a drivable session stops from the pill, and
-		     "Cancel queued" sits above the pill. Moves to the top bar with
-		     chat-top-bar. -->
-		{#if $isReadOnly}
-			<div class="flex items-center gap-2">
-				<button
-					onclick={abort}
-					disabled={!streaming}
-					class="rounded bg-rose-500 px-3 py-1.5 text-xs text-brand-text transition-colors hover:bg-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
-					title="Abort"
-				>
-					Abort
-				</button>
-			</div>
-		{/if}
 	</div>
 
 	<!-- Custom Confirm Modal for Existing Folders -->
