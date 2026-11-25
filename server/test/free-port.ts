@@ -18,61 +18,115 @@ import net from 'node:net';
  * The second shape is why raising timeouts cannot fix this: nothing is slow, the
  * request simply went somewhere else.
  *
- * So: give each vitest worker a DISJOINT band of ports and hand out ports only
- * from that band, remembering every port already issued in this worker. Two
- * workers can then never collide by construction, and within one worker the
- * bookkeeping covers the window before a child has bound. The band sits BELOW
+ * So: each test process owns a DISJOINT band of ports and hands out ports only
+ * from that band, remembering every port already issued. Within one process the
+ * bookkeeping covers the window before a child has bound. The bands sit BELOW
  * the Linux ephemeral range (32768-60999 by default), so the kernel will not
  * hand one of these ports to an unrelated outbound socket either.
+ *
+ * Owning a band is a cross-PROCESS lock, not arithmetic. An earlier version
+ * computed the band from VITEST_POOL_ID, which keeps the workers of ONE vitest
+ * run apart but gives two runs on the same machine (two acceptance gates, or a
+ * gate and a developer's `pnpm test`) the very same bands: their servers then
+ * took each other's ports, and a run failed 6 to 10 real-server tests, a
+ * different set each time. Now a process claims a band by keeping the band's
+ * first port bound for its whole life (the lock socket); a band whose lock port
+ * is taken belongs to someone else, in this run or another, and is skipped. The
+ * kernel releases the lock when the process (or worker thread) exits.
  */
 
 const BAND_BASE = 20_000;
-const BAND_SIZE = 1_000;
+const BAND_SIZE = 500;
+/**
+ * 23 bands: 20000-31499, below the ephemeral range, and clear of the 31500-31899
+ * range `unix-socket.test.ts` picks its fixed port from. Room for several runs of
+ * 4 workers.
+ */
+const BAND_COUNT = 23;
+const HOST = '127.0.0.1';
 
-// Which band: keyed on VITEST_POOL_ID, NOT VITEST_WORKER_ID. In vitest 2.x the
-// WORKER_ID is a counter bumped per test FILE (1..N over a whole run), so two
-// files running at the same time can have ids 12 apart and land in the SAME band
-// under `% 12`; their bind-probe-then-spawn windows (which last the whole child
-// startup) then overlap and one file's requests reach the other file's server.
-// POOL_ID is the concurrent worker SLOT, bounded 1..maxWorkers and unique among
-// files running at once, which is exactly the disjointness the bands need.
-// WORKER_ID is only a fallback for a vitest that does not set POOL_ID; 1 when a
-// file is run outside vitest (e.g. directly).
-const workerId = Number(process.env.VITEST_POOL_ID ?? process.env.VITEST_WORKER_ID ?? '1') || 1;
-const bandStart = BAND_BASE + ((workerId - 1) % 12) * BAND_SIZE;
+// Where to start looking: this worker's slot, so the common case (one run)
+// claims its first choice at once. POOL_ID is the concurrent worker slot; WORKER_ID
+// is only a fallback for a vitest that does not set it; 1 outside vitest.
+const slot = Number(process.env.VITEST_POOL_ID ?? process.env.VITEST_WORKER_ID ?? '1') || 1;
 
-/** Ports already handed out in THIS worker, including ones not yet bound. */
-const issued = new Set<number>();
-let cursor = 0;
+interface Band {
+  start: number;
+  /** Kept open for the life of the process: it IS the claim on the band. */
+  lock: net.Server;
+}
 
-/** Is `port` bindable right now? (A bind test, not a connect probe.) */
-function bindable(port: number): Promise<boolean> {
+/** Try to hold `port` open. Resolves the listening server, or null if taken. */
+function hold(port: number): Promise<net.Server | null> {
   return new Promise((resolve) => {
     const srv = net.createServer();
-    srv.once('error', () => resolve(false));
-    srv.listen(port, '127.0.0.1', () => {
-      srv.close(() => resolve(true));
+    srv.once('error', () => resolve(null));
+    srv.listen(port, HOST, () => {
+      // Never keep the process alive just for the lock.
+      srv.unref();
+      resolve(srv);
     });
   });
 }
 
+// The claim lives on globalThis, not in module state: if a worker ever re-imports
+// this module for another test file in the same process or thread, it must reuse
+// the band it already holds, not claim (and leak) a new one per file.
+const CLAIM = Symbol.for('wherever.test.freePortBand');
+type Claimed = typeof globalThis & { [CLAIM]?: Promise<Band> };
+
+/** Claim a band for this process (once), starting at this worker's slot. */
+function band(): Promise<Band> {
+  const g = globalThis as Claimed;
+  g[CLAIM] ??= (async () => {
+    for (let i = 0; i < BAND_COUNT; i++) {
+      const index = (slot - 1 + i) % BAND_COUNT;
+      const start = BAND_BASE + index * BAND_SIZE;
+      const lock = await hold(start);
+      if (lock) return { start, lock };
+    }
+    throw new Error(
+      `no free port band in ${BAND_BASE}-${BAND_BASE + BAND_COUNT * BAND_SIZE - 1}: ` +
+        `all ${BAND_COUNT} are held by other test processes`,
+    );
+  })();
+  // A failed claim (every band held) must not stick: let a later call retry.
+  g[CLAIM].catch(() => {
+    delete g[CLAIM];
+  });
+  return g[CLAIM];
+}
+
+/** Ports already handed out in THIS process, including ones not yet bound. */
+const issued = new Set<number>();
+let cursor = 0;
+
+/** Is `port` bindable right now? (A bind test, not a connect probe.) */
+async function bindable(port: number): Promise<boolean> {
+  const srv = await hold(port);
+  if (!srv) return false;
+  await new Promise<void>((resolve) => srv.close(() => resolve()));
+  return true;
+}
+
 /**
  * A port for a child server to bind. Never returns the same port twice within a
- * worker, and never a port another worker could be using.
+ * process, and never a port another test process (of this run or another) could
+ * be using.
  */
 export async function freePort(): Promise<number> {
-  for (let i = 0; i < BAND_SIZE; i++) {
-    const port = bandStart + ((cursor + i) % BAND_SIZE);
+  const { start } = await band();
+  // Offset 0 is the lock port itself.
+  const usable = BAND_SIZE - 1;
+  for (let i = 0; i < usable; i++) {
+    const port = start + 1 + ((cursor + i) % usable);
     if (issued.has(port)) continue;
     if (!(await bindable(port))) continue;
     issued.add(port);
-    cursor = (cursor + i + 1) % BAND_SIZE;
+    cursor = (cursor + i + 1) % usable;
     return port;
   }
-  throw new Error(
-    `no free port in worker ${workerId}'s band ${bandStart}-${bandStart + BAND_SIZE - 1} ` +
-      `(${issued.size} already issued)`,
-  );
+  throw new Error(`no free port in band ${start}-${start + BAND_SIZE - 1} (${issued.size} already issued)`);
 }
 
 /**
