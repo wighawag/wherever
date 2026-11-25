@@ -1,3 +1,5 @@
 # Server suite flakes under host load (2026-11-25)
 
 Seen while finishing `live-strip-two-line-rows` (a web-only change): the full `server` vitest run failed 3 tests in the runner's gate (`restore-clone-panel` "timeout waiting for message", `ECONNREFUSED 127.0.0.1:21001`) and 11 different tests on a local rerun (`chunked-upload`, `new-session-clone-via-registry`, `post-upload-gate`, `restore-clone-panel`, `session-closed`, `telegram-conversation-server`), with the host at load average 7 to 11. The same six files pass (51/51) run on their own. The real-server tests in `server/test/harness.ts` look timing- or port-sensitive under parallel load; worth a look at their timeouts and port allocation.
+
+Also seen 2026-11-25 on `chat-pill-composer` (web-only, no server diff): the gate failed 22 server tests (`upload-write-gate` and others, "timeout waiting for message"), a local rerun failed 11 different ones at load average about 10, and the failing files then passed when run alone (one more failure on a combined rerun, gone in two solo runs).

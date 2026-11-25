@@ -4,7 +4,7 @@ slug: chat-pill-composer
 spec: chat-compact-layout
 blockedBy: [chat-message-layout]
 covers: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
-needsAnswers: true
+needsAnswers: false
 ---
 
 ## What to build
@@ -60,3 +60,8 @@ Recorded in `work/notes/observations/chat-pill-composer-decisions.md`:
 8. The mic keeps its ⚙ (now smaller) until the session-menu task.
 9. The scroll fix in `ChatMessageList` described above.
 10. No new glossary terms: "steer" keeps its existing meaning, and "Stop" is the label for the existing `abort()`.
+
+## Decisions (continued run, 2026-11-25)
+
+- The task's build decisions (all from the earlier attempt) are in `work/notes/observations/chat-pill-composer-decisions.md` and linked from the done record. I made no new ones.
+- The server flake is recorded in `work/notes/observations/server-suite-flakes-under-host-load.md`.
