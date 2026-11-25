@@ -19,6 +19,11 @@
 		type SidebarTab as SidebarTabName,
 	} from '$lib/core/sidebar-nav';
 	import {
+		readSidebarCollapsed,
+		writeSidebarCollapsed,
+	} from '$lib/core/sidebar-rail';
+	import {anyoneWaitsForYou} from '$lib/core/state-dot';
+	import {
 		inboxBadge,
 		inboxCount,
 		presenceByFile,
@@ -84,6 +89,7 @@
 		assistantStatusStore,
 		isAssistantSession,
 		shipmatesStore,
+		openNewSessionForm,
 	} from '$lib/session-store';
 	import {onMount} from 'svelte';
 	import {version} from '$app/environment';
@@ -124,6 +130,36 @@
 		if (next.fetchReadOnly) fetchReadOnlySessions();
 	}
 
+	// The desktop rail (core/sidebar-rail.ts): « collapses the sidebar to a thin
+	// rail from `md` up, » expands it; remembered on this device. Read on mount,
+	// not at init: the page is prerendered, and a class that differs at
+	// hydration is not patched. The phone drawer ignores it (`md:` classes).
+	let sidebarCollapsed = $state(false);
+	function setSidebarCollapsed(collapsed: boolean) {
+		sidebarCollapsed = collapsed;
+		writeSidebarCollapsed(
+			typeof localStorage !== 'undefined' ? localStorage : undefined,
+			collapsed,
+		);
+	}
+	// A rail tab expands the sidebar, then opens its view. A tab whose view is
+	// already shown only expands (tapping it would otherwise go back to the
+	// list, hiding the view the user just asked to see).
+	function onRailTab(tab: SidebarTabName) {
+		setSidebarCollapsed(false);
+		showSettings = false;
+		if (currentTab !== tab) onTab(tab);
+	}
+	// The rail's +: expand, show the main list, open its new-session form (a
+	// store flag the main-list SessionBrowser consumes once it is mounted).
+	function onRailNewSession() {
+		setSidebarCollapsed(false);
+		showSettings = false;
+		searchReadOnly = false;
+		sessionView = 'main';
+		openNewSessionForm();
+	}
+
 	// The current-session line's ▾: app and server versions and Leave session.
 	let currentLineOpen = $state(false);
 	let showSettings = $state(false);
@@ -138,6 +174,7 @@
 	let booting = true;
 
 	onMount(() => {
+		sidebarCollapsed = readSidebarCollapsed();
 		if (autoConnect) {
 			// Instant resume (docs/adr/0013): when the hash names a session, start
 			// reading its cached copy now (capped at ~300 ms), alongside the existing
@@ -509,6 +546,28 @@
 		if (sessionView === 'inbox' && !$shipmatesStore.available)
 			sessionView = 'main';
 	});
+	// The rail's amber dot: an open inbox item, or a listed session (main or
+	// read-only list) waiting for the human (core/state-dot.ts).
+	let waitsForYou = $derived(
+		anyoneWaitsForYou(
+			$shipmatesStore,
+			[...$sessionFolders.folders, ...$readOnlySessionFolders.folders].flatMap(
+				(f) => f.sessions,
+			),
+		),
+	);
+	let waitsForYouTitle = $derived(
+		[
+			waitsForYou.inbox
+				? `${waitsForYou.inbox} question${waitsForYou.inbox === 1 ? '' : 's'} for you`
+				: '',
+			waitsForYou.sessions
+				? `${waitsForYou.sessions} session${waitsForYou.sessions === 1 ? '' : 's'} waiting for you`
+				: '',
+		]
+			.filter(Boolean)
+			.join(', '),
+	);
 	let viewingAssistant = $derived(
 		isAssistantSession($assistantStatusStore, sessionInfo.sessionFile),
 	);
@@ -642,333 +701,444 @@
 	</div>
 {/if}
 
+<!-- The Assistant's four-point sparkle in the brand gradient (the sidebar tab
+     and the desktop rail; each needs its own gradient id). -->
+{#snippet sparkleIcon(gradientId: string)}
+	<svg viewBox="0 0 24 24" class="h-5 w-5" aria-hidden="true">
+		<defs>
+			<linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
+				<stop offset="0" style="stop-color: var(--color-brand-cyan)" />
+				<stop offset="0.5" style="stop-color: var(--color-brand-blue)" />
+				<stop offset="1" style="stop-color: var(--color-brand-purple)" />
+			</linearGradient>
+		</defs>
+		<path
+			d="M12 1.5 C13 8 16 11 22.5 12 C16 13 13 16 12 22.5 C11 16 8 13 1.5 12 C8 11 11 8 12 1.5 Z"
+			fill="url(#{gradientId})"
+		/>
+	</svg>
+{/snippet}
+
 <div
 	class="fixed inset-0 flex overflow-hidden overscroll-none bg-brand-dark text-brand-text"
 >
-	<!-- Sidebar -->
+	<!-- Sidebar (on desktop, collapsed to a thin rail by «) -->
 	<div
 		class="app-chrome {sidebarOpen
 			? 'translate-x-0'
-			: '-translate-x-full'} fixed z-20 flex h-full w-[86vw] flex-col border-r border-brand-border bg-brand-surface transition-transform duration-200 md:relative md:w-72 md:translate-x-0"
+			: '-translate-x-full'} fixed z-20 flex h-full w-[86vw] flex-col border-r border-brand-border bg-brand-surface transition-transform duration-200 md:relative md:translate-x-0 {sidebarCollapsed
+			? 'md:w-12'
+			: 'md:w-72'}"
 	>
+		{#if sidebarCollapsed}
+			<!-- The desktop rail: », the tab icons, + new session, and an amber dot
+			     when anything waits for you. A tab or + expands the sidebar first.
+			     Hidden on the phone, where the drawer shows the full sidebar. -->
+			<nav
+				class="hidden h-full flex-col items-center gap-1 py-2 md:flex"
+				aria-label="Collapsed sidebar"
+			>
+				<button
+					type="button"
+					onclick={() => setSidebarCollapsed(false)}
+					class="flex h-8 w-8 items-center justify-center rounded border border-brand-border text-sm text-brand-text-muted transition-colors hover:bg-brand-surface-2 hover:text-brand-text"
+					title="Expand sidebar"
+					aria-label="Expand sidebar"
+				>
+					»
+				</button>
+				{#if waitsForYou.waiting}
+					<span
+						class="my-1 h-2.5 w-2.5 rounded-full bg-amber-400 ring-4 ring-amber-400/25"
+						role="img"
+						title="Waiting for you: {waitsForYouTitle}"
+						aria-label="Waiting for you: {waitsForYouTitle}"
+					></span>
+				{/if}
+				{#if assistantActive}
+					<div class="flex h-9 w-10">
+						<SidebarTab
+							label="Assistant"
+							title={$assistantStatusStore.timezone
+								? `Assistant: open the current assistant session (your timezone: ${$assistantStatusStore.timezone})`
+								: 'Assistant: open the current assistant session'}
+							disabled={!connected}
+							highlighted={viewingAssistant}
+							onclick={() => openAssistant()}
+						>
+							{#snippet icon()}{@render sparkleIcon(
+									'assistant-sparkle-rail',
+								)}{/snippet}
+						</SidebarTab>
+					</div>
+				{/if}
+				{#if $shipmatesStore.available}
+					<div class="flex h-9 w-10">
+						<SidebarTab
+							label="Needs you"
+							title={shipmatesBadge
+								? `Needs you: ${shipmatesBadge.count} question${shipmatesBadge.count === 1 ? '' : 's'} your sessions asked you`
+								: 'Needs you: questions your sessions asked you (shipmates)'}
+							active={currentTab === 'inbox'}
+							onclick={() => onRailTab('inbox')}
+						>
+							{#snippet icon()}<span aria-hidden="true">🙋</span>{/snippet}
+							{#snippet badge()}
+								{#if shipmatesBadge}
+									<span
+										class="rounded-full px-1.5 text-[10px] leading-4 font-semibold {shipmatesBadge.blocking
+											? 'bg-amber-500 text-black'
+											: 'bg-brand-surface-3 text-brand-text'}"
+										>{shipmatesBadge.count}</span
+									>
+								{/if}
+							{/snippet}
+						</SidebarTab>
+					</div>
+				{/if}
+				<div class="flex h-9 w-10">
+					<SidebarTab
+						label="Search conversations"
+						title="Search conversations: everything ever said in any session"
+						active={currentTab === 'search'}
+						onclick={() => onRailTab('search')}
+					>
+						{#snippet icon()}<span aria-hidden="true">🔎</span>{/snippet}
+					</SidebarTab>
+				</div>
+				<div class="flex h-9 w-10">
+					<SidebarTab
+						label="Read-only sessions"
+						title="Read-only sessions (e.g. autonomous agent fleets)"
+						active={currentTab === 'readonly'}
+						onclick={() => onRailTab('readonly')}
+					>
+						{#snippet icon()}<span aria-hidden="true">👁️</span>{/snippet}
+					</SidebarTab>
+				</div>
+				<button
+					type="button"
+					onclick={onRailNewSession}
+					class="mt-1 flex h-8 w-8 items-center justify-center rounded bg-brand-blue text-lg leading-none font-semibold text-white transition-colors hover:bg-brand-blue/80"
+					title="New session"
+					aria-label="New session"
+				>
+					+
+				</button>
+			</nav>
+		{/if}
+		<!-- The full sidebar: hidden from `md` up while collapsed to the rail, but
+		     always shown in the phone drawer. -->
 		<div
-			class="border-b border-brand-border bg-brand-surface-2/20 {showSettings
-				? 'p-4'
-				: 'px-3 py-2'}"
+			class="flex min-h-0 flex-1 flex-col {sidebarCollapsed ? 'md:hidden' : ''}"
 		>
-			<div class="flex items-center justify-between gap-2">
-				{#if showSettings}
-					<span class="text-lg font-bold text-brand-text"
-						>Connection Settings</span
-					>
-					<button
-						onclick={() => (showSettings = false)}
-						class="rounded px-2 py-1 text-xs font-semibold text-brand-blue transition-colors hover:bg-brand-surface-2 hover:text-brand-blue"
-					>
-						◀ Back
-					</button>
-				{:else}
-					<!-- Header: the logo only (no "Wherever" text), keeping its click
+			<div
+				class="border-b border-brand-border bg-brand-surface-2/20 {showSettings
+					? 'p-4'
+					: 'px-3 py-2'}"
+			>
+				<div class="flex items-center justify-between gap-2">
+					{#if showSettings}
+						<span class="text-lg font-bold text-brand-text"
+							>Connection Settings</span
+						>
+						<button
+							onclick={() => (showSettings = false)}
+							class="rounded px-2 py-1 text-xs font-semibold text-brand-blue transition-colors hover:bg-brand-surface-2 hover:text-brand-blue"
+						>
+							◀ Back
+						</button>
+					{:else}
+						<!-- Header: the logo only (no "Wherever" text), keeping its click
 					     back to the main screen / new session. -->
-					<div class="flex min-w-0 items-center gap-2">
-						<button
-							onclick={handleShowMainScreen}
-							class="flex flex-shrink-0 items-center rounded p-0.5"
-							title="Show Main Screen / New Session"
-							aria-label="Wherever: show main screen / new session"
-						>
-							<img src={url('/logo.svg')} alt="Wherever" class="h-6 w-6" />
-						</button>
-						{#if appearanceLabel}
-							<!-- Instance badge: shows WHICH machine's server you are talking to,
-							     tinted by the instance accent (brand-blue). -->
-							<span
-								class="max-w-32 truncate rounded-full border border-brand-border bg-brand-blue/15 px-2 py-0.5 text-[10px] font-semibold text-brand-blue"
-								title={appearanceLabel}>{appearanceLabel}</span
+						<div class="flex min-w-0 items-center gap-2">
+							<button
+								onclick={handleShowMainScreen}
+								class="flex flex-shrink-0 items-center rounded p-0.5"
+								title="Show Main Screen / New Session"
+								aria-label="Wherever: show main screen / new session"
 							>
-						{/if}
-					</div>
-					<div class="flex flex-shrink-0 items-center gap-1.5">
-						<button
-							onclick={() => (showSettings = true)}
-							class="flex h-8 w-8 items-center justify-center rounded border border-brand-border text-sm text-brand-text-muted transition-colors hover:bg-brand-surface-2 hover:text-brand-text"
-							title="Connection Settings"
-							aria-label="Connection Settings"
-						>
-							⚙
-						</button>
-						<button
-							onclick={() => (sidebarOpen = false)}
-							class="flex h-8 w-8 items-center justify-center rounded border border-brand-border text-sm text-brand-text-muted transition-colors hover:bg-brand-surface-2 hover:text-brand-text md:hidden"
-							title="Close sidebar"
-							aria-label="Close sidebar"
-						>
-							✕
-						</button>
-					</div>
-				{/if}
-			</div>
-		</div>
-
-		{#if showSettings}
-			<div class="flex-1 overflow-y-auto">
-				<ConnectionSettings
-					host={appState.connected ? 'localhost' : 'localhost'}
-					port={31415}
-					token=""
-					onConnected={handleConnected}
-				/>
-
-				{#if $assistantStatusStore.active && $assistantStatusStore.webPush?.enabled}
-					<AssistantPushSettings currentSessionId={currentSessionId ?? null} />
-				{/if}
-
-				{#if $assistantStatusStore.telegram && telegramSectionVisible($assistantStatusStore)}
-					<AssistantTelegramSettings status={$assistantStatusStore.telegram} />
-				{/if}
-
-				<div class="mt-2 border-t border-brand-border p-4">
-					<h3
-						class="mb-3 text-xs font-bold tracking-wider text-brand-text-muted uppercase"
-					>
-						Server Control
-					</h3>
-					<div class="space-y-2">
-						<button
-							onclick={handleRefresh}
-							class="flex w-full items-center justify-between rounded border border-brand-border bg-brand-surface-2 px-3 py-2 text-left text-sm text-brand-text transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
-						>
-							<span>Refresh Session List</span>
-							<span>🔄</span>
-						</button>
-						<button
-							onclick={handleReconnect}
-							class="flex w-full items-center justify-between rounded border border-brand-border bg-brand-surface-2 px-3 py-2 text-left text-sm text-brand-text transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
-						>
-							<span>Reconnect WebSocket</span>
-							<span>🔌</span>
-						</button>
-						<button
-							onclick={handleDisconnect}
-							class="flex w-full items-center justify-between rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-left text-sm text-rose-400 transition-colors hover:bg-red-500/20 hover:text-rose-300"
-						>
-							<span>Disconnect Server</span>
-							<span>🛑</span>
-						</button>
-					</div>
+								<img src={url('/logo.svg')} alt="Wherever" class="h-6 w-6" />
+							</button>
+							{#if appearanceLabel}
+								<!-- Instance badge: shows WHICH machine's server you are talking to,
+							     tinted by the instance accent (brand-blue). -->
+								<span
+									class="max-w-32 truncate rounded-full border border-brand-border bg-brand-blue/15 px-2 py-0.5 text-[10px] font-semibold text-brand-blue"
+									title={appearanceLabel}>{appearanceLabel}</span
+								>
+							{/if}
+						</div>
+						<div class="flex flex-shrink-0 items-center gap-1.5">
+							<button
+								onclick={() => (showSettings = true)}
+								class="flex h-8 w-8 items-center justify-center rounded border border-brand-border text-sm text-brand-text-muted transition-colors hover:bg-brand-surface-2 hover:text-brand-text"
+								title="Connection Settings"
+								aria-label="Connection Settings"
+							>
+								⚙
+							</button>
+							<button
+								onclick={() => setSidebarCollapsed(true)}
+								class="hidden h-8 w-8 items-center justify-center rounded border border-brand-border text-sm text-brand-text-muted transition-colors hover:bg-brand-surface-2 hover:text-brand-text md:flex"
+								title="Collapse sidebar"
+								aria-label="Collapse sidebar"
+							>
+								«
+							</button>
+							<button
+								onclick={() => (sidebarOpen = false)}
+								class="flex h-8 w-8 items-center justify-center rounded border border-brand-border text-sm text-brand-text-muted transition-colors hover:bg-brand-surface-2 hover:text-brand-text md:hidden"
+								title="Close sidebar"
+								aria-label="Close sidebar"
+							>
+								✕
+							</button>
+						</div>
+					{/if}
 				</div>
 			</div>
-		{:else}
-			<!-- Current session on ONE line: its state dot, folder and model (or the
+
+			{#if showSettings}
+				<div class="flex-1 overflow-y-auto">
+					<ConnectionSettings
+						host={appState.connected ? 'localhost' : 'localhost'}
+						port={31415}
+						token=""
+						onConnected={handleConnected}
+					/>
+
+					{#if $assistantStatusStore.active && $assistantStatusStore.webPush?.enabled}
+						<AssistantPushSettings
+							currentSessionId={currentSessionId ?? null}
+						/>
+					{/if}
+
+					{#if $assistantStatusStore.telegram && telegramSectionVisible($assistantStatusStore)}
+						<AssistantTelegramSettings
+							status={$assistantStatusStore.telegram}
+						/>
+					{/if}
+
+					<div class="mt-2 border-t border-brand-border p-4">
+						<h3
+							class="mb-3 text-xs font-bold tracking-wider text-brand-text-muted uppercase"
+						>
+							Server Control
+						</h3>
+						<div class="space-y-2">
+							<button
+								onclick={handleRefresh}
+								class="flex w-full items-center justify-between rounded border border-brand-border bg-brand-surface-2 px-3 py-2 text-left text-sm text-brand-text transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
+							>
+								<span>Refresh Session List</span>
+								<span>🔄</span>
+							</button>
+							<button
+								onclick={handleReconnect}
+								class="flex w-full items-center justify-between rounded border border-brand-border bg-brand-surface-2 px-3 py-2 text-left text-sm text-brand-text transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
+							>
+								<span>Reconnect WebSocket</span>
+								<span>🔌</span>
+							</button>
+							<button
+								onclick={handleDisconnect}
+								class="flex w-full items-center justify-between rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-left text-sm text-rose-400 transition-colors hover:bg-red-500/20 hover:text-rose-300"
+							>
+								<span>Disconnect Server</span>
+								<span>🛑</span>
+							</button>
+						</div>
+					</div>
+				</div>
+			{:else}
+				<!-- Current session on ONE line: its state dot, folder and model (or the
 			     connection state with no session open). The ▾ expands the versions
 			     and Leave session. A dead connection and its error show without
 			     expanding anything. -->
-			<div class="border-b border-brand-border px-3 py-1.5">
-				<button
-					type="button"
-					onclick={() => (currentLineOpen = !currentLineOpen)}
-					class="flex w-full min-w-0 items-center gap-2 rounded py-1 text-left text-sm"
-					aria-expanded={currentLineOpen}
-					title={currentLineOpen ? 'Hide details' : 'Show versions and actions'}
-				>
-					{#if !connected}
-						<span
-							class="h-2 w-2 flex-shrink-0 rounded-full bg-rose-500"
-							aria-hidden="true"
-						></span>
-						<span class="flex-shrink-0 text-rose-400">Disconnected</span>
-						{#if sessionInfo.sessionFile && sessionInfo.cwd}
-							<span class="truncate text-xs text-brand-text-muted"
-								>· {sessionInfo.cwd.split('/').pop() || sessionInfo.cwd}</span
-							>
-						{/if}
-					{:else if sessionInfo.sessionFile}
-						<StateDot dot={currentDot} />
-						<span
-							class="min-w-0 flex-shrink truncate text-brand-text"
-							title={sessionInfo.cwd ?? undefined}
-							>{sessionInfo.cwd
-								? sessionInfo.cwd.split('/').pop() || sessionInfo.cwd
-								: 'Session'}</span
-						>
-						{#if sessionInfo.model}
-							<span
-								class="min-w-0 flex-1 truncate text-xs text-brand-text-muted"
-								title={sessionInfo.model}>· {sessionInfo.model}</span
-							>
-						{/if}
-					{:else}
-						<span
-							class="h-2 w-2 flex-shrink-0 rounded-full bg-emerald-500"
-							aria-hidden="true"
-						></span>
-						<span class="text-emerald-400">Connected</span>
-					{/if}
-					<span
-						class="ml-auto flex-shrink-0 text-xs text-brand-text-muted transition-transform {currentLineOpen
-							? 'rotate-180'
-							: ''}"
-						aria-hidden="true">▾</span
-					>
-				</button>
-				{#if appState.error && !connected}
-					<div class="selectable mt-1 text-xs text-rose-400">
-						{appState.error}
-					</div>
-				{/if}
-				{#if currentLineOpen}
-					<div class="mt-1 space-y-1.5 pb-1">
-						<div
-							class="selectable font-mono text-xs text-brand-text-muted"
-							title={versionsTitle}
-						>
-							v{version}{#if appState.serverVersion}<span
-									class="text-brand-text-muted/70"
-								>
-									&nbsp;/ srv {appState.serverVersion}</span
-								>{/if}
-						</div>
-						{#if sessionInfo.sessionFile}
-							<button
-								onclick={handleShowMainScreen}
-								class="w-full rounded border border-brand-border bg-brand-surface-2 px-2 py-1 text-center text-xs text-brand-text transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
-								title="Leave this chat and show the main screen (the session keeps running)"
-							>
-								Leave session
-							</button>
-						{/if}
-					</div>
-				{/if}
-			</div>
-
-			<!-- Sidebar navigation: icon-only tabs. Inbox, search and read-only are
-			     views (the active one is marked, tapping it goes back); the Assistant
-			     is an action that opens the assistant session. -->
-			<nav
-				class="flex items-center gap-1 border-b border-brand-border/50 px-2 py-1"
-				aria-label="Sidebar navigation"
-			>
-				{#if assistantActive}
-					<SidebarTab
-						label="Assistant"
-						title={$assistantStatusStore.timezone
-							? `Assistant: open the current assistant session (your timezone: ${$assistantStatusStore.timezone})`
-							: 'Assistant: open the current assistant session'}
-						disabled={!connected}
-						highlighted={viewingAssistant}
-						onclick={() => {
-							openAssistant();
-							sidebarOpen = false;
-						}}
-					>
-						{#snippet icon()}
-							<!-- A four-point sparkle in the brand gradient. -->
-							<svg viewBox="0 0 24 24" class="h-5 w-5" aria-hidden="true">
-								<defs>
-									<linearGradient
-										id="assistant-sparkle"
-										x1="0"
-										y1="0"
-										x2="1"
-										y2="1"
-									>
-										<stop
-											offset="0"
-											style="stop-color: var(--color-brand-cyan)"
-										/>
-										<stop
-											offset="0.5"
-											style="stop-color: var(--color-brand-blue)"
-										/>
-										<stop
-											offset="1"
-											style="stop-color: var(--color-brand-purple)"
-										/>
-									</linearGradient>
-								</defs>
-								<path
-									d="M12 1.5 C13 8 16 11 22.5 12 C16 13 13 16 12 22.5 C11 16 8 13 1.5 12 C8 11 11 8 12 1.5 Z"
-									fill="url(#assistant-sparkle)"
-								/>
-							</svg>
-						{/snippet}
-					</SidebarTab>
-				{/if}
-				{#if $shipmatesStore.available}
-					<SidebarTab
-						label="Needs you"
-						title={shipmatesBadge
-							? `Needs you: ${shipmatesBadge.count} question${shipmatesBadge.count === 1 ? '' : 's'} your sessions asked you`
-							: 'Needs you: questions your sessions asked you (shipmates)'}
-						active={currentTab === 'inbox'}
-						onclick={() => onTab('inbox')}
-					>
-						{#snippet icon()}<span aria-hidden="true">🙋</span>{/snippet}
-						{#snippet badge()}
-							{#if shipmatesBadge}
-								<span
-									class="rounded-full px-1.5 text-[10px] leading-4 font-semibold {shipmatesBadge.blocking
-										? 'bg-amber-500 text-black'
-										: 'bg-brand-surface-3 text-brand-text'}"
-									>{shipmatesBadge.count}</span
-								>
-							{/if}
-						{/snippet}
-					</SidebarTab>
-				{/if}
-				<SidebarTab
-					label="Search conversations"
-					title="Search conversations: everything ever said in any session"
-					active={currentTab === 'search'}
-					onclick={() => onTab('search')}
-				>
-					{#snippet icon()}<span aria-hidden="true">🔎</span>{/snippet}
-				</SidebarTab>
-				<SidebarTab
-					label="Read-only sessions"
-					title="Read-only sessions (e.g. autonomous agent fleets)"
-					active={currentTab === 'readonly'}
-					onclick={() => onTab('readonly')}
-				>
-					{#snippet icon()}<span aria-hidden="true">👁️</span>{/snippet}
-				</SidebarTab>
-			</nav>
-
-			<!-- Session Browser -->
-			<div class="flex min-h-0 flex-1 flex-col overflow-hidden">
-				{#if sessionView === 'inbox'}
-					<ShipmatesInbox onOpened={() => (sidebarOpen = false)} />
-				{:else if sessionView === 'search'}
-					<!-- onOpened closes the mobile sidebar even when the tapped result is
-					     the session already open: that path starts no load, so the
-					     loading/resync effect below would never fire for it. -->
-					<ConversationSearch
-						readOnly={searchReadOnly}
-						initialQuery={searchInitialQuery}
-						onOpened={() => (sidebarOpen = false)}
-					/>
-				{:else if sessionView === 'readonly'}
-					<!-- The read-only search: the search tab searches your own sessions,
-					     this link the read-only conversations (tapping the active search
-					     tab then returns here). -->
+				<div class="border-b border-brand-border px-3 py-1.5">
 					<button
 						type="button"
-						onclick={() => openSearch(true)}
-						class="mx-2 mt-1.5 flex flex-shrink-0 items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-brand-blue transition-colors hover:bg-brand-surface-3/50"
-						title="Search the read-only conversations"
+						onclick={() => (currentLineOpen = !currentLineOpen)}
+						class="flex w-full min-w-0 items-center gap-2 rounded py-1 text-left text-sm"
+						aria-expanded={currentLineOpen}
+						title={currentLineOpen
+							? 'Hide details'
+							: 'Show versions and actions'}
 					>
-						<span aria-hidden="true">🔎</span>
-						<span>Search these conversations</span>
-						<span class="ml-auto" aria-hidden="true">→</span>
+						{#if !connected}
+							<span
+								class="h-2 w-2 flex-shrink-0 rounded-full bg-rose-500"
+								aria-hidden="true"
+							></span>
+							<span class="flex-shrink-0 text-rose-400">Disconnected</span>
+							{#if sessionInfo.sessionFile && sessionInfo.cwd}
+								<span class="truncate text-xs text-brand-text-muted"
+									>· {sessionInfo.cwd.split('/').pop() || sessionInfo.cwd}</span
+								>
+							{/if}
+						{:else if sessionInfo.sessionFile}
+							<StateDot dot={currentDot} />
+							<span
+								class="min-w-0 flex-shrink truncate text-brand-text"
+								title={sessionInfo.cwd ?? undefined}
+								>{sessionInfo.cwd
+									? sessionInfo.cwd.split('/').pop() || sessionInfo.cwd
+									: 'Session'}</span
+							>
+							{#if sessionInfo.model}
+								<span
+									class="min-w-0 flex-1 truncate text-xs text-brand-text-muted"
+									title={sessionInfo.model}>· {sessionInfo.model}</span
+								>
+							{/if}
+						{:else}
+							<span
+								class="h-2 w-2 flex-shrink-0 rounded-full bg-emerald-500"
+								aria-hidden="true"
+							></span>
+							<span class="text-emerald-400">Connected</span>
+						{/if}
+						<span
+							class="ml-auto flex-shrink-0 text-xs text-brand-text-muted transition-transform {currentLineOpen
+								? 'rotate-180'
+								: ''}"
+							aria-hidden="true">▾</span
+						>
 					</button>
-					<div class="min-h-0 flex-1">
-						<SessionBrowser readOnly onSearchAll={(q) => openSearch(true, q)} />
-					</div>
-				{:else}
-					<SessionBrowser onSearchAll={(q) => openSearch(false, q)} />
-				{/if}
-			</div>
-		{/if}
+					{#if appState.error && !connected}
+						<div class="selectable mt-1 text-xs text-rose-400">
+							{appState.error}
+						</div>
+					{/if}
+					{#if currentLineOpen}
+						<div class="mt-1 space-y-1.5 pb-1">
+							<div
+								class="selectable font-mono text-xs text-brand-text-muted"
+								title={versionsTitle}
+							>
+								v{version}{#if appState.serverVersion}<span
+										class="text-brand-text-muted/70"
+									>
+										&nbsp;/ srv {appState.serverVersion}</span
+									>{/if}
+							</div>
+							{#if sessionInfo.sessionFile}
+								<button
+									onclick={handleShowMainScreen}
+									class="w-full rounded border border-brand-border bg-brand-surface-2 px-2 py-1 text-center text-xs text-brand-text transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
+									title="Leave this chat and show the main screen (the session keeps running)"
+								>
+									Leave session
+								</button>
+							{/if}
+						</div>
+					{/if}
+				</div>
+
+				<!-- Sidebar navigation: icon-only tabs. Inbox, search and read-only are
+			     views (the active one is marked, tapping it goes back); the Assistant
+			     is an action that opens the assistant session. -->
+				<nav
+					class="flex items-center gap-1 border-b border-brand-border/50 px-2 py-1"
+					aria-label="Sidebar navigation"
+				>
+					{#if assistantActive}
+						<SidebarTab
+							label="Assistant"
+							title={$assistantStatusStore.timezone
+								? `Assistant: open the current assistant session (your timezone: ${$assistantStatusStore.timezone})`
+								: 'Assistant: open the current assistant session'}
+							disabled={!connected}
+							highlighted={viewingAssistant}
+							onclick={() => {
+								openAssistant();
+								sidebarOpen = false;
+							}}
+						>
+							{#snippet icon()}{@render sparkleIcon('assistant-sparkle')}
+							{/snippet}
+						</SidebarTab>
+					{/if}
+					{#if $shipmatesStore.available}
+						<SidebarTab
+							label="Needs you"
+							title={shipmatesBadge
+								? `Needs you: ${shipmatesBadge.count} question${shipmatesBadge.count === 1 ? '' : 's'} your sessions asked you`
+								: 'Needs you: questions your sessions asked you (shipmates)'}
+							active={currentTab === 'inbox'}
+							onclick={() => onTab('inbox')}
+						>
+							{#snippet icon()}<span aria-hidden="true">🙋</span>{/snippet}
+							{#snippet badge()}
+								{#if shipmatesBadge}
+									<span
+										class="rounded-full px-1.5 text-[10px] leading-4 font-semibold {shipmatesBadge.blocking
+											? 'bg-amber-500 text-black'
+											: 'bg-brand-surface-3 text-brand-text'}"
+										>{shipmatesBadge.count}</span
+									>
+								{/if}
+							{/snippet}
+						</SidebarTab>
+					{/if}
+					<SidebarTab
+						label="Search conversations"
+						title="Search conversations: everything ever said in any session"
+						active={currentTab === 'search'}
+						onclick={() => onTab('search')}
+					>
+						{#snippet icon()}<span aria-hidden="true">🔎</span>{/snippet}
+					</SidebarTab>
+					<SidebarTab
+						label="Read-only sessions"
+						title="Read-only sessions (e.g. autonomous agent fleets)"
+						active={currentTab === 'readonly'}
+						onclick={() => onTab('readonly')}
+					>
+						{#snippet icon()}<span aria-hidden="true">👁️</span>{/snippet}
+					</SidebarTab>
+				</nav>
+
+				<!-- Session Browser -->
+				<div class="flex min-h-0 flex-1 flex-col overflow-hidden">
+					{#if sessionView === 'inbox'}
+						<ShipmatesInbox onOpened={() => (sidebarOpen = false)} />
+					{:else if sessionView === 'search'}
+						<!-- onOpened closes the mobile sidebar even when the tapped result is
+					     the session already open: that path starts no load, so the
+					     loading/resync effect below would never fire for it. -->
+						<ConversationSearch
+							readOnly={searchReadOnly}
+							initialQuery={searchInitialQuery}
+							onOpened={() => (sidebarOpen = false)}
+						/>
+					{:else if sessionView === 'readonly'}
+						<!-- The read-only search: the search tab searches your own sessions,
+					     this link the read-only conversations (tapping the active search
+					     tab then returns here). -->
+						<button
+							type="button"
+							onclick={() => openSearch(true)}
+							class="mx-2 mt-1.5 flex flex-shrink-0 items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-brand-blue transition-colors hover:bg-brand-surface-3/50"
+							title="Search the read-only conversations"
+						>
+							<span aria-hidden="true">🔎</span>
+							<span>Search these conversations</span>
+							<span class="ml-auto" aria-hidden="true">→</span>
+						</button>
+						<div class="min-h-0 flex-1">
+							<SessionBrowser
+								readOnly
+								onSearchAll={(q) => openSearch(true, q)}
+							/>
+						</div>
+					{:else}
+						<SessionBrowser onSearchAll={(q) => openSearch(false, q)} />
+					{/if}
+				</div>
+			{/if}
+		</div>
 	</div>
 
 	<!-- Main content -->
