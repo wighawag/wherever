@@ -1,0 +1,179 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b0d12;font-family:Inter,system-ui,sans-serif;color:#e6e8ee;padding:24px;display:flex;gap:26px;align-items:flex-start}
+.col{display:flex;flex-direction:column;gap:10px;align-items:center}
+.cap{font-size:15px;font-weight:600;color:#9aa3b5}.cap b{color:#e6e8ee}
+.phone{width:330px;height:760px;background:#11141b;border:1px solid #2a2f3a;border-radius:22px;overflow:hidden;position:relative;display:flex;flex-direction:column}
+.note{font-size:11px;color:#8b93a5;max-width:330px;line-height:1.45}.note b{color:#cfd5e2}
+.row{display:flex;align-items:center}.sp{flex:1}.grow{flex:1;min-width:0}
+.muted{color:#8b93a5}
+.ib{width:30px;height:30px;border:1px solid #2a2f3a;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:14px;color:#aab2c3;background:#161a23;flex:none}
+.plus{background:#1d4fd6;color:#fff;border-color:#1d4fd6;font-size:17px}
+.dot{width:8px;height:8px;border-radius:50%;background:#2ecc71;flex:none}.dot.off{background:#3a404d}.dot.amb{background:#f5b041}
+.t{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m{font-size:11px;color:#8b93a5}
+.dots{color:#8b93a5;font-size:16px;width:24px;text-align:center;flex:none}
+/* chat */
+.top{height:48px;padding:0 8px;gap:8px;border-bottom:1px solid #222733;background:#11141b}
+.ttl{font-size:13px;font-weight:600}.sub{font-size:10.5px;color:#8b93a5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat{flex:1;overflow:hidden;padding:10px 12px;display:flex;flex-direction:column;gap:10px;font-size:12.5px;line-height:1.5}
+.asst p{margin-bottom:6px}
+.user{align-self:flex-end;background:#1f3a73;border-radius:14px 14px 4px 14px;padding:7px 11px;max-width:80%}
+.time{font-size:10px;color:#5f6778}
+.tool{font-size:11px;color:#8b93a5;border:1px solid #262b37;border-radius:8px;padding:4px 8px;align-self:flex-start}
+.comp{padding:6px 8px 8px;border-top:1px solid #222733;background:#11141b}
+.meta{font-size:10.5px;color:#8b93a5;gap:10px;padding:0 4px 5px}
+.ring{width:12px;height:12px;border-radius:50%;background:conic-gradient(#4f8dff 0 33%,#2a2f3a 33% 100%);display:inline-block;vertical-align:-2px;margin-right:4px}
+.pillc{display:flex;align-items:flex-end;gap:6px;background:#161a23;border:1px solid #2a2f3a;border-radius:20px;padding:5px}
+.rb{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;color:#aab2c3;flex:none}
+.send{background:#1d4fd6;color:#fff}.stop{background:#c0392b;color:#fff;font-size:12px}
+.ta{flex:1;font-size:12.5px;color:#6b7385;padding:7px 4px;min-height:32px}
+.kbd{height:250px;background:#1c1b22;display:grid;grid-template-rows:repeat(4,1fr);gap:6px;padding:10px 6px}
+.kr{display:flex;gap:5px;justify-content:center}.k{width:26px;background:#38363f;border-radius:6px}
+/* drawer */
+.drawer{position:absolute;top:0;bottom:0;left:0;width:86%;background:#11141b;border-right:1px solid #2a2f3a;display:flex;flex-direction:column;z-index:2}
+.scrim{position:absolute;inset:0;background:rgba(0,0,0,.55);z-index:1}
+.hd{height:46px;padding:0 10px;gap:8px;border-bottom:1px solid #222733}
+.logo{font-weight:800;font-size:17px;background:linear-gradient(90deg,#3fa9ff,#a46bff);-webkit-background-clip:text;color:transparent}
+.pill{font-size:10.5px;background:#16233d;color:#7fb0ff;border:1px solid #23406e;border-radius:10px;padding:2px 7px}
+.cur{height:34px;padding:0 12px;gap:7px;font-size:12px;border-bottom:1px solid #222733}
+.tabs{height:42px;border-bottom:1px solid #222733;display:grid;grid-template-columns:repeat(4,1fr)}
+.tab{display:flex;align-items:center;justify-content:center;font-size:17px;color:#aab2c3;position:relative}
+.badge{position:absolute;top:6px;left:52%;background:#f5b041;color:#111;font-size:9.5px;font-weight:700;border-radius:8px;padding:0 5px}
+.flt{height:44px;padding:0 9px;gap:6px;border-bottom:1px solid #222733}
+.inp{flex:1;height:30px;border:1px solid #2a2f3a;border-radius:7px;background:#0e1117;font-size:12px;color:#6b7385;padding:0 9px;display:flex;align-items:center}
+.fh{height:32px;padding:0 10px;gap:7px;font-size:13px;font-weight:600}.fh .n{font-size:11px;color:#8b93a5;font-weight:400}
+.car{color:#8b93a5;font-size:10px;width:10px}
+.sr{padding:6px 6px 6px 12px;gap:8px;margin:0 6px;border-radius:8px;position:relative;background:#11141b}
+.sr.on{background:#1b2030}
+.swipewrap{position:relative;margin:0 6px;border-radius:8px;overflow:hidden;background:#2b4a8a}
+.swipewrap .act{position:absolute;right:0;top:0;bottom:0;width:86px;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff;gap:5px}
+.swipewrap .sr{margin:0;transform:translateX(-86px)}
+.star{color:#f5c542}
+.live{padding:5px 10px 7px;border-bottom:1px solid #222733}
+.lh{font-size:10px;letter-spacing:.05em;color:#8b93a5;text-transform:uppercase;margin-bottom:3px}
+.lr{gap:7px;font-size:11.5px;padding:2px 0}
+.st{font-size:9.5px;border-radius:5px;padding:0 5px}.st.w{background:#3d2e0e;color:#f5b041}.st.r{background:#123526;color:#5fd69a}
+/* sheet */
+.shade{position:absolute;inset:0;background:rgba(0,0,0,.55);z-index:3}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:#171b25;border-top:1px solid #2a2f3a;border-radius:16px 16px 0 0;padding:8px 0 12px;z-index:4}
+.grab{width:36px;height:4px;border-radius:2px;background:#3a404d;margin:2px auto 8px}
+.it{padding:10px 18px;font-size:13px;display:flex;gap:12px;align-items:center}
+.it .r{margin-left:auto;font-size:11.5px;color:#8b93a5}
+.sep{height:1px;background:#262b37;margin:4px 0}
+.sw{width:30px;height:17px;border-radius:9px;background:#2a2f3a;position:relative;margin-left:auto}.sw::after{content:"";position:absolute;width:13px;height:13px;border-radius:50%;background:#8b93a5;top:2px;left:2px}
+.sw.on{background:#1d4fd6}.sw.on::after{left:15px;background:#fff}
+.sh{padding:2px 18px 8px;font-size:11px;color:#8b93a5;text-transform:uppercase;letter-spacing:.05em}
+svg.sp4{width:17px;height:17px}
+</style></head><body>
+
+<!-- 1 DRAWER -->
+<div class="col">
+<div class="cap"><b>Phone drawer</b>: icons only, swipe a row</div>
+<div class="phone">
+ <div class="row top"><span class="ib">☰</span><div class="grow"><div class="ttl t">Now that we shipmates can have agents...</div></div></div>
+ <div class="chat"><div class="asst"><p>I wrote four specs in work/specs/proposed/...</p></div></div>
+ <div class="scrim"></div>
+ <div class="drawer">
+  <div class="row hd"><img src="../../../web/static/logo.svg" style="width:26px;height:26px" alt="Wherever"><span class="pill">telemaque</span><span class="sp"></span><span class="ib">⚙</span><span class="ib">✕</span></div>
+  <div class="row cur"><span class="dot"></span><span>wherever</span><span class="muted">· claude-opus-5-5</span><span class="sp"></span><span class="muted">▾</span></div>
+  <div class="tabs">
+   <div class="tab" title="Assistant"><svg class="sp4" viewBox="0 0 24 24"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4f8dff"/><stop offset="1" stop-color="#b06bff"/></linearGradient></defs><path fill="url(#g)" d="M12 1c.6 5.6 4.4 9.4 10 10-5.6.6-9.4 4.4-10 10-.6-5.6-4.4-9.4-10-10 5.6-.6 9.4-4.4 10-10z"/></svg></div>
+   <div class="tab" title="Needs you">🙋<span class="badge">2</span></div>
+   <div class="tab" title="Search conversations">🔎</div>
+   <div class="tab" title="Read-only sessions">👁</div>
+  </div>
+  <div class="row flt"><div class="inp">Filter sessions...</div><span class="ib">☰</span><span class="ib plus">+</span></div>
+  <div class="live">
+   <div class="lh">Live · 2 · 1 waiting for you</div>
+   <div class="row lr"><span class="dot amb"></span><span class="grow t">memonaut/search-order</span><span class="st w">waiting for you</span></div>
+   <div class="row lr"><span class="dot"></span><span class="grow t">Now that we shipmates...</span><span class="st r">running</span></div>
+  </div>
+  <div style="flex:1;overflow:hidden;padding-top:2px">
+   <div class="row fh"><span class="car">▸</span>jolly-roger<span class="n">47</span><span class="sp"></span><span class="dots">⋯</span></div>
+   <div class="row fh"><span class="car">▾</span>wherever<span class="n">23</span><span class="sp"></span><span class="dots">⋯</span></div>
+   <div class="row sr on"><span class="dot"></span><div class="grow"><div class="t">Now that we shipmates can have agents...</div><div class="m">6h ago · 235 msgs · owns 1</div></div><span class="dots">⋯</span></div>
+   <div class="swipewrap"><div class="act">⊘ Close</div><div class="row sr"><span class="dot off"></span><div class="grow"><div class="t">&lt;skill name="drive-tasks"&gt; Be the...</div><div class="m">7d ago · 383 msgs <span class="star">★</span></div></div><span class="dots">⋯</span></div></div>
+   <div class="row sr"><span class="dot off"></span><div class="grow"><div class="t">Goal: implement ADR 0024 host for spawn...</div><div class="m">7d ago · 92 msgs</div></div><span class="dots">⋯</span></div>
+   <div class="row sr"><span class="dot off"></span><div class="grow"><div class="t">Three hardening fixes in wherever...</div><div class="m">7d ago · 405 msgs</div></div><span class="dots">⋯</span></div>
+   <div class="row sr"><span class="dot off"></span><div class="grow"><div class="t">Timezone report only when the device...</div><div class="m">8d ago · 61 msgs</div></div><span class="dots">⋯</span></div>
+   <div class="row fh"><span class="car">▸</span>shipmates<span class="n">12</span><span class="sp"></span><span class="dots">⋯</span></div>
+   <div class="row fh"><span class="car">▸</span>memonaut<span class="n">6</span><span class="sp"></span><span class="dots">⋯</span></div>
+   <div class="row fh"><span class="car">▸</span>baseline-2026-11-24<span class="n">2</span><span class="sp"></span><span class="dots">⋯</span></div>
+  </div>
+ </div>
+</div>
+<div class="note"><b>The drawer stays a drawer</b>, slightly wider (86%), with the strip on the right still closing it on tap, as today. <b>Swipe left on a row</b> slides it to reveal "⊘ Close" (release past the button to close, Undo banner after); swiping elsewhere in the drawer, or tapping the strip, closes the drawer. Tabs are icons only (✦ Assistant sparkle, 🙋, 🔎, 👁), long-press shows the label.</div>
+</div>
+
+<!-- 2 CHAT RUNNING -->
+<div class="col">
+<div class="cap"><b>Chat, proposed</b>: agent running</div>
+<div class="phone">
+ <div class="row top"><span class="ib">☰</span><div class="grow"><div class="ttl t">Now that we shipmates can have agents...</div><div class="sub">wherever · claude-opus-5-5</div></div><span class="ib">⋯</span></div>
+ <div class="chat">
+  <div class="user">Yes both</div>
+  <div class="asst"><p>I promoted all 11 tasks to <code>work/tasks/ready/</code> and committed everything as <code>2d7d8f8</code> on <code>main</code>. The memonaut session is started.</p><p><b>The commit</b> includes:</p><p>• the 4 tasked specs;<br>• the newest-first spec, still in proposed/;<br>• ADRs 0025 and 0026;<br>• the 11 tasks.</p><p>It is not pushed.</p><div class="time">06:03</div></div>
+  <div class="tool">✓ bash · git log --oneline -1</div>
+  <div class="tool">⟳ subagent · Review four specs</div>
+  <div class="user">I like the proposition! note it is a side bar currently and have some space on the right...</div>
+  <div class="asst"><p>Building the second set of mockups now...</p></div>
+ </div>
+ <div class="comp">
+  <div class="row meta"><span><span class="ring"></span>33% context</span><span>· working 1m 12s</span><span class="sp"></span><span>Drafts (2)</span></div>
+  <div class="pillc"><span class="rb">＋</span><div class="ta">Message (steers the agent)...</div><span class="rb">🎤</span><span class="rb stop">■</span></div>
+ </div>
+</div>
+<div class="note"><b>Top bar</b>: ☰, the session title (name or first message) with folder · model under it, and one ⋯ (the session menu, next frame). <b>Messages</b>: assistant text full width (no bubble, no wasted right margin), user messages as compact right bubbles, tool calls as one-line chips. <b>Settings strip removed</b>: context becomes a small ring in the composer, Abort becomes the Send button turning into ■ Stop while running.</div>
+</div>
+
+<!-- 3 KEYBOARD -->
+<div class="col">
+<div class="cap"><b>Chat, proposed</b>: typing with keyboard</div>
+<div class="phone">
+ <div class="row top"><span class="ib">☰</span><div class="grow"><div class="ttl t">Now that we shipmates can have agents...</div><div class="sub">wherever · claude-opus-5-5</div></div><span class="ib">⋯</span></div>
+ <div class="chat">
+  <div class="asst"><p><b>Two things for you:</b></p><p>• <b>Older search spec:</b> session-search-index predates memonaut, and its date-range story is now covered by the new spec.</p><p>• <b>Next step:</b> do you want me to promote the 11 tasks to work/tasks/ready/, commit the specs, tasks and ADRs, or both?</p><div class="time">06:03</div></div>
+ </div>
+ <div class="comp">
+  <div class="pillc" style="border-color:#1d4fd6"><span class="rb">＋</span><div class="ta" style="color:#e6e8ee">Yes delete that spec. Re next step, should you first launch a session in memonaut to enable date search?</div><span class="rb">🎤</span><span class="rb send">➤</span></div>
+ </div>
+ <div class="kbd">
+  <div class="kr"><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span></div>
+  <div class="kr"><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span></div>
+  <div class="kr"><span class="k" style="width:40px"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k"></span><span class="k" style="width:40px"></span></div>
+  <div class="kr"><span class="k" style="width:44px"></span><span class="k"></span><span class="k" style="width:130px"></span><span class="k"></span><span class="k" style="width:44px"></span></div>
+ </div>
+</div>
+<div class="note"><b>One-line composer</b> that grows with the text (up to about 40% of the screen): ＋ (attach, save draft, drafts), the text, 🎤, ➤. No separate Expand/Collapse, no "Press Enter to send" row (moved to settings). With the keyboard up, today's screenshot shows only about 5 lines of conversation; this keeps about 8 to 10.</div>
+</div>
+
+<!-- 4 SESSION MENU -->
+<div class="col">
+<div class="cap"><b>Top bar ⋯</b>: session menu + chat settings</div>
+<div class="phone">
+ <div class="row top"><span class="ib">☰</span><div class="grow"><div class="ttl t">Now that we shipmates can have agents...</div><div class="sub">wherever · claude-opus-5-5</div></div><span class="ib" style="border-color:#4f8dff;color:#fff">⋯</span></div>
+ <div class="chat"></div>
+ <div class="shade"></div>
+ <div class="sheet">
+  <div class="grab"></div>
+  <div class="it">🔍 Search in this chat</div>
+  <div class="it">🤖 Model<span class="r">claude-opus-5-5 ›</span></div>
+  <div class="it">☆ Star</div>
+  <div class="it">✎ Rename</div>
+  <div class="it">⧉ Copy link<span class="r">open in new tab / window</span></div>
+  <div class="it">⊘ Close session</div>
+  <div class="sep"></div>
+  <div class="sh">This chat</div>
+  <div class="it">Hide thinking<span class="sw"></span></div>
+  <div class="it">Beep when done<span class="sw"></span></div>
+  <div class="it">Conversation mode<span class="sw"></span></div>
+  <div class="it">Enter sends<span class="sw on"></span></div>
+  <div class="it muted" style="font-size:11.5px">Context 33.1% of 1.0M · v0.29.0 / srv 0.29.0</div>
+ </div>
+</div>
+<div class="note">Everything that sat in the top bar and the settings strip, in one place: search, model, star, <b>rename</b>, <b>copy link</b>, close, and the per-chat toggles (hide thinking, beep, conversation mode, Enter sends). The composer's ⚙ (voice settings) folds in here too.</div>
+</div>
+
+</body></html>

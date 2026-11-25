@@ -1,0 +1,196 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b0d12;font-family:Inter,system-ui,sans-serif;color:#e6e8ee;padding:24px;display:flex;gap:28px;align-items:flex-start}
+.col{display:flex;flex-direction:column;gap:10px;align-items:center}
+.cap{font-size:15px;font-weight:600;color:#9aa3b5}
+.cap b{color:#e6e8ee}
+.phone{width:330px;height:760px;background:#11141b;border:1px solid #2a2f3a;border-radius:22px;overflow:hidden;position:relative;display:flex;flex-direction:column}
+.muted{color:#8b93a5}
+.blue{color:#4f8dff}
+.row{display:flex;align-items:center}
+.hd{height:46px;padding:0 12px;border-bottom:1px solid #222733;gap:8px}
+.logo{font-weight:800;font-size:18px;background:linear-gradient(90deg,#3fa9ff,#a46bff);-webkit-background-clip:text;color:transparent}
+.pill{font-size:11px;background:#16233d;color:#7fb0ff;border:1px solid #23406e;border-radius:10px;padding:2px 8px}
+.ib{width:30px;height:30px;border:1px solid #2a2f3a;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:14px;color:#aab2c3;background:#161a23}
+.sp{flex:1}
+.cur{height:36px;padding:0 12px;gap:7px;font-size:12.5px;border-bottom:1px solid #222733}
+.dot{width:8px;height:8px;border-radius:50%;background:#2ecc71;flex:none}
+.dot.off{background:#3a404d}
+.dot.amb{background:#f5b041}
+.tabs{height:50px;border-bottom:1px solid #222733;display:grid;grid-template-columns:repeat(4,1fr)}
+.tab{display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10.5px;color:#aab2c3;gap:2px;position:relative}
+.tab .e{font-size:16px}
+.badge{position:absolute;top:5px;right:20px;background:#f5b041;color:#111;font-size:9.5px;font-weight:700;border-radius:8px;padding:0 5px}
+.flt{height:46px;padding:0 10px;gap:6px;border-bottom:1px solid #222733}
+.inp{flex:1;height:30px;border:1px solid #2a2f3a;border-radius:7px;background:#0e1117;font-size:12px;color:#6b7385;padding:0 9px;display:flex;align-items:center}
+.plus{background:#1d4fd6;color:#fff;border-color:#1d4fd6;font-size:17px}
+.live{padding:6px 10px 8px;border-bottom:1px solid #222733}
+.lh{font-size:10.5px;letter-spacing:.05em;color:#8b93a5;text-transform:uppercase;margin-bottom:4px}
+.lr{gap:7px;font-size:12px;padding:3px 0}
+.tag{font-size:10px;color:#8b93a5;border:1px solid #2a2f3a;border-radius:5px;padding:0 4px}
+.st{font-size:10px;border-radius:5px;padding:0 5px}
+.st.w{background:#3d2e0e;color:#f5b041}
+.st.r{background:#123526;color:#5fd69a}
+.fh{height:34px;padding:0 10px;gap:7px;font-size:13.5px;font-weight:600}
+.fh .n{font-size:11px;color:#8b93a5;font-weight:400}
+.car{color:#8b93a5;font-size:10px;width:10px}
+.dots{color:#8b93a5;font-size:16px;letter-spacing:1px;width:26px;text-align:center}
+.sr{padding:6px 8px 6px 14px;gap:8px;margin:0 6px;border-radius:8px}
+.sr.on{background:#1b2030}
+.t{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m{font-size:11px;color:#8b93a5;display:flex;gap:6px;align-items:center}
+.star{color:#f5c542;font-size:11px}
+.grow{flex:1;min-width:0}
+.chip{font-size:10.5px;background:#1b2030;border-radius:5px;padding:1px 6px;margin:0 0 3px 36px;color:#cfd5e2;display:inline-block}
+.list{overflow:hidden;flex:1}
+.ruler{position:absolute;right:-1px;width:6px;background:#4f8dff;opacity:.7}
+.note{font-size:11px;color:#8b93a5;max-width:330px;line-height:1.45}
+.note b{color:#cfd5e2}
+/* today */
+.old .hd{height:64px}
+.oldblock{padding:10px 12px;border-bottom:1px solid #222733;font-size:12.5px;display:flex;flex-direction:column;gap:6px}
+.btn{border:1px solid #2a2f3a;border-radius:7px;text-align:center;padding:6px;font-size:12.5px}
+.navrow{padding:8px 14px;font-size:13px;display:flex;gap:10px}
+.oldicons{display:flex;gap:12px;color:#8b93a5;font-size:13px}
+/* sheet */
+.shade{position:absolute;inset:0;background:rgba(0,0,0,.55)}
+.sheet{position:absolute;left:0;right:0;bottom:0;background:#171b25;border-top:1px solid #2a2f3a;border-radius:16px 16px 0 0;padding:8px 0 14px}
+.grab{width:36px;height:4px;border-radius:2px;background:#3a404d;margin:2px auto 8px}
+.sh{padding:4px 16px 10px;border-bottom:1px solid #262b37}
+.it{padding:11px 18px;font-size:13.5px;display:flex;gap:12px;align-items:center}
+.it .sub{font-size:11px;color:#8b93a5;margin-left:auto}
+.sep{height:1px;background:#262b37;margin:4px 0}
+.danger{color:#ff6b6b}
+.pop{position:absolute;right:10px;top:178px;width:200px;background:#171b25;border:1px solid #2a2f3a;border-radius:10px;padding:6px 0;box-shadow:0 8px 24px rgba(0,0,0,.5)}
+.pop .it{padding:8px 14px;font-size:12.5px}
+.seg{display:flex;border:1px solid #2a2f3a;border-radius:7px;overflow:hidden;margin:4px 14px 6px;font-size:11.5px}
+.seg span{flex:1;text-align:center;padding:5px}
+.seg .a{background:#25304a;color:#fff}
+.chk{width:13px;height:13px;border:1px solid #4a5263;border-radius:3px}
+</style></head><body>
+
+<!-- TODAY -->
+<div class="col">
+<div class="cap"><b>Today</b>: the list starts at about 53%</div>
+<div class="phone old">
+ <div class="row hd"><span class="logo">w Wherever</span><span class="pill">telema...</span><span class="sp"></span><span class="ib">⚙</span><span class="ib">✕</span></div>
+ <div class="oldblock">
+  <div class="row" style="gap:8px"><span class="dot"></span><span style="color:#2ecc71">Connected</span><span class="sp"></span><span class="muted" style="font-family:monospace;font-size:11px">v0.29.0 / srv 0.29.0</span></div>
+  <div>📁 wherever</div><div>🤖 etherplay:claude-opus-5-5</div>
+  <div class="btn">Close Session</div>
+ </div>
+ <div style="border-bottom:1px solid #222733;padding:4px 0">
+  <div class="navrow">🧭 Assistant</div><div class="navrow">🙋 Needs you</div><div class="navrow">🔎 Search conversations</div><div class="navrow">👁 Read-only sessions</div>
+ </div>
+ <div style="padding:8px 10px;border-bottom:1px solid #222733">
+  <div class="row" style="gap:6px"><div class="inp">Filter sessions...</div><span class="ib">↻</span></div>
+  <div class="row" style="margin-top:7px;font-size:11.5px;gap:6px"><span class="chk"></span>Show closed<span class="sp"></span><span class="tag" style="font-size:11px;padding:2px 6px">By folder | By owner</span></div>
+ </div>
+ <div class="blue" style="padding:10px 12px;font-size:13px;font-weight:600;border-bottom:1px solid #222733">✚ Create New Session</div>
+ <div class="list">
+  <div style="padding:8px 12px;border-bottom:1px solid #222733"><div style="font-weight:600;font-size:14px">▸ baseline-2026-11-24</div><div class="muted" style="font-size:11px">/home/wighawag/dev/qa/baseline-2026-11-24</div></div>
+  <div style="padding:8px 12px;border-bottom:1px solid #222733"><div style="font-weight:600;font-size:14px">▸ jolly-roger</div><div class="muted" style="font-size:11px">/home/wighawag/dev/github/wighawag/jolly-ro...</div></div>
+  <div style="padding:8px 12px"><div style="font-weight:600;font-size:14px">▾ wherever</div><div class="muted" style="font-size:11px">/home/wighawag/dev/github/wighawag/where...</div></div>
+  <div class="row" style="padding:2px 14px 6px;font-size:12px"><span class="blue">+ New Session Here</span><span class="sp"></span><span class="muted">Delete All</span></div>
+  <div class="row sr on"><span class="dot"></span><div class="grow"><div class="t">Now that we shipmat...</div><div class="m">6h ago · 235 msgs</div></div><div class="oldicons">☆ ⊘ ✕</div></div>
+  <div class="row sr"><span class="dot off"></span><div class="grow"><div class="t">&lt;skill name="drive-tasks"...</div><div class="m">7d ago · 383 msgs</div></div><div class="oldicons">☆ ⊘ ✕</div></div>
+ </div>
+</div>
+<div class="note">Above the first session: header, current-session block (4 lines + button), 4 nav rows, filter + options row, "Create New Session", and two-line folder headers. Three equal-weight buttons on every row, delete included.</div>
+</div>
+
+<!-- PROPOSED -->
+<div class="col">
+<div class="cap"><b>Proposed</b>: the list starts at about 25%</div>
+<div class="phone">
+ <div class="row hd"><span class="logo">w Wherever</span><span class="pill">telemaque</span><span class="sp"></span><span class="ib">⚙</span><span class="ib">✕</span></div>
+ <div class="row cur"><span class="dot"></span><span>wherever</span><span class="muted">· claude-opus-5-5</span><span class="sp"></span><span class="muted">▾</span></div>
+ <div class="tabs">
+  <div class="tab"><span class="e">🧭</span>Assistant</div>
+  <div class="tab"><span class="e">🙋</span>Needs you<span class="badge">2</span></div>
+  <div class="tab"><span class="e">🔎</span>Search</div>
+  <div class="tab"><span class="e">👁</span>Read-only</div>
+ </div>
+ <div class="row flt"><div class="inp">Filter sessions...</div><span class="ib">☰</span><span class="ib plus">+</span></div>
+ <div class="live">
+  <div class="lh">Live · 2 · 1 waiting for you</div>
+  <div class="row lr"><span class="dot amb"></span><span class="grow t">memonaut/search-order</span><span class="st w">waiting for you</span></div>
+  <div class="row lr"><span class="dot"></span><span class="grow t">Now that we shipmates...</span><span class="st r">running</span></div>
+ </div>
+ <div class="list">
+  <div class="row fh"><span class="car">▸</span>baseline-2026-11-24<span class="n">2</span><span class="sp"></span><span class="dots">⋯</span></div>
+  <div class="row fh"><span class="car">▸</span>jolly-roger<span class="n">47</span><span class="sp"></span><span class="dots">⋯</span></div>
+  <div class="row fh"><span class="car">▾</span>wherever<span class="n">23</span><span class="sp"></span><span class="dots">⋯</span></div>
+  <div class="row sr on"><span class="dot"></span><div class="grow"><div class="t">Now that we shipmates can have agents...</div><div class="m">6h ago · 235 msgs · owns 1</div></div><span class="dots">⋯</span></div>
+  <div class="chip">↳ memonaut/search-order</div>
+  <div class="row sr"><span class="dot off"></span><div class="grow"><div class="t">&lt;skill name="drive-tasks"&gt; Be the cond...</div><div class="m">7d ago · 383 msgs <span class="star">★</span></div></div><span class="dots">⋯</span></div>
+  <div class="row sr"><span class="dot off"></span><div class="grow"><div class="t">Goal: implement ADR 0024 host for spawn...</div><div class="m">7d ago · 92 msgs</div></div><span class="dots">⋯</span></div>
+  <div class="row sr"><span class="dot off"></span><div class="grow"><div class="t">Three hardening fixes in wherever...</div><div class="m">7d ago · 405 msgs</div></div><span class="dots">⋯</span></div>
+  <div class="row sr"><span class="dot off"></span><div class="grow"><div class="t">Timezone report only when the device...</div><div class="m">8d ago · 61 msgs</div></div><span class="dots">⋯</span></div>
+  <div class="row fh"><span class="car">▸</span>shipmates<span class="n">12</span><span class="sp"></span><span class="dots">⋯</span></div>
+  <div class="row fh"><span class="car">▸</span>memonaut<span class="n">6</span><span class="sp"></span><span class="dots">⋯</span></div>
+ </div>
+</div>
+<div class="note"><b>Header</b> unchanged. <b>Current session</b> folds to one line; ▾ opens versions, model and "Close Session". <b>Nav</b> becomes a 4-icon tab row with the inbox badge. <b>Filter row</b> holds ☰ (view options) and + (new session). <b>Folder headers</b> are one line; the path is in their ⋯ menu and tooltip. <b>Rows</b> get a wider title, a ★ only when starred, and one ⋯.</div>
+</div>
+
+<!-- ROW MENU -->
+<div class="col">
+<div class="cap"><b>Row ⋯</b> (bottom sheet on phone)</div>
+<div class="phone">
+ <div class="row hd"><span class="logo">w Wherever</span><span class="pill">telemaque</span><span class="sp"></span><span class="ib">⚙</span><span class="ib">✕</span></div>
+ <div class="list" style="padding-top:8px">
+  <div class="row sr on"><span class="dot"></span><div class="grow"><div class="t">Now that we shipmates can have agents...</div><div class="m">6h ago · 235 msgs · owns 1</div></div><span class="dots">⋯</span></div>
+ </div>
+ <div class="shade"></div>
+ <div class="sheet">
+  <div class="grab"></div>
+  <div class="sh"><div class="t" style="font-weight:600">Now that we shipmates can have agents...</div><div class="m">wherever · 6h ago · 235 msgs</div></div>
+  <div class="it">⊘ Close<span class="sub">and 1 owned session</span></div>
+  <div class="it">☆ Star</div>
+  <div class="it">✎ Rename</div>
+  <div class="it">⑂ Open in new tab</div>
+  <div class="sep"></div>
+  <div class="it danger">🗑 Delete…<span class="sub" style="color:#b85a5a">asks again</span></div>
+ </div>
+</div>
+<div class="note"><b>Close</b> is first (the common action, and it has Undo). <b>Delete</b> is last, red, separated, and needs a second confirm. On desktop the same items show as a small popover, and hovering a row also reveals a single ⊘ for one-click close. Optional on phone: <b>swipe left to close</b> (with the Undo banner).</div>
+</div>
+
+<!-- VIEW OPTIONS -->
+<div class="col">
+<div class="cap"><b>☰ view options</b> and <b>folder ⋯</b></div>
+<div class="phone">
+ <div class="row hd"><span class="logo">w Wherever</span><span class="pill">telemaque</span><span class="sp"></span><span class="ib">⚙</span><span class="ib">✕</span></div>
+ <div class="row cur"><span class="dot"></span><span>wherever</span><span class="muted">· claude-opus-5-5</span><span class="sp"></span><span class="muted">▴</span></div>
+ <div style="padding:8px 12px;border-bottom:1px solid #222733;font-size:11.5px" class="muted">v0.29.0 / srv 0.29.0<div class="btn" style="margin-top:6px;color:#e6e8ee">Close Session</div></div>
+ <div class="tabs">
+  <div class="tab"><span class="e">🧭</span>Assistant</div>
+  <div class="tab"><span class="e">🙋</span>Needs you<span class="badge">2</span></div>
+  <div class="tab"><span class="e">🔎</span>Search</div>
+  <div class="tab"><span class="e">👁</span>Read-only</div>
+ </div>
+ <div class="row flt"><div class="inp">Filter sessions...</div><span class="ib" style="border-color:#4f8dff;color:#fff">☰</span><span class="ib plus">+</span></div>
+ <div class="pop" style="top:236px">
+  <div class="seg"><span class="a">By folder</span><span>By owner</span></div>
+  <div class="it"><span class="chk"></span>Show closed</div>
+  <div class="it"><span class="chk"></span>Only starred</div>
+  <div class="sep"></div>
+  <div class="it">↻ Refresh</div>
+ </div>
+ <div class="list" style="margin-top:150px">
+  <div class="row fh"><span class="car">▾</span>wherever<span class="n">23</span><span class="sp"></span><span class="dots" style="color:#fff">⋯</span></div>
+  <div style="margin:0 10px;background:#171b25;border:1px solid #2a2f3a;border-radius:10px;padding:6px 0">
+   <div class="it" style="padding:7px 14px;font-size:12px;color:#8b93a5">~/dev/github/wighawag/wherever</div>
+   <div class="it" style="padding:8px 14px;font-size:12.5px">+ New session here</div>
+   <div class="it" style="padding:8px 14px;font-size:12.5px">⊘ Close all in folder</div>
+   <div class="sep"></div>
+   <div class="it danger" style="padding:8px 14px;font-size:12.5px">🗑 Delete all…</div>
+  </div>
+ </div>
+</div>
+<div class="note"><b>☰</b> gathers By folder / By owner, Show closed, an "Only starred" filter (what a star is still for once Close exists), and Refresh. <b>Folder ⋯</b> holds the path, "New session here", a new "Close all in folder", and Delete all (red, confirmed). The current-session line expands in place.</div>
+</div>
+
+</body></html>

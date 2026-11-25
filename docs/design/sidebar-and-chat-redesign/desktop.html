@@ -1,0 +1,116 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b0d12;font-family:Inter,system-ui,sans-serif;color:#e6e8ee;padding:24px}
+.cap{font-size:15px;font-weight:600;color:#9aa3b5;margin-bottom:10px}.cap b{color:#e6e8ee}
+.win{width:1400px;height:820px;border:1px solid #2a2f3a;border-radius:12px;overflow:hidden;display:flex;background:#11141b}
+.row{display:flex;align-items:center}.sp{flex:1}.grow{flex:1;min-width:0}.muted{color:#8b93a5}
+.side{width:300px;border-right:1px solid #222733;display:flex;flex-direction:column;flex:none}
+.ib{width:30px;height:30px;border:1px solid #2a2f3a;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:14px;color:#aab2c3;background:#161a23;flex:none}
+.plus{background:#1d4fd6;color:#fff;border-color:#1d4fd6;font-size:17px}
+.dot{width:8px;height:8px;border-radius:50%;background:#2ecc71;flex:none}.dot.off{background:#3a404d}.dot.amb{background:#f5b041}
+.t{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m{font-size:11px;color:#8b93a5}
+.dots{color:#8b93a5;font-size:16px;width:24px;text-align:center;flex:none}
+.hd{height:46px;padding:0 10px;gap:8px;border-bottom:1px solid #222733}
+.logo{font-weight:800;font-size:17px;background:linear-gradient(90deg,#3fa9ff,#a46bff);-webkit-background-clip:text;color:transparent}
+.pill{font-size:10.5px;background:#16233d;color:#7fb0ff;border:1px solid #23406e;border-radius:10px;padding:2px 7px}
+.tabs{height:40px;border-bottom:1px solid #222733;display:grid;grid-template-columns:repeat(4,1fr)}
+.tab{display:flex;align-items:center;justify-content:center;font-size:16px;color:#aab2c3;position:relative}
+.badge{position:absolute;top:5px;left:54%;background:#f5b041;color:#111;font-size:9.5px;font-weight:700;border-radius:8px;padding:0 5px}
+.tip{position:absolute;top:36px;left:50%;transform:translateX(-50%);background:#2a2f3a;color:#e6e8ee;font-size:11px;padding:3px 7px;border-radius:5px;white-space:nowrap;z-index:3}
+.flt{height:44px;padding:0 9px;gap:6px;border-bottom:1px solid #222733}
+.inp{flex:1;height:30px;border:1px solid #2a2f3a;border-radius:7px;background:#0e1117;font-size:12px;color:#6b7385;padding:0 9px;display:flex;align-items:center}
+.fh{height:32px;padding:0 10px;gap:7px;font-size:13px;font-weight:600}.fh .n{font-size:11px;color:#8b93a5;font-weight:400}
+.car{color:#8b93a5;font-size:10px;width:10px}
+.sr{padding:6px 6px 6px 12px;gap:8px;margin:0 6px;border-radius:8px;position:relative}
+.sr.on{background:#1b2030}.sr.hov{background:#181c27}
+.qa{color:#cfd5e2;font-size:14px;width:24px;text-align:center}
+.star{color:#f5c542}
+.live{padding:5px 10px 7px;border-bottom:1px solid #222733}
+.lh{font-size:10px;letter-spacing:.05em;color:#8b93a5;text-transform:uppercase;margin-bottom:3px}
+.lr{gap:7px;font-size:11.5px;padding:2px 0}
+.st{font-size:9.5px;border-radius:5px;padding:0 5px}.st.w{background:#3d2e0e;color:#f5b041}.st.r{background:#123526;color:#5fd69a}
+.pop{position:absolute;left:258px;top:0;width:210px;background:#171b25;border:1px solid #2a2f3a;border-radius:10px;padding:6px 0;box-shadow:0 8px 24px rgba(0,0,0,.5);z-index:5}
+.it{padding:8px 14px;font-size:12.5px;display:flex;gap:10px;align-items:center}.it .r{margin-left:auto;font-size:11px;color:#8b93a5}
+.sep{height:1px;background:#262b37;margin:4px 0}.danger{color:#ff6b6b}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.top{height:50px;padding:0 14px;gap:10px;border-bottom:1px solid #222733}
+.ttl{font-size:14px;font-weight:600}.sub{font-size:11px;color:#8b93a5}
+.chat{flex:1;overflow:hidden;padding:18px 0;display:flex;flex-direction:column;gap:14px;font-size:13.5px;line-height:1.6}
+.lane{width:760px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+.user{align-self:flex-end;background:#1f3a73;border-radius:14px 14px 4px 14px;padding:8px 13px;max-width:75%}
+.asst p{margin-bottom:8px}.time{font-size:10.5px;color:#5f6778}
+.tool{font-size:12px;color:#8b93a5;border:1px solid #262b37;border-radius:8px;padding:4px 9px;align-self:flex-start}
+code{background:#1b2030;border-radius:4px;padding:0 4px;font-size:12px}
+.comp{padding:8px 0 14px}
+.meta{width:760px;margin:0 auto;font-size:11px;color:#8b93a5;gap:12px;padding:0 6px 6px}
+.ring{width:12px;height:12px;border-radius:50%;background:conic-gradient(#4f8dff 0 33%,#2a2f3a 33% 100%);display:inline-block;vertical-align:-2px;margin-right:4px}
+.pillc{width:760px;margin:0 auto;display:flex;align-items:flex-end;gap:6px;background:#161a23;border:1px solid #2a2f3a;border-radius:20px;padding:6px}
+.rb{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;color:#aab2c3;flex:none}
+.send{background:#1d4fd6;color:#fff}
+.ta{flex:1;font-size:13px;color:#6b7385;padding:8px 4px}
+svg.sp4{width:17px;height:17px}
+.ann{font-size:11px;color:#8b93a5;max-width:1400px;line-height:1.5;margin-top:10px}.ann b{color:#cfd5e2}
+</style></head><body>
+<div class="cap"><b>Desktop</b>: sidebar pinned, hover shows ⊘ next to ⋯, row ⋯ as a popover</div>
+<div class="win">
+ <div class="side">
+  <div class="row hd"><img src="../../../web/static/logo.svg" style="width:26px;height:26px" alt="Wherever"><span class="pill">telemaque</span><span class="sp"></span><span class="ib">⚙</span><span class="ib">«</span></div>
+  <div class="tabs">
+   <div class="tab"><svg class="sp4" viewBox="0 0 24 24"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4f8dff"/><stop offset="1" stop-color="#b06bff"/></linearGradient></defs><path fill="url(#g)" d="M12 1c.6 5.6 4.4 9.4 10 10-5.6.6-9.4 4.4-10 10-.6-5.6-4.4-9.4-10-10 5.6-.6 9.4-4.4 10-10z"/></svg></div>
+   <div class="tab">🙋<span class="badge">2</span><span class="tip">Needs you</span></div>
+   <div class="tab">🔎</div>
+   <div class="tab">👁</div>
+  </div>
+  <div class="row flt"><div class="inp">Filter sessions...</div><span class="ib">☰</span><span class="ib plus">+</span></div>
+  <div class="live">
+   <div class="lh">Live · 2 · 1 waiting for you</div>
+   <div class="row lr"><span class="dot amb"></span><span class="grow t">memonaut/search-order</span><span class="st w">waiting for you</span></div>
+   <div class="row lr"><span class="dot"></span><span class="grow t">Now that we shipmates...</span><span class="st r">running</span></div>
+  </div>
+  <div style="flex:1;overflow:visible;padding-top:2px;position:relative">
+   <div class="row fh"><span class="car">▸</span>jolly-roger<span class="n">47</span><span class="sp"></span></div>
+   <div class="row fh"><span class="car">▾</span>wherever<span class="n">23</span><span class="sp"></span><span class="dots">⋯</span></div>
+   <div class="row sr on"><span class="dot"></span><div class="grow"><div class="t">Now that we shipmates can have agents...</div><div class="m">6h ago · 235 msgs · owns 1</div></div></div>
+   <div style="position:relative">
+    <div class="row sr hov"><span class="dot off"></span><div class="grow"><div class="t">&lt;skill name="drive-tasks"&gt; Be the cond...</div><div class="m">7d ago · 383 msgs <span class="star">★</span></div></div><span class="qa" title="Close">⊘</span><span class="dots" style="color:#fff">⋯</span></div>
+    <div class="pop">
+     <div class="it">⊘ Close</div>
+     <div class="it">★ Unstar</div>
+     <div class="it">✎ Rename</div>
+     <div class="it">⧉ Copy link</div>
+     <div class="it">↗ Open in new tab</div>
+     <div class="sep"></div>
+     <div class="it danger">🗑 Delete…<span class="r" style="color:#b85a5a">asks again</span></div>
+    </div>
+   </div>
+   <div class="row sr"><span class="dot off"></span><div class="grow"><div class="t">Goal: implement ADR 0024 host for spawn...</div><div class="m">7d ago · 92 msgs</div></div></div>
+   <div class="row sr"><span class="dot off"></span><div class="grow"><div class="t">Three hardening fixes in wherever...</div><div class="m">7d ago · 405 msgs</div></div></div>
+   <div class="row sr"><span class="dot off"></span><div class="grow"><div class="t">Timezone report only when the device...</div><div class="m">8d ago · 61 msgs</div></div></div>
+   <div class="row sr"><span class="dot off"></span><div class="grow"><div class="t">Restore a missing folder from a remote...</div><div class="m">9d ago · 140 msgs</div></div></div>
+   <div class="row fh"><span class="car">▸</span>shipmates<span class="n">12</span></div>
+   <div class="row fh"><span class="car">▸</span>memonaut<span class="n">6</span></div>
+   <div class="row fh"><span class="car">▸</span>baseline-2026-11-24<span class="n">2</span></div>
+   <div class="row fh"><span class="car">▸</span>my-boxes<span class="n">31</span></div>
+   <div class="row fh"><span class="car">▸</span>dorfl<span class="n">58</span></div>
+  </div>
+ </div>
+ <div class="main">
+  <div class="row top"><div class="grow"><div class="ttl">Now that we shipmates can have agents create sessions...</div><div class="sub">📁 wherever · 🤖 claude-opus-5-5 · <span style="color:#2ecc71">● connected</span></div></div><span class="ib">☆</span><span class="ib">⋯</span></div>
+  <div class="chat"><div class="lane">
+   <div class="user">Yes both</div>
+   <div class="asst"><p>I promoted all 11 tasks to <code>work/tasks/ready/</code> and committed everything as <code>2d7d8f8</code> on <code>main</code>. The memonaut session is started.</p><p><b>The commit</b> includes the 4 tasked specs, the newest-first spec (still in <code>proposed/</code>), ADRs 0025 and 0026, the 11 tasks, and the deletion of <code>session-search-index.md</code>. It is not pushed.</p><div class="time">06:03</div></div>
+   <div class="tool">✓ bash · git log --oneline -1</div>
+   <div class="tool">⟳ subagent · Review four specs</div>
+   <div class="user">I like the proposition! note it is a side bar currently and have some space on the right that let it close, do you intend to keep that</div>
+   <div class="asst"><p>Building the second set of mockups now: phone drawer and chat, and desktop.</p></div>
+  </div></div>
+  <div class="comp">
+   <div class="row meta"><span><span class="ring"></span>33% of 1.0M</span><span class="sp"></span><span>Drafts (2)</span></div>
+   <div class="pillc"><span class="rb">＋</span><div class="ta">Message... (Enter to send, Shift+Enter for a new line)</div><span class="rb">🎤</span><span class="rb send">➤</span></div>
+  </div>
+ </div>
+</div>
+<div class="ann"><b>Sidebar</b>: same compact layout as the phone; « collapses it to a thin rail. Hovering a row shows ⊘ (one-click close) and ⋯; the row ⋯ is a popover with Close, Star, Rename, Copy link, Open in new tab, then Delete in red. Rows stay real links, so middle-click / Ctrl-click / right-click "open in new window" keep working. <b>Chat</b>: a centered reading lane (~760px) instead of full-width bubbles, the same pill composer, top bar with the title, folder · model · connection, ☆ and the session ⋯ menu.</div>
+</body></html>

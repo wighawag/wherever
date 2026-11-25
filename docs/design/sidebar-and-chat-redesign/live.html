@@ -1,0 +1,89 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b0d12;font-family:Inter,system-ui,sans-serif;color:#e6e8ee;padding:24px;display:flex;gap:26px;align-items:flex-start}
+.col{display:flex;flex-direction:column;gap:10px;align-items:center}
+.cap{font-size:15px;font-weight:600;color:#9aa3b5}.cap b{color:#e6e8ee}
+.panel{width:300px;background:#11141b;border:1px solid #2a2f3a;border-radius:14px;overflow:hidden}
+.note{font-size:11px;color:#8b93a5;max-width:300px;line-height:1.45}.note b{color:#cfd5e2}
+.row{display:flex;align-items:center}.sp{flex:1}.grow{flex:1;min-width:0}
+.t{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m{font-size:10.5px;color:#8b93a5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dot{width:8px;height:8px;border-radius:50%;flex:none}
+.run{background:#4f8dff;box-shadow:0 0 0 3px rgba(79,141,255,.25)}
+.wh{background:#f5b041;box-shadow:0 0 0 3px rgba(245,176,65,.3)}
+.ws{background:#a46bff}
+.idle{background:#3a404d}
+.closed{background:transparent;border:1.5px solid #4a5263}
+.res{background:#2ecc71}
+.lh{height:30px;padding:0 10px;gap:6px;font-size:10.5px;letter-spacing:.05em;color:#8b93a5;text-transform:uppercase;border-bottom:1px solid #222733}
+.car{font-size:9px;color:#8b93a5;width:10px}
+.cnt{display:flex;gap:8px;margin-left:auto;text-transform:none;letter-spacing:0;font-size:11px}
+.cnt span{display:flex;align-items:center;gap:3px}
+.lr{padding:6px 10px;gap:8px;border-bottom:1px solid #1a1e28}
+.lr.on{background:#1b2030}
+.lr.att{background:linear-gradient(90deg,rgba(245,176,65,.12),transparent 70%)}
+.st{font-size:9.5px;border-radius:5px;padding:1px 5px;border:1px solid;flex:none}
+.st.w{border-color:rgba(245,176,65,.5);color:#f5b041}
+.st.s{border-color:rgba(164,107,255,.5);color:#b58cff}
+.st.r{border-color:rgba(79,141,255,.5);color:#7fb0ff}
+.more{padding:5px 10px;font-size:11px;color:#4f8dff}
+.dots{color:#8b93a5;font-size:15px;width:22px;text-align:center}
+.fh{height:30px;padding:0 10px;gap:7px;font-size:13px;font-weight:600}.fh .n{font-size:11px;color:#8b93a5;font-weight:400}
+.sr{padding:6px 6px 6px 12px;gap:8px}
+.leg{padding:8px 12px;display:grid;grid-template-columns:auto 1fr;gap:7px 10px;font-size:12px;align-items:center}
+.top{height:48px;padding:0 8px;gap:8px;border-bottom:1px solid #222733}
+.ib{width:30px;height:30px;border:1px solid #2a2f3a;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:14px;color:#aab2c3;background:#161a23;flex:none;position:relative}
+.ib .bd{position:absolute;top:-4px;right:-4px;width:10px;height:10px;border-radius:50%;background:#f5b041;border:2px solid #11141b}
+.ttl{font-size:13px;font-weight:600}
+</style></head><body>
+
+<div class="col">
+<div class="cap"><b>Live strip</b>, expanded</div>
+<div class="panel">
+ <div class="row lh"><span class="car">▾</span>Live<div class="cnt"><span><i class="dot wh"></i>1</span><span><i class="dot ws"></i>1</span><span><i class="dot run"></i>3</span></div></div>
+ <div class="row lr att"><span class="dot wh"></span><div class="grow"><div class="t">memonaut/search-order</div><div class="m">memonaut · "Ship 0.5.0 now?"</div></div><span class="st w">you</span></div>
+ <div class="row lr"><span class="dot ws"></span><div class="grow"><div class="t">wherever/drive-sidebar-tasks</div><div class="m">waiting on memonaut/search-order</div></div><span class="st s">session</span></div>
+ <div class="row lr on"><span class="dot run"></span><div class="grow"><div class="t">Now that we shipmates can have agents...</div><div class="m">wherever · building mockups</div></div><span class="st r">running</span></div>
+ <div class="row lr"><span class="dot run"></span><div class="grow"><div class="t">lane/closed-sessions-in-search</div><div class="m">wherever-wt · ↳ drive-sidebar-tasks</div></div><span class="st r">running</span></div>
+ <div class="row lr"><span class="dot run"></span><div class="grow"><div class="t">Three hardening fixes in wherever...</div><div class="m">wherever</div></div><span class="st r">running</span></div>
+ <div class="more">+2 more</div>
+</div>
+<div class="note"><b>Two lines per row</b> instead of today's single crowded line: label, then folder · status line (or what it waits on, or ↳ owner). Ordered waiting for you, then waiting on a session, then running. <b>Waiting for you</b> gets an amber wash so it reads first. The open session is highlighted. Badge is short: <b>you</b> / <b>session</b> / <b>running</b>. Cap of 6, then "+N more". Tap opens; the row ⋯ is not needed here (the session is in its folder too).</div>
+</div>
+
+<div class="col">
+<div class="cap"><b>Live strip</b>, collapsed</div>
+<div class="panel">
+ <div class="row lh"><span class="car">▸</span>Live<div class="cnt"><span><i class="dot wh"></i>1</span><span><i class="dot ws"></i>1</span><span><i class="dot run"></i>3</span></div></div>
+ <div class="row fh"><span class="car">▾</span>wherever<span class="n">23</span><span class="sp"></span><span class="dots">⋯</span></div>
+ <div class="row sr" style="background:#1b2030;margin:0 6px;border-radius:8px"><span class="dot run"></span><div class="grow"><div class="t">Now that we shipmates can have agents...</div><div class="m">6h ago · 235 msgs · owns 1</div></div><span class="dots">⋯</span></div>
+ <div class="row sr"><span class="dot run"></span><div class="grow"><div class="t">Three hardening fixes in wherever...</div><div class="m">7d ago · 405 msgs</div></div><span class="dots">⋯</span></div>
+ <div class="row sr"><span class="dot idle"></span><div class="grow"><div class="t">Goal: implement ADR 0024 host for spawn...</div><div class="m">7d ago · 92 msgs</div></div><span class="dots">⋯</span></div>
+ <div class="row sr" style="opacity:.55"><span class="dot closed"></span><div class="grow"><div class="t">Timezone report only when the device...</div><div class="m">8d ago · closed</div></div><span class="dots">⋯</span></div>
+ <div style="height:8px"></div>
+</div>
+<div class="note"><b>Collapsed</b> to one 30px line that still shows the counts as coloured dots, so "1 waiting for you" is never hidden. The state is remembered per device (as today). Live sessions also keep their state <b>dot in their folder row</b>, so the folder list alone tells you what is moving.</div>
+</div>
+
+<div class="col">
+<div class="cap"><b>State dots</b> everywhere</div>
+<div class="panel">
+ <div class="leg">
+  <span class="dot wh"></span><span>waiting for you (amber, halo)</span>
+  <span class="dot ws"></span><span>waiting on another session (purple)</span>
+  <span class="dot run"></span><span>running (blue, pulses)</span>
+  <span class="dot res"></span><span>loaded, idle (green, as today's "active")</span>
+  <span class="dot idle"></span><span>not loaded</span>
+  <span class="dot closed"></span><span>closed (hollow, row dimmed)</span>
+ </div>
+</div>
+<div class="note">One legend for the Live strip, folder rows, By-owner rows and group summaries. Today the dot means "working" (amber pulse) or "resident"; this keeps a single meaning per colour, with amber reserved for "needs you". Long-press or hover on a dot shows its label.</div>
+<div class="cap" style="margin-top:14px"><b>Chat top bar</b> and closed drawer</div>
+<div class="panel">
+ <div class="row top"><span class="ib">☰<span class="bd"></span></span><div class="grow"><div class="ttl t">Now that we shipmates can have agents...</div><div class="m"><span class="dot run" style="display:inline-block;width:7px;height:7px;vertical-align:0"></span> running · wherever · claude-opus-5-5</div></div><span class="ib">⋯</span></div>
+</div>
+<div class="note">When the drawer is closed, the <b>☰ gets an amber dot</b> whenever any session waits for you (today's mobile dot reflects the inbox only), and the subtitle shows the open session's own state dot.</div>
+</div>
+
+</body></html>
