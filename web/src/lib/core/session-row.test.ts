@@ -60,12 +60,13 @@ describe('rowNestMarker', () => {
 });
 
 describe('rowMenuItems', () => {
-	it('orders a main-list row: close, star, copy link, new tab, then delete apart', () => {
+	it('orders a main-list row: close, star, rename, copy link, new tab, then delete apart', () => {
 		expect(
 			rowMenuItems({readOnly: false, closed: false, desktop: true}),
 		).toEqual([
 			'close',
 			'star',
+			'rename',
 			'copy-link',
 			'open-new-tab',
 			'separator',
@@ -79,6 +80,7 @@ describe('rowMenuItems', () => {
 		).toEqual([
 			'reopen',
 			'star',
+			'rename',
 			'copy-link',
 			'open-new-tab',
 			'separator',
@@ -89,10 +91,10 @@ describe('rowMenuItems', () => {
 	it('leaves out Open in new tab on a phone', () => {
 		expect(
 			rowMenuItems({readOnly: false, closed: false, desktop: false}),
-		).toEqual(['close', 'star', 'copy-link', 'separator', 'delete']);
+		).toEqual(['close', 'star', 'rename', 'copy-link', 'separator', 'delete']);
 	});
 
-	it('holds only Star, Copy link and Open in new tab on the read-only page', () => {
+	it('holds only Star, Copy link and Open in new tab on the read-only page (no Rename)', () => {
 		expect(
 			rowMenuItems({readOnly: true, closed: false, desktop: true}),
 		).toEqual(['star', 'copy-link', 'open-new-tab']);

@@ -6,7 +6,8 @@
 	// (↺ Reopen on a closed row). Rendered by the folder view and the By-owner
 	// view. It only renders: text and the menu's items come from pure helpers
 	// (core/session-row.ts, core/live-sessions.ts, core/shipmates.ts) and every
-	// action is a callback, like LiveStrip.svelte. Owned by the parent: the
+	// action is a callback, like LiveStrip.svelte. Rename opens the shared
+	// RenamePrompt.svelte, which this row mounts (only while it is open). Owned by the parent: the
 	// delete-confirm state (one row at a time), the close cascade (`closeSession`
 	// in the store, which every close entry point goes through), and which rows /
 	// chips are shown (core/closed-sessions.ts). The row stays a real link
@@ -32,6 +33,7 @@
 	import Menu from './menu/Menu.svelte';
 	import MenuItem from './menu/MenuItem.svelte';
 	import MenuSeparator from './menu/MenuSeparator.svelte';
+	import RenamePrompt from './RenamePrompt.svelte';
 
 	let {
 		session,
@@ -56,6 +58,7 @@
 		onAskDelete,
 		onCancelDelete,
 		onDelete,
+		onRename,
 		fetchOwnedCount,
 	}: {
 		session: SessionInfo;
@@ -98,6 +101,11 @@
 		onCancelDelete: () => void;
 		onDelete: (path: string) => void;
 		/**
+		 * Write a new name (`renameSession`); its rejection's message shows in
+		 * the prompt. No Rename item without it (and never on the read-only page).
+		 */
+		onRename?: (path: string, name: string) => Promise<unknown>;
+		/**
 		 * The owned sessions a close would cascade to (`/sessions/owned`), asked
 		 * when the menu opens for Close's "and N owned"; no hint without it.
 		 */
@@ -121,7 +129,12 @@
 	// Popover (desktop) or sheet (phone): read when the menu opens.
 	let desktop = $state(isWide());
 	let menuOpen = $state(false);
-	let items = $derived(rowMenuItems({readOnly, closed, desktop}));
+	let items = $derived(
+		rowMenuItems({readOnly, closed, desktop}).filter(
+			(item) => item !== 'rename' || !!onRename,
+		),
+	);
+	let renaming = $state(false);
 
 	// Close's "and N owned": asked when the menu opens, no hint until it answers.
 	let ownedN = $state<number | undefined>(undefined);
@@ -324,6 +337,12 @@
 						onselect={() => onStar(session.path, !session.starred)}
 						>{session.starred ? 'Unstar' : 'Star'}</MenuItem
 					>
+				{:else if item === 'rename'}
+					<MenuItem
+						icon="✎"
+						title="Give this session a name"
+						onselect={() => (renaming = true)}>Rename</MenuItem
+					>
 				{:else if item === 'copy-link'}
 					<MenuItem
 						icon="⧉"
@@ -385,6 +404,14 @@
 		</Menu>
 	</div>
 </div>
+{#if onRename}
+	<RenamePrompt
+		bind:open={renaming}
+		currentName={session.name}
+		{label}
+		onsave={(name) => onRename(session.path, name)}
+	/>
+{/if}
 {#snippet sheetHeader()}
 	<div class="truncate text-sm font-semibold text-brand-text">{label}</div>
 	<div class="truncate text-xs text-brand-text-muted">

@@ -15,6 +15,7 @@
 		setSessionClosed,
 		closeSession,
 		fetchOwnedCount,
+		renameSession,
 		closeFolderSessions,
 		closeBannerStore,
 		undoLastClose,
@@ -1076,6 +1077,7 @@
 										onAskDelete={(path) => (confirmingDelete = path)}
 										onCancelDelete={() => (confirmingDelete = null)}
 										onDelete={handleDeleteSession}
+										onRename={readOnly ? undefined : renameSession}
 									/>
 								</div>
 							</div>
@@ -1275,6 +1277,7 @@
 									onAskDelete={(path) => (confirmingDelete = path)}
 									onCancelDelete={() => (confirmingDelete = null)}
 									onDelete={handleDeleteSession}
+									onRename={readOnly ? undefined : renameSession}
 								/>
 							{/each}
 						</div>
