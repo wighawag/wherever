@@ -1,0 +1,3 @@
+# Server harness tests time out again under the full `pnpm run -r test`
+
+Seen 2026-11-25 (continuing `rename-session-endpoint`): the root `pnpm run -r test` failed 6 server harness tests (`assistant-tools-server`, `cli-bridge-foundation-server`, `file-upload-read-only` with a 401, `restore-create-folder-action` with ECONNREFUSED on 127.0.0.1:23000, `steer-queue-cancel`), all "timeout waiting for message" style. None of these files is touched by the task; a rerun of `npx vitest run` in `server/` alone passed 108/108 files. Same signal as `server-suite-timeouts-under-full-parallel-run.md`, now hitting the acceptance gate itself, so it may be why tasks get requeued.

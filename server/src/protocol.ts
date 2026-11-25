@@ -132,6 +132,9 @@ export type ClientMessage =
   // same id. The caller is the session this connection registered, never a
   // field of the request. See server/src/cli-requests.ts.
   | { type: 'cli_request'; id: string; op: string; args?: unknown }
+  // CLI bridge -> server: the answer to a server `cli_rename` with the same id
+  // (ADR 0027). Only the socket the rename went to can answer it.
+  | { type: 'cli_rename_result'; id: string; ok: boolean; error?: string }
   // Server -> CLI bridge relay of a web user message. `conversationMode` carries
   // the same per-turn signal as the `message` payload above, so a bridged terminal
   // session driven from the web gets the same injection (the extension's own
@@ -359,6 +362,12 @@ export type ServerMessage =
   // Server -> CLI bridge: the answer to a `cli_request` (ADR 0016).
   | { type: 'cli_response'; id: string; ok: true; result: unknown }
   | { type: 'cli_response'; id: string; ok: false; error: string }
+  // Server -> CLI bridge: rename this session (`POST /sessions/name`, ADR 0027).
+  // The terminal pi owns the file, so it writes the name (pi's `setSessionName`)
+  // and answers `cli_rename_result {id, ok, error?}`. The reverse direction of
+  // `cli_request` / `cli_response`. Sent only to a bridge that advertised the
+  // `cli_rename` capability.
+  | { type: 'cli_rename'; id: string; name: string }
   // Server -> CLI bridges: the `assistant_info` answer changed (the extension
   // updates its cache). `assistantFolder` null = the assistant is not active.
   | { type: 'assistant_info_changed'; assistantFolder: string | null; timezone: string | null }

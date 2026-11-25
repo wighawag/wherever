@@ -25,9 +25,12 @@ import { randomUUID } from "node:crypto";
 /**
  * What this extension tells the server it supports, on every `cli_register`.
  * `agent_settled`: it forwards pi's `agent_settled` (so the server need not fall
- * back to `agent_end`, ADR 0016); `cli_request`: it speaks the request path.
+ * back to `agent_end`, ADR 0016); `cli_request`: it speaks the request path;
+ * `cli_rename`: it answers the server's `cli_rename` with `cli_rename_result`
+ * (wherever ADR 0027, `session-rename.ts`), so a web rename of this session is
+ * written by this terminal pi.
  */
-export const BRIDGE_CAPABILITIES: readonly string[] = ["agent_settled", "cli_request"];
+export const BRIDGE_CAPABILITIES: readonly string[] = ["agent_settled", "cli_request", "cli_rename"];
 
 /**
  * Default request timeout. Long enough for a busy server on a slow link, short

@@ -1,0 +1,3 @@
+# Server suite: seven harness tests time out only in the full parallel run
+
+Seen 2026-11-25 (while doing `rename-session-endpoint`): a full `npx vitest run` in `server/` failed 7 tests (`appearance-config`, two in `assistant-notify-server`, `missing-folder-badge` "drops the mark when a restore completes", `pi-sdk-external`, `restore-clone-panel` "cancels a running clone", and `slow-link` at collect time), all real-server harness tests. Each of those files passes when run on its own, so it looks like load or timeouts from many harness servers booting at once, not a code fault. Not investigated further.

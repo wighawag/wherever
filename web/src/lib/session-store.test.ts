@@ -217,3 +217,42 @@ describe('setSessionClosed', () => {
 		expect(s.starred).toBe(true);
 	});
 });
+
+describe('renameSession', () => {
+	it('POSTs {sessionFile, name} to /sessions/name and resolves the stored name', async () => {
+		const {renameSession} = await import('./session-store.js');
+		const fetchMock = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			json: async () => ({sessionFile: '/a.jsonl', name: 'Release notes'}),
+		}));
+		(globalThis as any).fetch = fetchMock;
+		await expect(renameSession('/a.jsonl', ' Release notes ')).resolves.toEqual(
+			{
+				sessionFile: '/a.jsonl',
+				name: 'Release notes',
+			},
+		);
+		const [url, init] = fetchMock.mock.calls[0] as unknown as [string, any];
+		expect(url).toMatch(/\/sessions\/name$/);
+		expect(init.method).toBe('POST');
+		expect(JSON.parse(init.body)).toEqual({
+			sessionFile: '/a.jsonl',
+			name: ' Release notes ',
+		});
+	});
+
+	it("rejects with the server's error text, for the prompt to show", async () => {
+		const {renameSession} = await import('./session-store.js');
+		(globalThis as any).fetch = vi.fn(async () => ({
+			ok: false,
+			status: 409,
+			json: async () => ({
+				error: 'Update the wherever extension in that terminal',
+			}),
+		}));
+		await expect(renameSession('/a.jsonl', 'x')).rejects.toThrow(
+			'Update the wherever extension in that terminal',
+		);
+	});
+});

@@ -3580,6 +3580,16 @@ export class SessionPool {
   }
 
   /** True while `reloadSession` is rebuilding this session's agent. */
+  /**
+   * True while a load (`loadSession`, a CLI to server handoff, a cold build) is
+   * in flight for this file. Such a load holds an in-memory SessionManager
+   * opened from the file, so anything else that writes the file meanwhile would
+   * be overwritten or forked by it (the rename refuses then, ADR 0027).
+   */
+  hasPendingLoad(sessionFile: string): boolean {
+    return this.pendingSessions.has(normalizeSessionFile(sessionFile));
+  }
+
   isReloading(sessionFileOrId: string): boolean {
     const tracked = this.getSession(sessionFileOrId);
     return tracked?.type === 'server' && tracked.reloading === true;

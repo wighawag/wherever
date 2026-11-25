@@ -27,6 +27,7 @@ import { resolveTelegramToken, takeTelegramTokenEnv, type TelegramTokenEnv } fro
 import { DEFAULT_GRACE_MS } from './assistant-schedule.js';
 import { createCliRequestRouter, assistantInfoChangedFrame, type AssistantInfo, type CliRequestRouter } from './cli-requests.js';
 import { readStarredSet, setSessionStarred, validateStarInput, forgetStar } from './session-stars.js';
+import { SessionRenamer, validateRenameInput } from './session-rename.js';
 import {
   readClosedSet,
   closeSessions,
@@ -1590,6 +1591,9 @@ async function main(): Promise<void> {
     assistantFolder: assistantController && assistant.status.folder ? canonicalPath(assistant.status.folder) : null,
     timezone: assistantController ? currentTimezone() : null,
   });
+  // Renames are written by the file's owner (ADR 0027); a CLI-bridged one goes
+  // through the bridge and waits for its `cli_rename_result`.
+  const sessionRenamer = new SessionRenamer(sessionPool);
   const cliRequests = createCliRequestRouter({
     assistantInfo: currentAssistantInfo,
     assistantHooks: () => assistantHooks,
@@ -2102,6 +2106,41 @@ async function main(): Promise<void> {
       } catch (err) {
         sendJSON(res, 500, { error: (err as Error).message || 'Failed to update star' });
       }
+      return;
+    }
+
+    // --- Rename a session (ADR 0027) ------------------------------------------
+    // `{sessionFile, name}`: the name is written by whichever process owns the
+    // file (the server's agent, the terminal pi through the bridge, or a plain
+    // `session_info` append for a session only on disk), see session-rename.ts.
+    // Every dashboard re-lists on success only (the listing reads the last
+    // `session_info` name); conversation search catches up at memonaut's next
+    // index.
+    if (pathname === '/sessions/name' && req.method === 'POST') {
+      let parsed: any;
+      try {
+        parsed = JSON.parse((await readBody(req)) || '{}');
+      } catch {
+        sendJSON(res, 400, { error: 'Invalid request' });
+        return;
+      }
+      const input = validateRenameInput(parsed);
+      if ('error' in input) {
+        sendJSON(res, 400, { error: input.error });
+        return;
+      }
+      const resolved = path.resolve(input.sessionFile);
+      if (!sessionPool.isSessionFile(resolved)) {
+        sendJSON(res, 400, { error: 'Invalid session file: not a session in the sessions directory' });
+        return;
+      }
+      const result = await sessionRenamer.rename(resolved, input.name);
+      if (!result.ok) {
+        sendJSON(res, result.status, { error: result.error });
+        return;
+      }
+      broadcastSessionsUpdated();
+      sendJSON(res, 200, { sessionFile: resolved, name: input.name });
       return;
     }
 
@@ -3417,7 +3456,7 @@ async function main(): Promise<void> {
       }
 
       try {
-        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated, assistantController, cliRequests, onClientTimezone, shipmates);
+        await handleWSMessage(msg, client, sessionPool, clients, broadcastToSession, broadcastSessionsUpdated, assistantController, cliRequests, onClientTimezone, shipmates, sessionRenamer);
       } catch (err) {
         console.error('WS message processing error:', err);
         const errorText = (err as Error).message || 'An error occurred';
@@ -3447,6 +3486,8 @@ async function main(): Promise<void> {
     });
 
     ws.on('close', async () => {
+      // A rename waiting on this bridge fails now, not at its timeout.
+      if (client.isCliBridge) sessionRenamer.dropSocket(ws);
       if (client.sessionId) {
         if (client.isCliBridge) {
           // Only this socket's own registration: a reconnect may already
@@ -4005,8 +4046,15 @@ async function handleWSMessage(
   cliRequests: CliRequestRouter | null = null,
   onClientTimezone: (report: WebTimezoneReport) => void = () => {},
   shipmates: ShipmatesService | null = null,
+  renamer: SessionRenamer | null = null,
 ): Promise<void> {
   switch (msg.type) {
+    case 'cli_rename_result': {
+      // The bridge's answer to a `cli_rename` (ADR 0027). Matched by id AND
+      // socket, so only the bridge the rename went to can settle it.
+      if (client.isCliBridge) renamer?.handleResult(client.ws, msg);
+      return;
+    }
     case 'shipmates_undo_delete': {
       // Undo a cascaded delete (shipmates D24) from the web, within its window.
       const r = client.isCliBridge
