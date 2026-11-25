@@ -41,3 +41,14 @@ Rework the top of the sidebar in `+page.svelte` (the sidebar half only):
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/sidebar-header-tabs-current-line-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+These are in `work/notes/observations/sidebar-header-tabs-current-line-decisions.md`:
+1. The 🔎 tab always searches your own sessions, even from the read-only page. Searching read-only conversations goes only through the "Search these conversations" link, so the icon keeps one meaning.
+2. You can jump straight from one tab to another; only tapping the active tab goes back. Opening 👁 always reloads the read-only list, as the old row did.
+3. The current session's dot uses its list entry and its shipmates state, plus this page's own "agent is working" signal so the dot doesn't wait for the list to refresh. A session not yet in the list shows as loaded and idle.
+4. When disconnected with a session open, the line reads "Disconnected · <folder>" with the red connection dot, because the session's state is unknown without a connection.
+5. The instance badge is now a plain label beside the logo instead of being part of the logo's button.
+6. The tab's long-press label copies the `StateDot` pattern. The active tab gets `aria-current="page"` and a blue underline. The Assistant gets a blue tint instead of being marked active, because it is an action rather than a view.
+7. The drawer is `w-[86vw]` on the phone and `w-72` from the `md` breakpoint.
