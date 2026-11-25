@@ -44,3 +44,18 @@ Replace today's foreground card for questions with the compact toast and the sli
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/question-toasts-and-bar-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+All in `work/notes/observations/question-toasts-and-bar-decisions.md`; each is easy to reverse:
+1. Opening Needs you while a toast shows: the shown toast goes into the bar (it did show on this device), and questions still queued behind it are dropped.
+2. Opening the asking session moves its toast and any queued questions from it into the bar.
+3. A fallback toast still shows while Needs you is open, because the panel may be stale too.
+4. When a pause ends (hover, touch, sending, error), the full 8 s starts again rather than the time left. An error keeps the toast up until the user does something.
+5. A successful answer from the toast removes it straight away instead of waiting for the next snapshot.
+6. A second push for a question already shown, queued, waiting or in the bar is ignored.
+7. The bar reads "N questions for you … View ›", as in the mockup.
+8. Updates use the interim dark toast in the same slot, with no auto-hide.
+9. Swipe up is a small handler of its own, not the row-swipe helper.
+10. "Desktop" means the 48rem (`md`) breakpoint.
+11. The toasts read every `shipmatesStore` update as a new snapshot.

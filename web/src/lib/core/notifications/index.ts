@@ -1,5 +1,6 @@
 import {get, writable} from 'svelte/store';
-type JSONNotification = {
+import {createQuestionToasts, readQuestionPush} from './question-toasts';
+export type JSONNotification = {
 	title: string;
 	options: NotificationOptions;
 };
@@ -85,3 +86,24 @@ export function createNotificationsService(
 }
 
 export const notifications = createNotificationsService();
+
+/**
+ * The foreground question toasts and slim bar (`question-toasts.ts`), kept on
+ * this device in localStorage. `QuestionToasts.svelte` feeds it the shipmates
+ * snapshots and the page's context.
+ */
+export const questionToasts = createQuestionToasts({
+	storage: typeof localStorage !== 'undefined' ? localStorage : undefined,
+});
+
+/**
+ * A notification the service worker posted to this (visible, focused) page:
+ * a question (`data.kind: 'question'`) goes to the question toasts, anything
+ * else is an update, shown by the interim update toast until
+ * `update-toasts-and-list` lands.
+ */
+export function receivePushNotification(notification: JSONNotification): void {
+	const question = readQuestionPush(notification);
+	if (question) questionToasts.push(question);
+	else notifications.add({type: 'push-notification', data: notification});
+}

@@ -13,6 +13,7 @@
 	import SidebarTab from '$lib/components/SidebarTab.svelte';
 	import StateDot from '$lib/components/StateDot.svelte';
 	import ChatSessionMenu from '$lib/components/ChatSessionMenu.svelte';
+	import NotificationToasts from '$lib/components/NotificationToasts.svelte';
 	import {
 		activeTab,
 		openSessionDot,
@@ -161,6 +162,34 @@
 		searchReadOnly = false;
 		sessionView = 'main';
 		openNewSessionForm();
+	}
+
+	// The `md` breakpoint (48rem), where the drawer becomes the side column (or
+	// its rail). Tracked so "Needs you is open" can tell which applies.
+	let isDesktop = $state(false);
+	onMount(() => {
+		const mq = window.matchMedia?.('(min-width: 48rem)');
+		if (!mq) return;
+		isDesktop = mq.matches;
+		const onChange = () => (isDesktop = mq.matches);
+		mq.addEventListener('change', onChange);
+		return () => mq.removeEventListener('change', onChange);
+	});
+	// The Needs you panel is ON SCREEN: its view AND a visible sidebar (phone:
+	// the drawer open; desktop: not collapsed to the rail). `sessionView` alone
+	// stays 'inbox' after the drawer closes. The question toasts are suppressed
+	// while it is (spec notifications-compact, story 10).
+	let needsYouOpen = $derived(
+		sessionView === 'inbox' && (isDesktop ? !sidebarCollapsed : sidebarOpen),
+	);
+	// Show the Needs you panel from a toast or the slim bar: the view, plus
+	// opening the drawer (phone) or expanding the rail (desktop).
+	function openNeedsYou() {
+		showSettings = false;
+		searchReadOnly = false;
+		sessionView = 'inbox';
+		if (isDesktop) setSidebarCollapsed(false);
+		else sidebarOpen = true;
 	}
 
 	// The current-session line's ▾: app and server versions and Leave session.
@@ -1254,6 +1283,14 @@
 				onStartSearch={startSearch}
 			/>
 		</div>
+
+		<!-- The slim bar of hidden questions, and the compact question toast
+		     over the conversation (spec notifications-compact). -->
+		<NotificationToasts
+			{needsYouOpen}
+			openSessionId={currentSessionId ?? null}
+			onOpenNeedsYou={openNeedsYou}
+		/>
 
 		<!-- Interruption notification -->
 		{#if interrupted}
