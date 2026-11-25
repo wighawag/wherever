@@ -44,3 +44,14 @@ Server side of the compact notifications:
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/web-push-question-payload-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+Seven small choices are recorded in `work/notes/observations/web-push-question-payload-decisions.md`, all easy to reverse:
+1. A push is treated as a question only when `question.itemId` is set.
+2. An empty source gives the title "Question for you".
+3. A missing `text` falls back to the full body.
+4. Update tags are `update-<uuid>`, one per notify, so every device gets the same tag for the same notification.
+5. `sentAt` is on question pushes only.
+6. `inboxError` is sent only when true, never as `false`.
+7. There is no `renotify`, so a replaced notification doesn't alert again.

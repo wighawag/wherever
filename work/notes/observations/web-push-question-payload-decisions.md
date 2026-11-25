@@ -1,0 +1,11 @@
+# web-push-question-payload: decisions (2026-11-25)
+
+In-scope choices made while building task `web-push-question-payload` (spec `notifications-compact`, stories 18 to 20). Each is cheap to reverse.
+
+1. **What makes a push a "question".** `webPushPayload` (`server/src/web-push.ts`) shapes the short question form only when `ChannelNotification.question.itemId` is set, not whenever `question` is present. Why: the tag and `data.itemId` need an item id; a `question` without one (none exists today) has nothing to tag by, so it keeps the update form. Alternative: any `question` is a question, with a random tag. Touches: only the Web Push channel; Telegram still keys its wording on `question` alone.
+2. **No source.** A question with an empty `source` is titled "Question for you" (the shipmates title) rather than " asks". Touches: nothing else (shipmates always sets a source).
+3. **No `question.text`.** Falls back to the full `body`. Keeps a caller that sets `itemId` but not `text` readable. Touches: nothing else.
+4. **Update tag.** `update-<crypto.randomUUID()>`, one per `notify` call: every device gets the same tag for the same notification, and no two updates replace each other. Alternative: no tag at all (the browser default); the task asked for a unique tag, which also gives a later task something to close by.
+5. **`sentAt` only on questions.** `data` for updates is exactly `{kind: 'update'}`, as the task lists; `sentAt` is for `close-answered-system-notifications`, which closes questions only. Adding it to updates later is additive.
+6. **`inboxError` is present only when true** (server `ShipmatesSnapshot.inboxError?: true`, web `ShipmatesState.inboxError?: true`, `parseShipmatesUpdate` keeps it only when it is exactly `true`). Alternative: an always-present boolean. Chosen so a good snapshot is unchanged on the wire (the server sends a `shipmates_update` only when the snapshot differs) and existing equality tests and `emptyShipmatesState` stay as they were.
+7. **No `renotify`.** The service worker does not forward `renotify`, so a re-push of the same question replaces its notification without alerting again. That matches story 20 ("replaces instead of adding a duplicate"); the service worker was not changed.

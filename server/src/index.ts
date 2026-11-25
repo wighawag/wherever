@@ -1530,7 +1530,7 @@ async function main(): Promise<void> {
   if (channelDispatcher) {
     const dispatcher = channelDispatcher;
     shipmates.setNotifier(async (n): Promise<ShipmatesNotifyOutcome> => {
-      const out = await dispatcher.notify({ title: n.title, body: n.body, source: n.source, navigate: n.navigate, question: { options: n.options } });
+      const out = await dispatcher.notify({ title: n.title, body: n.body, source: n.source, navigate: n.navigate, question: { options: n.options, itemId: n.itemId, text: n.question } });
       const refs = out.deliveries.flatMap((d) => (d.result.ok ? (d.result.refs ?? []) : []));
       return out.ok ? { delivered: true, refs } : { delivered: false, refs, error: out.error };
     });

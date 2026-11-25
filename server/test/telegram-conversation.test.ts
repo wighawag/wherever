@@ -294,6 +294,16 @@ describe('Telegram conversation: outbound', () => {
     expect(api.of('editMessageReplyMarkup').map((c) => c.params)).toEqual([{ chat_id: USER, message_id: 1, reply_markup: { inline_keyboard: [] } }]);
   });
 
+  it('a shipmates question keeps its full Telegram wording: the item id and short text are for Web Push only', async () => {
+    const { api, channel } = setup();
+    await until(() => api.of('getUpdates').length > 0);
+    const body = 'Publish 0.3.0?\nOptions: yes / no\nThis blocks release until you answer.\nAnswer in the wherever inbox.';
+    await channel.notify({ title: 'Question for you', body, source: 'release', navigate: 's', question: { options: ['yes', 'no'], itemId: 'h_abc', text: 'Publish 0.3.0?' } });
+    expect(api.of('sendMessage')[0].params.text).toBe(
+      `🔔 release: Question for you\n\n${body}\n\nTo answer here: tap a button below, or swipe this message to reply with your own answer.`,
+    );
+  });
+
   it('a question without options has no buttons; a tap on a closed question says so', async () => {
     const { api, channel, controller } = setup();
     await until(() => api.of('getUpdates').length > 0);

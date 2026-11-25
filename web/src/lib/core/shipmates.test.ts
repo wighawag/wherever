@@ -78,6 +78,31 @@ describe('shipmates on the web', () => {
 		).toEqual([archive]);
 	});
 
+	it('keeps inboxError (a failed read, not an empty inbox); absent or malformed means a good read', () => {
+		const failed = parseShipmatesUpdate({
+			type: 'shipmates_update',
+			available: true,
+			inbox: [],
+			presence: [],
+			archives: [],
+			inboxError: true,
+		});
+		expect(failed).toEqual({
+			available: true,
+			inbox: [],
+			presence: [],
+			archives: [],
+			inboxError: true,
+		});
+		expect(parseShipmatesUpdate({available: true})).not.toHaveProperty(
+			'inboxError',
+		);
+		expect(
+			parseShipmatesUpdate({available: true, inboxError: 'yes'}),
+		).not.toHaveProperty('inboxError');
+		expect(emptyShipmatesState).not.toHaveProperty('inboxError');
+	});
+
 	it('carries waitingOnSession, and reads it as null from an older server or when malformed', () => {
 		const old = {
 			...presence({sessionFile: '/s/old.jsonl'}),

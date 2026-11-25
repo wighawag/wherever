@@ -45,10 +45,25 @@ export interface VapidKeys {
   privateKey: string;
 }
 
+/**
+ * What a push says it is, in `notification.data` (the service worker keeps it on
+ * the system notification and posts it to a focused page): a shipmates question
+ * (its item, and when the server sent it, since `Notification.timestamp` is
+ * missing on some browsers), or any other notification.
+ */
+export type PushNotificationData = { kind: 'question'; itemId: string; sentAt: number } | { kind: 'update' };
+
 /** The service worker's declarative payload (`DeclarativePushNotification` in web/src/service-worker/index.ts). */
 export interface DeclarativePushPayload {
   web_push: 8030;
-  notification: { title: string; body: string; navigate: string };
+  notification: {
+    title: string;
+    body: string;
+    navigate: string;
+    /** A system notification replaces the one with the same tag. */
+    tag: string;
+    data: PushNotificationData;
+  };
 }
 
 /** The HTTP boundary a push is sent through (the global `fetch` by default; mocked in tests). */
@@ -326,7 +341,8 @@ export class WebPushChannel implements AssistantChannel {
   /**
    * The channel's `notify`: one declarative push whose tap opens
    * `/#<sessionId>`. The title is prefixed with the source (decision, so the
-   * device shows WHO notified, like Telegram's `🔔 <source>: <title>`).
+   * device shows WHO notified, like Telegram's `🔔 <source>: <title>`); a
+   * shipmates question is shortened (`webPushPayload`).
    */
   async notify(n: ChannelNotification): Promise<ChannelNotifyResult> {
     const subs = this.subscriptions();
@@ -424,14 +440,42 @@ export class WebPushChannel implements AssistantChannel {
   }
 }
 
-/** The declarative payload for a notification (the service worker's `DeclarativePushNotification`). */
-export function webPushPayload(n: ChannelNotification): DeclarativePushPayload {
+/**
+ * The declarative payload for a notification (the service worker's
+ * `DeclarativePushNotification`). Pure but for the unique update tag; `now` is
+ * the question's `sentAt`.
+ *
+ * - A shipmates question (`question.itemId` set) is SHORT, to read at a glance
+ *   on a lock screen: title "<source> asks", body the question only (its
+ *   options, the blocking line and "Answer in the wherever inbox." stay in
+ *   `body`, for Telegram), tag `shipmates-<itemId>` so a re-push of the same
+ *   item replaces its notification instead of adding one.
+ * - Anything else keeps "<source>: <title>" and its body, with a tag of its
+ *   own (no two updates replace each other).
+ */
+export function webPushPayload(n: ChannelNotification, now: number = Date.now()): DeclarativePushPayload {
+  const navigate = `/#${encodeURIComponent(n.navigate)}`;
+  const itemId = n.question?.itemId;
+  if (itemId) {
+    return {
+      web_push: 8030,
+      notification: {
+        title: n.source ? `${n.source} asks` : 'Question for you',
+        body: n.question?.text ?? n.body,
+        navigate,
+        tag: `shipmates-${itemId}`,
+        data: { kind: 'question', itemId, sentAt: now },
+      },
+    };
+  }
   return {
     web_push: 8030,
     notification: {
       title: n.source ? `${n.source}: ${n.title}` : n.title,
       body: n.body,
-      navigate: `/#${encodeURIComponent(n.navigate)}`,
+      navigate,
+      tag: `update-${crypto.randomUUID()}`,
+      data: { kind: 'update' },
     },
   };
 }

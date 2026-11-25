@@ -1,11 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openShipmates, type Shipmates } from 'shipmates';
 import { startHarness, type Harness } from './harness.js';
 import { FakeBotApi } from './fake-bot-api.ts';
+import { b64urlEncode } from '../src/web-push.ts';
 
 /**
  * A blocking shipmates question answered from Telegram, end to end: a REAL server
@@ -16,6 +20,10 @@ import { FakeBotApi } from './fake-bot-api.ts';
  * does nothing for the question (it is a message for the assistant: only a
  * Telegram REPLY to the question answers it). So the question now says how to
  * answer there and carries its options as buttons; a tap answers it.
+ *
+ * A Web Push device is subscribed too (the push service mocked at HTTP, a local
+ * server the subscription points at): the same question reaches it SHORT
+ * ("<source> asks", the question only), tagged by its item.
  */
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -26,6 +34,31 @@ let h: Harness;
 let api: FakeBotApi;
 let shipmates: Shipmates;
 let root: string;
+let pushServer: http.Server;
+const pushed: Buffer[] = [];
+const phone = (() => {
+  const ecdh = crypto.createECDH('prime256v1');
+  ecdh.generateKeys();
+  const auth = crypto.randomBytes(16);
+  return {
+    keys: { p256dh: b64urlEncode(ecdh.getPublicKey()), auth: b64urlEncode(auth) },
+    /** RFC 8291, the receiver side. */
+    decrypt(body: Buffer): any {
+      const salt = body.subarray(0, 16);
+      const idlen = body[20]!;
+      const asPublic = body.subarray(21, 21 + idlen);
+      const ct = body.subarray(21 + idlen);
+      const keyInfo = Buffer.concat([Buffer.from('WebPush: info\0'), ecdh.getPublicKey(), asPublic]);
+      const ikm = Buffer.from(crypto.hkdfSync('sha256', ecdh.computeSecret(asPublic), auth, keyInfo, 32));
+      const cek = Buffer.from(crypto.hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: aes128gcm\0'), 16));
+      const nonce = Buffer.from(crypto.hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: nonce\0'), 12));
+      const d = crypto.createDecipheriv('aes-128-gcm', cek, nonce);
+      d.setAuthTag(ct.subarray(ct.length - 16));
+      const plain = Buffer.concat([d.update(ct.subarray(0, ct.length - 16)), d.final()]);
+      return JSON.parse(plain.subarray(0, plain.length - 1).toString('utf8'));
+    },
+  };
+})();
 
 async function until(pred: () => boolean, timeoutMs = 30_000, what = 'condition'): Promise<void> {
   const start = Date.now();
@@ -54,10 +87,28 @@ beforeAll(async () => {
   const settings = path.join(h.agentDir, 'settings.json');
   fs.writeFileSync(settings, JSON.stringify({ ...JSON.parse(fs.readFileSync(settings, 'utf8')), extensions: [SHIPMATES_PI_DIR] }));
   await until(() => api.of('getUpdates').length > 0, 30_000, 'polling');
+  pushServer = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      pushed.push(Buffer.concat(chunks));
+      res.writeHead(201);
+      res.end();
+    });
+  });
+  await new Promise<void>((r) => pushServer.listen(0, '127.0.0.1', r));
+  const endpoint = `http://127.0.0.1:${(pushServer.address() as AddressInfo).port}/phone`;
+  const sub = await fetch(`http://127.0.0.1:${h.port}/push/subscription`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint, expirationTime: null, keys: phone.keys }),
+  });
+  expect(sub.status).toBe(200);
 }, 60_000);
 
 afterAll(async () => {
   await h?.cleanup();
+  await new Promise<void>((r) => (pushServer ? pushServer.close(() => r()) : r()));
   await api?.close();
   shipmates?.close();
   if (root) fs.rmSync(root, { recursive: true, force: true });
@@ -83,6 +134,15 @@ describe('a blocking shipmates question on Telegram', () => {
     expect(question.text).toContain('To answer here: tap a button below, or swipe this message to reply with your own answer.');
     expect(question.reply_markup.inline_keyboard).toEqual([[{ text: 'yes', callback_data: 'answer:0' }, { text: 'no', callback_data: 'answer:1' }]]);
     const item = shipmates.inbox().find((i) => i.question === 'Publish 0.3.0 to npm?')!;
+    // The Web Push device got the short form: no options, no blocking line, no inbox line.
+    await until(() => pushed.length > 0, 10_000, 'the Web Push');
+    expect(phone.decrypt(pushed[0]!).notification).toEqual({
+      title: 'release asks',
+      body: 'Publish 0.3.0 to npm?',
+      navigate: `/#${encodeURIComponent(created.sessionId)}`,
+      tag: `shipmates-${item.id}`,
+      data: { kind: 'question', itemId: item.id, sentAt: expect.any(Number) },
+    });
 
     // What the manual run did: a plain "Yes" is a message for the assistant, not the answer.
     api.message(USER, 'Yes');

@@ -212,7 +212,13 @@ describe('assistant_notify and Web Push (real server)', () => {
     expect(push.received.map((r) => r.path).sort()).toEqual(['/gone/old-tablet', '/ok/laptop', '/ok/phone']);
     const expected = {
       web_push: 8030,
-      notification: { title: `${path.basename(web.workspace)}: Deploy finished`, body: 'all green', navigate: `/#${coding.sessionId}` },
+      notification: {
+        title: `${path.basename(web.workspace)}: Deploy finished`,
+        body: 'all green',
+        navigate: `/#${coding.sessionId}`,
+        tag: expect.stringMatching(/^update-/),
+        data: { kind: 'update' },
+      },
     };
     for (const [d, p] of [
       [phone, '/ok/phone'],
@@ -224,6 +230,8 @@ describe('assistant_notify and Web Push (real server)', () => {
       expect(r.headers.authorization).toMatch(/^vapid t=.+, k=/);
       expect(d.decrypt(r.body)).toEqual(expected);
     }
+    // One notification, one tag on every device.
+    expect(new Set([phone, laptop].map((d, i) => d.decrypt(push.received.find((x) => x.path === ['/ok/phone', '/ok/laptop'][i])!.body).notification.tag)).size).toBe(1);
     // The 410 pruned the stale device.
     expect((await assistantStatus(h.port)).webPush.subscriptions).toBe(2);
 
@@ -246,7 +254,13 @@ describe('assistant_notify and Web Push (real server)', () => {
     const jobPushes = push.received.slice(pushedBefore);
     const fromJob = jobPushes.map((r) => (r.path === '/ok/phone' ? phone : laptop).decrypt(r.body));
     for (const p of fromJob) {
-      expect(p.notification).toEqual({ title: `${path.basename(web.workspace)}: CI`, body: 'red', navigate: `/#${coding.sessionId}` });
+      expect(p.notification).toEqual({
+        title: `${path.basename(web.workspace)}: CI`,
+        body: 'red',
+        navigate: `/#${coding.sessionId}`,
+        tag: expect.stringMatching(/^update-/),
+        data: { kind: 'update' },
+      });
     }
   }, 180_000);
 
