@@ -1,5 +1,6 @@
 import {derived, get, writable} from 'svelte/store';
 import {playInvitingBeep} from './core/beep';
+import {answeredNotificationCloser} from './core/notifications';
 import {
 	WhereverClient,
 	parseSkillInvocation,
@@ -941,7 +942,9 @@ client.onMessage((msg) => {
 			break;
 
 		case 'shipmates_update':
-			applyShipmatesUpdate(msg);
+			// The frame as RECEIVED (never the store's cached state) may close
+			// system notifications of questions answered elsewhere.
+			answeredNotificationCloser.received(applyShipmatesUpdate(msg));
 			break;
 
 		case 'shipmates_undo_result': {
@@ -1038,6 +1041,9 @@ export function resume() {
 // return, before deciding whether to resume/connect. Call it only while the
 // page is visible: it assumes a user is looking.
 export function noteVisible() {
+	// Snapshots received before this return (frozen timers fire before the
+	// queued frames) must not close notifications; wait for a fresh one.
+	answeredNotificationCloser.noteReturn();
 	client.noteVisible();
 }
 

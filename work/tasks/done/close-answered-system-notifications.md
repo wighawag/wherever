@@ -37,3 +37,14 @@ Resolved decision 1: closed by code on the device, from any open wherever page; 
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/close-answered-system-notifications-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+Recorded in `work/notes/observations/close-answered-system-notifications-decisions.md`:
+1. The closer is fed from the frame handler, not the store.
+2. The safety window is 5 s.
+3. A snapshot's time is when this page received it.
+4. Frames are coalesced: it acts on the newest after 1 s of quiet. This guards against stale frames that arrive in a burst after the page was frozen.
+5. "On load and on becoming visible" is handled through `noteVisible()`.
+6. With no service worker or permission, it silently does nothing.
+7. Limit of the manual check: the real two-device case could not be exercised here and is still open.
