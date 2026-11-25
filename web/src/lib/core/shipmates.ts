@@ -51,6 +51,13 @@ export interface ShipmatesState {
 	inbox: ShipmatesInboxItem[];
 	presence: ShipmatesPresence[];
 	archives: ShipmatesArchive[];
+	/**
+	 * The server could not read shipmates' database: `inbox` and `presence` are
+	 * empty because nothing was read, not because everything was answered, so a
+	 * consumer that reacts to items leaving the inbox must skip this snapshot.
+	 * Present only then.
+	 */
+	inboxError?: true;
 }
 
 export const emptyShipmatesState: ShipmatesState = {
@@ -66,6 +73,7 @@ export function parseShipmatesUpdate(frame: unknown): ShipmatesState {
 	if (!f || f.available !== true) return emptyShipmatesState;
 	return {
 		available: true,
+		...(f.inboxError === true ? {inboxError: true as const} : {}),
 		inbox: Array.isArray(f.inbox)
 			? f.inbox.filter(
 					(i): i is ShipmatesInboxItem =>

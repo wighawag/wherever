@@ -120,9 +120,13 @@ export interface ChannelNotification {
    * (`onNotificationReply`, a shipmates question). `options` are its fixed
    * answers: a channel that can offers them as one-tap choices (Telegram
    * buttons), delivered as a reply with the option's text. A channel without
-   * replies (Web Push) ignores it.
+   * replies (Web Push) ignores the options. `itemId` (the shipmates item) and
+   * `text` (the question alone, without the instructions in `body`) let a
+   * channel shape a shorter notification of its own: Web Push shows "<source>
+   * asks" and `text`, tagged by `itemId` (`webPushPayload`); Telegram keeps
+   * `body`.
    */
-  question?: { options: string[] };
+  question?: { options: string[]; itemId?: string; text?: string };
 }
 
 /** How one attached file went out on a channel (`status` is the channel's own word: `document`, `missing`, ...). */

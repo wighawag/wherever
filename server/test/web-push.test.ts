@@ -204,7 +204,7 @@ describe('the Web Push channel (temp state dir, push service mocked at HTTP)', (
       const browser = browsers.find((b) => b.subscription.endpoint === sent.url)!;
       expect(JSON.parse(browser.decrypt(sent.body))).toEqual({
         web_push: 8030,
-        notification: { title: 'my-app: Deploy finished', body: 'all green', navigate: '/#session-123' },
+        notification: { title: 'my-app: Deploy finished', body: 'all green', navigate: '/#session-123', tag: expect.stringMatching(/^update-/), data: { kind: 'update' } },
       });
       expect(sent.headers['Content-Encoding']).toBe('aes128gcm');
       expect(sent.headers.TTL).toBe(String(24 * 3600));
@@ -212,6 +212,51 @@ describe('the Web Push channel (temp state dir, push service mocked at HTTP)', (
       expect(sent.headers.Authorization).toContain(`k=${channel.existingPublicKey()}`);
     }
     expect(webPushPayload({ title: 't', body: 'b', source: '', navigate: 'x' }).notification.title).toBe('t');
+  });
+
+  it('a question is short ("<source> asks", the question only), tagged by its item, with kind / itemId / sentAt data', async () => {
+    const stateDir = tmp();
+    const service = fakePushService();
+    const channel = new WebPushChannel({ stateDir, subject: 'mailto:x@y.z', fetch: service.fetch });
+    const browser = fakeBrowser('https://push.example/a');
+    await channel.subscribe(browser.subscription);
+    const question = {
+      title: 'Question for you',
+      body: 'Publish 0.3.0?\nOptions: yes / no\nThis blocks release until you answer.\nAnswer in the wherever inbox.',
+      source: 'release',
+      navigate: 'sid-1',
+      question: { options: ['yes', 'no'], itemId: 'h_abc', text: 'Publish 0.3.0?' },
+    };
+    const before = Date.now();
+    expect(await channel.notify(question)).toMatchObject({ ok: true });
+    const sent = JSON.parse(browser.decrypt(service.sent[0]!.body));
+    expect(sent).toEqual({
+      web_push: 8030,
+      notification: {
+        title: 'release asks',
+        body: 'Publish 0.3.0?',
+        navigate: '/#sid-1',
+        tag: 'shipmates-h_abc',
+        data: { kind: 'question', itemId: 'h_abc', sentAt: expect.any(Number) },
+      },
+    });
+    expect(sent.notification.data.sentAt).toBeGreaterThanOrEqual(before);
+    expect(sent.notification.data.sentAt).toBeLessThanOrEqual(Date.now());
+    // A re-push of the same item carries the same tag, so the device replaces it.
+    await channel.notify(question);
+    expect(JSON.parse(browser.decrypt(service.sent[1]!.body)).notification.tag).toBe('shipmates-h_abc');
+    // Pure: the clock is a parameter; no source falls back to the generic title.
+    expect(webPushPayload({ ...question, source: '' }, 1234).notification).toMatchObject({ title: 'Question for you', data: { sentAt: 1234 } });
+  });
+
+  it('anything else keeps its title and body, with kind update data and a unique tag per notification', () => {
+    const n = { title: 'Deploy finished', body: 'all green', source: 'my-app', navigate: 'session-123' };
+    const a = webPushPayload(n).notification;
+    const b = webPushPayload(n).notification;
+    expect(a).toEqual({ title: 'my-app: Deploy finished', body: 'all green', navigate: '/#session-123', tag: expect.stringMatching(/^update-/), data: { kind: 'update' } });
+    expect(b.tag).not.toBe(a.tag);
+    // A question without an item id (no shipmates item) is not a shipmates question notification.
+    expect(webPushPayload({ ...n, question: { options: ['yes'] } }).notification.data).toEqual({ kind: 'update' });
   });
 
   it('404 and 410 prune that subscription; other failures keep it', async () => {

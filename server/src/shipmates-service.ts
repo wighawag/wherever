@@ -64,6 +64,12 @@ export interface ShipmatesSnapshot {
   presence: ShipmatesPresenceView[];
   /** Deletions this server cascaded through ownership that can still be undone (shipmates D24). */
   archives: ShipmatesArchiveView[];
+  /**
+   * Reading shipmates' database failed (the catch of `snapshot()`): `inbox` and
+   * `presence` are then empty because nothing could be read, NOT because
+   * everything was answered. Present only then.
+   */
+  inboxError?: true;
 }
 
 /** One delete that took a session and everything it owns, undoable until `undoUntil`. */
@@ -85,7 +91,10 @@ export interface ShipmatesNotification {
   /** The item's fixed answers (none = free text): Telegram shows them as buttons. */
   options: string[];
   title: string;
+  /** Every channel's full text: the question, its options, whether it blocks, how to answer. */
   body: string;
+  /** The question alone (Web Push shows only this, `webPushPayload`). */
+  question: string;
   source: string;
   /** The session id a tap opens ('' = the main screen). */
   navigate: string;
@@ -207,6 +216,7 @@ export function shipmatesNotification(item: AttentionItem, presence: Presence | 
     options: item.options ?? [],
     title: 'Question for you',
     body: lines.join('\n'),
+    question: item.question,
     source: who,
     navigate: sessionIdOf(item.session, presence) ?? '',
   };
@@ -393,7 +403,7 @@ export class ShipmatesService {
       return { available: true, inbox, presence: live.map((p) => presenceView(p, waitingOnSessionOf(k, p))), archives: this.archiveViews() };
     } catch (err) {
       this.log.warn(`[wherever] shipmates: reading the inbox failed: ${(err as Error).message}`);
-      return { available: true, inbox: [], presence: [], archives: this.archiveViews() };
+      return { available: true, inbox: [], presence: [], archives: this.archiveViews(), inboxError: true };
     }
   }
 

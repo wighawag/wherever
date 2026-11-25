@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,6 +22,21 @@ import {
  * answering the item it notified. Against the REAL shipmates core on a temp
  * state dir; no pi.
  */
+
+// Every test uses a temp shipmates dir and a temp wherever state dir: the home
+// ones (the notified file, shipmates' database) stay untouched.
+const REAL_DIRS = [path.join(os.homedir(), '.wherever'), shipmatesStateDir()];
+const listing = (d: string) => {
+  try {
+    return fs.readdirSync(d).sort().map((n) => `${n}:${fs.statSync(path.join(d, n)).mtimeMs}`).join(',');
+  } catch {
+    return 'ABSENT';
+  }
+};
+const realBefore = REAL_DIRS.map(listing);
+afterAll(() => {
+  expect(REAL_DIRS.map(listing)).toEqual(realBefore);
+});
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -225,8 +240,8 @@ describe('ShipmatesService', () => {
     await until(() => recorded() === 2);
     // Blocking first (shipmates' inbox order); the non-blocking one too (shipmates D39).
     expect(pushed).toEqual([
-      { itemId: blocking.id, options: [], title: 'Question for you', body: expect.stringContaining('Approve the MIT license?'), source: 'lane', navigate: 'sid-1' },
-      { itemId: later.id, options: [], title: 'Question for you', body: expect.stringContaining('which name do you prefer?'), source: 'lane', navigate: 'sid-1' },
+      { itemId: blocking.id, options: [], title: 'Question for you', body: expect.stringContaining('Approve the MIT license?'), question: 'Approve the MIT license?', source: 'lane', navigate: 'sid-1' },
+      { itemId: later.id, options: [], title: 'Question for you', body: expect.stringContaining('which name do you prefer?'), question: 'Not urgent: which name do you prefer?', source: 'lane', navigate: 'sid-1' },
     ]);
     expect(pushed[0].body).toContain('This blocks lane until you answer.');
     expect(pushed[0].body).not.toContain('when you can');
@@ -594,6 +609,27 @@ describe('ShipmatesService', () => {
       { id: 'h_1', session: '/s/other.jsonl', question: 'Which?', options: ['a', 'b'], blocking: true, onBehalfOf: [], state: 'open', answer: null, answerChannel: null, createdAt: 0, finishedAt: null },
       null,
     );
-    expect(n).toEqual({ itemId: 'h_1', options: ['a', 'b'], title: 'Question for you', body: 'Which?\nOptions: a / b\nThis blocks other until you answer.\nAnswer in the wherever inbox.', source: 'other', navigate: '' });
+    expect(n).toEqual({ itemId: 'h_1', options: ['a', 'b'], title: 'Question for you', body: 'Which?\nOptions: a / b\nThis blocks other until you answer.\nAnswer in the wherever inbox.', question: 'Which?', source: 'other', navigate: '' });
+  });
+
+  it('a failed inbox read says so (`inboxError`), so a page can tell it from "everything answered"', async () => {
+    const d = dirs();
+    const k = db(d);
+    const file = SESSION(d.root);
+    k.register({ sessionFile: file, cwd: '/home/u/lane' });
+    k.humanAsk({ from: file, question: 'Still there?' });
+    const warnings: string[] = [];
+    const { svc } = service(d, { log: { ...quiet, warn: (m: string) => warnings.push(m) } });
+    svc.start();
+    await svc.ready();
+    expect(svc.snapshot()).toMatchObject({ available: true, inbox: [{ question: 'Still there?' }] });
+    expect(svc.snapshot()).not.toHaveProperty('inboxError');
+    // The read fails (a locked or corrupt database): the shipmates core throws.
+    const core = (svc as unknown as { shipmates: { inbox(): unknown } }).shipmates;
+    core.inbox = () => {
+      throw new Error('database is locked');
+    };
+    expect(svc.snapshot()).toEqual({ available: true, inbox: [], presence: [], archives: [], inboxError: true });
+    expect(warnings.join('\n')).toContain('database is locked');
   });
 });
