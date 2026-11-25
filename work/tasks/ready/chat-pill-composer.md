@@ -4,6 +4,7 @@ slug: chat-pill-composer
 spec: chat-compact-layout
 blockedBy: [chat-message-layout]
 covers: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+needsAnswers: true
 ---
 
 ## What to build
