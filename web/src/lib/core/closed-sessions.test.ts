@@ -1,5 +1,6 @@
 import {describe, it, expect} from 'vitest';
 import {
+	ONLY_STARRED_KEY,
 	SHOW_CLOSED_KEY,
 	folderListView,
 	isSessionShown,
@@ -56,13 +57,13 @@ describe('shownSessions (owned chips)', () => {
 	});
 });
 
-describe('folderListView', () => {
-	const folder = (path: string, sessions: ClosedSessionLike[]) => ({
-		path,
-		name: path.slice(1),
-		sessions,
-	});
+const folder = (path: string, sessions: ClosedSessionLike[]) => ({
+	path,
+	name: path.slice(1),
+	sessions,
+});
 
+describe('folderListView', () => {
 	it('hides closed sessions from the rows', () => {
 		const view = folderListView(
 			[folder('/p', [s('/a'), s('/b', {closed: true})])],
@@ -134,6 +135,64 @@ describe('folderListView', () => {
 
 	it('drops a folder with no match when a query is typed', () => {
 		expect(folderListView([folder('/empty', [])], 'zzz', false).length).toBe(0);
+	});
+});
+
+describe('folderListView Only starred', () => {
+	it('hides folders with no starred shown session, empty ones included', () => {
+		const folders = [
+			folder('/p', [s('/a', {starred: true}), s('/b')]),
+			folder('/q', [s('/c')]),
+			folder('/empty', []),
+		];
+		expect(paths(folderListView(folders, '', false, true))).toEqual([
+			{folder: '/p', rows: ['/a'], shown: 1},
+		]);
+	});
+
+	it('changes nothing when off', () => {
+		const folders = [folder('/p', [s('/a', {starred: true}), s('/b')])];
+		expect(folderListView(folders, '', false, false)).toEqual(
+			folderListView(folders, '', false),
+		);
+	});
+
+	it('lists a starred fork on its own, like the text filter does', () => {
+		const view = folderListView(
+			[
+				folder('/p', [
+					s('/root'),
+					s('/fork', {
+						parentSessionPath: '/root',
+						starred: true,
+						modified: '2026-01-02T00:00:00Z',
+					}),
+				]),
+			],
+			'',
+			false,
+			true,
+		);
+		expect(paths(view)).toEqual([{folder: '/p', rows: ['/fork'], shown: 1}]);
+	});
+
+	it('combines with the text filter and "Show closed"', () => {
+		const folders = [
+			folder('/p', [
+				s('/a', {name: 'deploy api', starred: true}),
+				s('/b', {name: 'deploy web'}),
+				s('/c', {name: 'other', starred: true}),
+			]),
+		];
+		expect(paths(folderListView(folders, 'deploy', true, true))).toEqual([
+			{folder: '/p', rows: ['/a'], shown: 1},
+		]);
+	});
+});
+
+describe('ONLY_STARRED_KEY', () => {
+	it('is a wherever- prefixed localStorage key beside SHOW_CLOSED_KEY', () => {
+		expect(ONLY_STARRED_KEY).toBe('wherever-only-starred');
 	});
 });
 

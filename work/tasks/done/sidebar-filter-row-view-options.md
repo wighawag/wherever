@@ -42,3 +42,16 @@ In `SessionBrowser.svelte`, replace the filter row and its option row, and the "
 > RECORD non-obvious in-scope decisions you make while building in `work/notes/observations/sidebar-filter-row-view-options-decisions.md` (or an ADR if one meets the ADR gate in `work/protocol/ADR-FORMAT.md`) and end your final report with a `## Decisions` block linking it.
 >
 > House rules: never write em dashes; bound exploratory shell commands with `timeout 30` and cap their output; never run a regex over minified or bundled files; add a changeset (`"wherever-dev": patch` for web and server; `"@wherever-dev/pi": patch` only for `extension/` changes); update `CONTEXT.md` (and `docs/USAGE.md` for HTTP endpoints) where documented behaviour changes. Check by hand in the browser at a phone width (about 390px) and a desktop width, and record what you checked in the done record.
+
+## Decisions
+
+Recorded in `work/notes/observations/sidebar-filter-row-view-options-decisions.md`, with the browser check notes for the done record. The ones you might want to reverse:
+1. **Folder list hides unstarred parents instead of dimming them.** The task only asked for the dimmed-ancestor rule in By owner. A starred fork of an unstarred session shows on its own at the top level, so "Delete All" (and the coming "Close all in folder") only ever act on starred rows.
+2. **In By owner, Only starred does not change the group counts or force groups open.** The counts still cover the whole group, as they do with the text filter, and only the text filter forces a group open.
+3. **One saved setting for both pages.** The main list and the read-only page share the `wherever-only-starred` key.
+4. **A blue dot on ☰ while Only starred or Show closed is on.** This isn't in the mockups; I added it so a filtered list behind a closed popover doesn't look like missing sessions. It's easy to drop.
+5. **"No starred sessions"** is shown when Only starred leaves the list empty.
+6. **The create form stays inside the scrolling list** and + scrolls to it, so on a phone with the keyboard up the Create button stays reachable.
+7. **The rail opener is a store flag** that only the main list reads.
+8. **The popover stays open** after Refresh or a checkbox change, so you see the result.
+9. **The chips listing sessions a row spawned are not filtered by Only starred.**
