@@ -1,0 +1,102 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0b0d12;font-family:Inter,system-ui,sans-serif;color:#e6e8ee;padding:24px;display:flex;gap:26px;align-items:flex-start}
+.col{display:flex;flex-direction:column;gap:10px;align-items:center}
+.cap{font-size:15px;font-weight:600;color:#9aa3b5}.cap b{color:#e6e8ee}
+.phone{width:330px;height:720px;background:#11141b;border:1px solid #2a2f3a;border-radius:22px;overflow:hidden;position:relative;display:flex;flex-direction:column}
+.note{font-size:11px;color:#8b93a5;max-width:330px;line-height:1.45}.note b{color:#cfd5e2}
+.row{display:flex;align-items:center}.sp{flex:1}.grow{flex:1;min-width:0}
+.t{font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ib{width:30px;height:30px;border:1px solid #2a2f3a;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:14px;color:#aab2c3;background:#161a23;flex:none;position:relative}
+.ib .bd{position:absolute;top:-4px;right:-4px;width:10px;height:10px;border-radius:50%;background:#f5b041;border:2px solid #11141b}
+.top{height:48px;padding:0 8px;gap:8px;border-bottom:1px solid #222733;background:#11141b}
+.ttl{font-size:13px;font-weight:600}.sub{font-size:10.5px;color:#8b93a5}
+.chat{flex:1;padding:12px;font-size:12.5px;line-height:1.55;color:#cfd5e2;overflow:hidden}
+.chat p{margin-bottom:8px}
+.comp{padding:8px;border-top:1px solid #222733}
+.pillc{display:flex;align-items:center;gap:6px;background:#161a23;border:1px solid #2a2f3a;border-radius:20px;padding:5px}
+.rb{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;color:#aab2c3}
+.send{background:#1d4fd6;color:#fff}
+.ta{flex:1;font-size:12px;color:#6b7385}
+/* today */
+.white{position:absolute;left:10px;right:10px;background:#fff;color:#111;border-radius:10px;padding:12px 14px;font-size:11px;line-height:1.45;box-shadow:0 6px 20px rgba(0,0,0,.5)}
+.white b{font-size:12px}.white .g{color:#666}
+.white .btns{margin-top:6px;display:flex;gap:22px;font-weight:600;font-size:11.5px}
+/* toast */
+.toast{position:absolute;left:8px;right:8px;top:54px;background:#1a1f2c;border:1px solid #2f3647;border-left:3px solid #f5b041;border-radius:12px;padding:9px 10px 10px;box-shadow:0 10px 28px rgba(0,0,0,.55);z-index:5}
+.toast.info{border-left-color:#4f8dff}
+.th{gap:7px;font-size:11px;color:#8b93a5}
+.th b{color:#e6e8ee;font-weight:600;font-size:12px}
+.q{font-size:12.5px;line-height:1.4;margin:4px 0 8px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{font-size:11.5px;border:1px solid #3a4256;border-radius:14px;padding:4px 10px;color:#e6e8ee;background:#222939}
+.chip.pri{background:#1d4fd6;border-color:#1d4fd6}
+.chip.ghost{border-color:transparent;background:transparent;color:#7fb0ff}
+.x{color:#8b93a5;font-size:13px}
+.blk{font-size:9.5px;color:#f5b041;border:1px solid rgba(245,176,65,.5);border-radius:5px;padding:0 4px}
+.more{position:absolute;left:50%;transform:translateX(-50%);top:214px;font-size:10.5px;color:#cfd5e2;background:#222939;border:1px solid #2f3647;border-radius:10px;padding:2px 9px;z-index:6}
+.dockpill{margin:6px 8px 0;background:#2a2112;border:1px solid rgba(245,176,65,.45);border-radius:10px;padding:7px 10px;gap:8px;font-size:12px}
+.dockpill .go{margin-left:auto;color:#f5b041;font-size:11.5px}
+/* OS shade */
+.shade{background:#1e2128;flex:1;padding:14px 10px}
+.osn{background:#2b2f38;border-radius:18px;padding:11px 13px;margin-bottom:8px}
+.osh{font-size:10.5px;color:#aab2c3;gap:6px;margin-bottom:4px}
+.osn .tt{font-size:12.5px;font-weight:600}
+.osn .bb{font-size:12px;color:#cfd5e2;line-height:1.4;margin-top:2px}
+.acts{display:flex;gap:18px;margin-top:8px;font-size:12px;color:#8ab4ff;font-weight:600}
+.clock{font-size:30px;font-weight:300;padding:4px 4px 12px;color:#e6e8ee}
+</style></head><body>
+
+<div class="col">
+<div class="cap"><b>Today</b> (from your screenshot)</div>
+<div class="phone">
+ <div class="row top"><span class="ib">☰</span><div class="grow"><div class="ttl t">Now that we shipmates can have agents...</div></div></div>
+ <div class="chat"><p>...tasks, and a report to me when it's done.</p></div>
+ <div class="white" style="top:8px"><b>wherever/compact-layout-specs: Question for you</b><div class="g">...(Default/On/Off) in the ⋯ menu; "Only starred" filters the folder / By-owner list but not the Live strip; rename is not offered on read-only rows; a CLI session whose wherever extension is too old to rename is refused with a message, never written to directly. Options: All recommendations OK / I'll reply with changes No session is waiting on it: answer when you can. Answer in the wherever inbox..</div><div class="btns"><span>ok</span><span>dismiss</span></div></div>
+ <div class="white" style="top:300px"><b>wherever/compact-layout-specs: Question for you</b><div class="g">One more gap (sidebar/chat redesign): the mockup's ⋯ session menu lists "Search in this chat", but nothing like it exists today. Conversation search has no per-session scope, and it opens a session, not the matched message (history is windowed...). Options: A) Leave it out... B) Client-side find... C) Open the Search tab... Options: A: leave out, idea note / B: client-side find in loaded messages / C: scoped Search tab No session is waiting on it: answer when you can. Answer in the wherever inbox..</div><div class="btns"><span>ok</span><span>dismiss</span></div></div>
+</div>
+<div class="note"><b>What goes wrong:</b> the full push text (written for Telegram and the OS: options repeated, "answer in the inbox", a doubled ".."), a light card on a dark app, one card per item stacking over the chat and composer, never auto-hiding, and three buttons ("ok", "dismiss", ✕) where "ok" actually means "open".</div>
+</div>
+
+<div class="col">
+<div class="cap"><b>Proposed</b>: one compact toast, answer inline</div>
+<div class="phone">
+ <div class="row top"><span class="ib">☰<span class="bd"></span></span><div class="grow"><div class="ttl t">Now that we shipmates can have agents...</div><div class="sub">wherever · claude-opus-5-5</div></div><span class="ib">⋯</span></div>
+ <div class="chat"><p>Building the second set of mockups now: phone drawer and chat, and desktop.</p><p>...tasks, and a report to me when it's done.</p></div>
+ <div class="toast">
+  <div class="row th"><span>🙋</span><b>compact-layout-specs</b><span>asks</span><span class="sp"></span><span class="x">✕</span></div>
+  <div class="q">One more gap: the mockup's ⋯ session menu lists "Search in this chat", but nothing like it exists today. Leave it out, client-side find, or a scoped Search tab?</div>
+  <div class="chips"><span class="chip">A: leave out</span><span class="chip">B: find in loaded</span><span class="chip">C: scoped tab</span><span class="chip ghost">Open ›</span></div>
+ </div>
+ <div class="more">+1 more question</div>
+ <div class="comp"><div class="pillc"><span class="rb">＋</span><div class="ta">Message...</div><span class="rb">🎤</span><span class="rb send">➤</span></div></div>
+</div>
+<div class="note"><b>Built from the inbox item, not the push text</b> (the push carries the item id; the web reads question, options and sender from its shipmates state): sender, the question clamped to 2 lines, the options as chips that ANSWER directly, and "Open ›" (the inbox, or the asking session). Dark, under the top bar, never over the composer. <b>One toast at a time</b>; others show as "+N more". Swipe up or ✕ dismisses (the item stays in "Needs you").</div>
+</div>
+
+<div class="col">
+<div class="cap"><b>Proposed</b>: after it hides</div>
+<div class="phone">
+ <div class="row top"><span class="ib">☰<span class="bd"></span></span><div class="grow"><div class="ttl t">Now that we shipmates can have agents...</div><div class="sub">wherever · claude-opus-5-5</div></div><span class="ib">⋯</span></div>
+ <div class="row dockpill"><span>🙋</span><span>2 questions for you</span><span class="go">View ›</span></div>
+ <div class="chat"><p>Building the second set of mockups now: phone drawer and chat, and desktop.</p><p>...tasks, and a report to me when it's done.</p><p>The specs are written; two questions are in your inbox.</p></div>
+ <div class="toast info" style="top:auto;bottom:62px"><div class="row th"><span>✅</span><b>drive-sidebar-tasks</b><span>finished</span><span class="sp"></span><span class="x">✕</span></div><div class="q" style="margin-bottom:0">All 12 tasks merged as PRs #121 to #132. Tap to open.</div></div>
+ <div class="comp"><div class="pillc"><span class="rb">＋</span><div class="ta">Message...</div><span class="rb">🎤</span><span class="rb send">➤</span></div></div>
+</div>
+<div class="note"><b>Questions</b> auto-hide after about 8 s (unless touched) and fold into a slim <b>"N questions for you · View"</b> bar under the top bar, which stays until they are answered, plus the amber dot on ☰. <b>Other notifications</b> (assistant_notify, a lane finished) use the same dark toast, blue accent, above the composer, 2 lines, auto-hide 6 s. <b>No toast at all</b> when the inbox panel is open, or when the question comes from the session on screen (it is already in the chat). A toast vanishes by itself when its item is answered elsewhere.</div>
+</div>
+
+<div class="col">
+<div class="cap"><b>Proposed</b>: app in the background</div>
+<div class="phone" style="background:#1e2128">
+ <div class="shade">
+  <div class="clock">07:27</div>
+  <div class="osn"><div class="row osh"><img src="../../../web/static/logo.svg" style="width:14px;height:14px">wherever · now</div><div class="tt">compact-layout-specs asks</div><div class="bb">One more gap: the mockup's ⋯ session menu lists "Search in this chat", but nothing like it exists today. Leave it out, client-side find, or a scoped Search tab?</div><div class="acts"><span>OPEN</span><span>LATER</span></div></div>
+  <div class="osn"><div class="row osh"><img src="../../../web/static/logo.svg" style="width:14px;height:14px">wherever · 2 min</div><div class="tt">compact-layout-specs asks</div><div class="bb">Recommendations for the remaining details: Default/On/Off in the ⋯ menu; "Only starred" filters...</div></div>
+ </div>
+</div>
+<div class="note"><b>System notifications</b> keep a short title ("X asks") and the question only; the "Options: ..." and "Answer in the wherever inbox" lines stay for Telegram, where they are needed. Each item uses its own <b>tag</b>, so a re-push replaces rather than duplicates, and it is <b>closed automatically</b> when the item is answered anywhere. Answering straight from the OS notification (option buttons) is possible later but needs the service worker to authenticate; out of scope for now.</div>
+</div>
+
+</body></html>
