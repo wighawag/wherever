@@ -4,6 +4,7 @@ slug: live-strip-two-line-rows
 spec: sidebar-compact-layout
 blockedBy: [state-dot-legend]
 covers: [5, 6, 7, 8, 9, 10]
+needsAnswers: true
 ---
 
 ## What to build
