@@ -18,6 +18,7 @@
 		undoLastClose,
 		dismissCloseBanner,
 		shipmatesStore,
+		newSessionFormRequested,
 		type ModelInfo,
 		type FolderWithSessions,
 	} from '$lib/session-store';
@@ -32,7 +33,9 @@
 	import {stateDotLabel} from '$lib/core/state-dot';
 	// The folder list: text filter, fork tree, closed sessions hidden unless
 	// "Show closed" (unit-tested in core).
+	import {tick} from 'svelte';
 	import {
+		ONLY_STARRED_KEY,
 		SHOW_CLOSED_KEY,
 		folderListView,
 		isSessionShown,
@@ -134,6 +137,52 @@
 			// No storage (private mode): the setting just is not remembered.
 		}
 	}
+	// "Only starred" (both pages, remembered on this device, one key for both):
+	// filters the folder list and the By-owner view, never the Live strip.
+	function readOnlyStarred(): boolean {
+		try {
+			return localStorage.getItem(ONLY_STARRED_KEY) === '1';
+		} catch {
+			return false;
+		}
+	}
+	let onlyStarred = $state(readOnlyStarred());
+	function toggleOnlyStarred() {
+		onlyStarred = !onlyStarred;
+		try {
+			if (onlyStarred) localStorage.setItem(ONLY_STARRED_KEY, '1');
+			else localStorage.removeItem(ONLY_STARRED_KEY);
+		} catch {
+			// No storage (private mode): the setting just is not remembered.
+		}
+	}
+	// The ☰ view options popover (a simple local one; the shared menu
+	// primitive may replace it). Closes on Escape or a press outside it.
+	let viewOptionsOpen = $state(false);
+	let viewOptionsEl = $state<HTMLDivElement | null>(null);
+	function onWindowPointerDown(e: PointerEvent) {
+		if (
+			viewOptionsOpen &&
+			viewOptionsEl &&
+			!viewOptionsEl.contains(e.target as Node)
+		)
+			viewOptionsOpen = false;
+	}
+	function onWindowKeyDown(e: KeyboardEvent) {
+		if (e.key === 'Escape') viewOptionsOpen = false;
+	}
+	// A view option away from its default is on: the ☰ shows a dot, so a
+	// narrowed (or widened) list is never a surprise.
+	let emptyListText = $derived(
+		searchQuery
+			? 'No sessions match your filter'
+			: onlyStarred
+				? 'No starred sessions'
+				: 'No sessions found',
+	);
+	let viewOptionsActive = $derived(
+		onlyStarred || (!readOnly && showClosedSetting),
+	);
 	// shipmates ownership (`session_spawn`): every listed session by path, and the
 	// sessions each owner spawned (they may be in other folders, e.g. a worktree).
 	let allListed = $derived(folders.flatMap((f) => f.sessions));
@@ -173,6 +222,7 @@
 			? ownerTree(folders, {
 					isVisible: (s) => isSessionShown(s, showClosed),
 					filter: searchQuery,
+					onlyStarred,
 					presence,
 				})
 			: [],
@@ -239,7 +289,7 @@
 
 	$effect(() => {
 		const q = searchQuery;
-		filteredFolders = folderListView(folders, q, showClosed);
+		filteredFolders = folderListView(folders, q, showClosed, onlyStarred);
 		if (!q) searchExpanded = {};
 	});
 
@@ -327,8 +377,28 @@
 		switchSession(sessionPath);
 	}
 
-	// Collapsible Sidebar form state
+	// The new-session form, opened by the filter row's + (main list only), or
+	// from outside through `openNewSessionForm()` (the desktop rail), read here
+	// on mount too because the rail expands the sidebar first.
 	let createFormOpen = $state(false);
+	let listEl = $state<HTMLDivElement | null>(null);
+	$effect(() => {
+		if (readOnly || !$newSessionFormRequested) return;
+		newSessionFormRequested.set(false);
+		void openCreateForm();
+	});
+	async function openCreateForm() {
+		createFormOpen = true;
+		viewOptionsOpen = false;
+		await tick();
+		// The form sits at the top of the scrolled list: bring it into view.
+		listEl?.scrollTo({top: 0});
+		sidebarInputEl?.focus();
+	}
+	function toggleCreateForm() {
+		if (createFormOpen) createFormOpen = false;
+		else void openCreateForm();
+	}
 	let sidebarCwd = $state('');
 	let sidebarCompletions = $state<string[]>([]);
 	let sidebarInputFocused = $state(false);
@@ -567,6 +637,11 @@
 	}
 </script>
 
+<svelte:window
+	onpointerdown={onWindowPointerDown}
+	onkeydown={onWindowKeyDown}
+/>
+
 <div class="flex h-full flex-col">
 	{#if !readOnly && $closeBannerStore}
 		<!-- The latest close (single or cascading), undoable as one batch (ADR 0025). -->
@@ -626,6 +701,8 @@
 		</div>
 	{/if}
 	<div class="border-b border-brand-border/50 p-2">
+		<!-- The filter row (spec `sidebar-compact-layout` stories 20 to 24): the
+		     filter, ☰ view options and + new session (main list only). -->
 		<div class="flex gap-1.5">
 			<input
 				type="text"
@@ -634,52 +711,111 @@
 				oninput={(e) => (searchQuery = e.currentTarget.value)}
 				class="min-w-0 flex-1 rounded border border-brand-border bg-brand-surface-2 px-2 py-1.5 text-xs text-brand-text placeholder-brand-text-muted focus:border-brand-blue focus:outline-none"
 			/>
-			<button
-				type="button"
-				onclick={() => refresh()}
-				class="flex shrink-0 items-center justify-center rounded border border-brand-border bg-brand-surface-2 px-1.5 py-1.5 text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
-				title="Refresh session list"
-			>
-				<span class={loading ? 'animate-spin' : ''}>↻</span>
-			</button>
-		</div>
-		{#if !readOnly}
-			<div class="mt-1.5 flex items-center justify-between gap-2">
-				<label
-					class="flex cursor-pointer items-center gap-1.5 px-1 text-[10px] text-brand-text-muted select-none hover:text-brand-text"
-					title="List closed sessions too (dimmed), so you can reopen them"
+			<div class="relative shrink-0" bind:this={viewOptionsEl}>
+				<button
+					type="button"
+					onclick={() => (viewOptionsOpen = !viewOptionsOpen)}
+					class="relative flex h-full w-8 items-center justify-center rounded border text-sm transition-colors {viewOptionsOpen
+						? 'border-brand-blue bg-brand-surface-3 text-brand-text'
+						: 'border-brand-border bg-brand-surface-2 text-brand-text-muted hover:bg-brand-surface-3 hover:text-brand-text'}"
+					title="View options"
+					aria-label="View options"
+					aria-haspopup="true"
+					aria-expanded={viewOptionsOpen}
 				>
-					<input
-						type="checkbox"
-						checked={showClosedSetting}
-						onchange={toggleShowClosed}
-						class="h-3 w-3 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
-					/>
-					Show closed
-				</label>
-				{#if viewState.showToggle}
+					<span aria-hidden="true">☰</span>
+					{#if viewOptionsActive}
+						<span
+							class="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-brand-blue"
+							aria-hidden="true"
+						></span>
+					{/if}
+				</button>
+				{#if viewOptionsOpen}
 					<div
-						class="flex overflow-hidden rounded border border-brand-border text-[10px]"
+						class="absolute top-full right-0 z-40 mt-1 w-52 overflow-hidden rounded-lg border border-brand-border bg-brand-surface-2 text-xs text-brand-text shadow-xl"
 						role="group"
-						aria-label="Group sessions"
+						aria-label="View options"
 					>
-						{#each [['folder', 'By folder'], ['owner', 'By owner']] as [view, label] (view)}
-							<button
-								type="button"
-								onclick={() => setView(view as SessionListView)}
-								aria-pressed={viewState.view === view}
-								class="px-1.5 py-0.5 {viewState.view === view
-									? 'bg-brand-surface-3 text-brand-text'
-									: 'bg-brand-surface-2 text-brand-text-muted hover:text-brand-text'}"
-								title={view === 'owner'
-									? 'One tree per orchestration: spawned sessions under their owner, across folders'
-									: 'Sessions grouped by folder'}>{label}</button
+						<div class="space-y-0.5 p-1.5">
+							{#if viewState.showToggle}
+								<div
+									class="mb-1 flex overflow-hidden rounded border border-brand-border"
+									role="group"
+									aria-label="Group sessions"
+								>
+									{#each [['folder', 'By folder'], ['owner', 'By owner']] as [view, label] (view)}
+										<button
+											type="button"
+											onclick={() => setView(view as SessionListView)}
+											aria-pressed={viewState.view === view}
+											class="flex-1 px-2 py-1 {viewState.view === view
+												? 'bg-brand-surface-3 text-brand-text'
+												: 'bg-brand-surface-2 text-brand-text-muted hover:text-brand-text'}"
+											title={view === 'owner'
+												? 'One tree per orchestration: spawned sessions under their owner, across folders'
+												: 'Sessions grouped by folder'}>{label}</button
+										>
+									{/each}
+								</div>
+							{/if}
+							{#if !readOnly}
+								<label
+									class="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 select-none hover:bg-brand-surface-3"
+									title="List closed sessions too (dimmed), so you can reopen them"
+								>
+									<input
+										type="checkbox"
+										checked={showClosedSetting}
+										onchange={toggleShowClosed}
+										class="h-3.5 w-3.5 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
+									/>
+									Show closed
+								</label>
+							{/if}
+							<label
+								class="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 select-none hover:bg-brand-surface-3"
+								title="List only starred sessions (the Live strip is not filtered)"
 							>
-						{/each}
+								<input
+									type="checkbox"
+									checked={onlyStarred}
+									onchange={toggleOnlyStarred}
+									class="h-3.5 w-3.5 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
+								/>
+								Only starred
+							</label>
+						</div>
+						<button
+							type="button"
+							onclick={() => refresh()}
+							class="flex w-full items-center gap-2 border-t border-brand-border/60 px-3 py-2 text-left transition-colors hover:bg-brand-surface-3"
+							title="Refresh session list"
+						>
+							<span class="inline-block {loading ? 'animate-spin' : ''}">↻</span
+							>
+							Refresh
+						</button>
 					</div>
 				{/if}
 			</div>
-		{/if}
+			{#if !readOnly}
+				<button
+					type="button"
+					onclick={toggleCreateForm}
+					class="flex w-8 shrink-0 items-center justify-center rounded bg-brand-blue text-base leading-none font-semibold text-white transition-opacity hover:opacity-90 {createFormOpen
+						? 'ring-2 ring-brand-blue/50'
+						: ''}"
+					title={createFormOpen ? 'Close the new-session form' : 'New session'}
+					aria-label={createFormOpen
+						? 'Close the new-session form'
+						: 'New session'}
+					aria-expanded={createFormOpen}
+				>
+					{createFormOpen ? '✕' : '+'}
+				</button>
+			{/if}
+		</div>
 		{#if onSearchAll && searchQuery.trim().length >= 2}
 			<!-- The box above only filters this list (names + first-message previews).
 			     This is the way over to full-text search across every message. -->
@@ -703,218 +839,196 @@
 		/>
 	{/if}
 
-	<div class="flex-1 overflow-y-auto">
-		<!-- Collapsible Create New Session Section (hidden in read-only mode) -->
-		{#if !readOnly}
-			<div class="border-b border-brand-border/50 bg-brand-surface/10">
-				<button
-					onclick={() => (createFormOpen = !createFormOpen)}
-					class="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-brand-blue transition-colors hover:bg-brand-surface-3/30"
-				>
-					<span
-						>{createFormOpen
-							? '▼ Close Create Session'
-							: '✚ Create New Session'}</span
+	<div class="flex-1 overflow-y-auto" bind:this={listEl}>
+		{#if !readOnly && createFormOpen}
+			<!-- The new-session form, opened by the filter row's + (or the desktop rail). -->
+			<form
+				onsubmit={(e) => {
+					e.preventDefault();
+					handleSidebarCreateSession();
+				}}
+				class="space-y-2.5 border-b border-brand-border/50 bg-brand-surface/30 p-3"
+			>
+				<div>
+					<label
+						class="mb-1 block text-[10px] font-bold tracking-wider text-brand-text-muted uppercase"
+						for="sidebar-folder">Folder Path</label
 					>
-				</button>
-
-				{#if createFormOpen}
-					<form
-						onsubmit={(e) => {
-							e.preventDefault();
-							handleSidebarCreateSession();
-						}}
-						class="space-y-2.5 border-t border-brand-border/30 bg-brand-surface/30 p-3"
-					>
-						<div>
-							<label
-								class="mb-1 block text-[10px] font-bold tracking-wider text-brand-text-muted uppercase"
-								for="sidebar-folder">Folder Path</label
+					<div class="relative" bind:this={sidebarContainerEl}>
+						<input
+							bind:this={sidebarInputEl}
+							id="sidebar-folder"
+							type="text"
+							autocomplete="off"
+							spellcheck="false"
+							placeholder="e.g. ~/projects/my-new-app"
+							bind:value={sidebarCwd}
+							onfocus={() => {
+								sidebarInputFocused = true;
+								triggerSidebarCheck(sidebarCwd, true);
+							}}
+							onblur={(e) => {
+								if (
+									sidebarContainerEl &&
+									sidebarContainerEl.contains(e.relatedTarget as Node)
+								) {
+									return;
+								}
+								sidebarInputFocused = false;
+							}}
+							onkeydown={(e) => {
+								if (e.key === 'Escape') {
+									sidebarInputFocused = false;
+								}
+							}}
+							class="w-full rounded border px-2 py-1 text-xs text-brand-text placeholder-brand-text-muted transition-all duration-200 focus:outline-none {isSidebarRemoteRepoCreation
+								? 'border-emerald-500/80 bg-emerald-500/10 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/30'
+								: 'border-brand-border bg-brand-dark/60 focus:border-brand-blue'}"
+						/>
+						{#if sidebarInputFocused && sidebarCompletions.length > 0}
+							<div
+								class="absolute right-0 left-0 z-50 mt-1 max-h-40 overflow-y-auto rounded border border-brand-border bg-brand-surface-2 py-1 shadow-xl"
 							>
-							<div class="relative" bind:this={sidebarContainerEl}>
-								<input
-									bind:this={sidebarInputEl}
-									id="sidebar-folder"
-									type="text"
-									autocomplete="off"
-									spellcheck="false"
-									placeholder="e.g. ~/projects/my-new-app"
-									bind:value={sidebarCwd}
-									onfocus={() => {
-										sidebarInputFocused = true;
-										triggerSidebarCheck(sidebarCwd, true);
-									}}
-									onblur={(e) => {
-										if (
-											sidebarContainerEl &&
-											sidebarContainerEl.contains(e.relatedTarget as Node)
-										) {
-											return;
-										}
-										sidebarInputFocused = false;
-									}}
-									onkeydown={(e) => {
-										if (e.key === 'Escape') {
-											sidebarInputFocused = false;
-										}
-									}}
-									class="w-full rounded border px-2 py-1 text-xs text-brand-text placeholder-brand-text-muted transition-all duration-200 focus:outline-none {isSidebarRemoteRepoCreation
-										? 'border-emerald-500/80 bg-emerald-500/10 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400/30'
-										: 'border-brand-border bg-brand-dark/60 focus:border-brand-blue'}"
-								/>
-								{#if sidebarInputFocused && sidebarCompletions.length > 0}
-									<div
-										class="absolute right-0 left-0 z-50 mt-1 max-h-40 overflow-y-auto rounded border border-brand-border bg-brand-surface-2 py-1 shadow-xl"
+								{#each sidebarCompletions as completion}
+									<button
+										type="button"
+										onclick={() => {
+											sidebarCwd = completion;
+											triggerSidebarCheck(completion, true);
+											sidebarInputEl?.focus();
+										}}
+										class="block w-full px-2.5 py-1 text-left text-xs text-brand-text transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
 									>
-										{#each sidebarCompletions as completion}
-											<button
-												type="button"
-												onclick={() => {
-													sidebarCwd = completion;
-													triggerSidebarCheck(completion, true);
-													sidebarInputEl?.focus();
-												}}
-												class="block w-full px-2.5 py-1 text-left text-xs text-brand-text transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
-											>
-												{completion}
-											</button>
-										{/each}
-									</div>
-								{/if}
-							</div>
-							{#if sidebarPathStatus.exists === true}
-								<span
-									class="mt-1 block text-[10px] font-medium text-yellow-400"
-								>
-									📁 Folder already exists.
-									{#if sidebarPathStatus.isGit}
-										<span class="ml-1 font-semibold text-emerald-400"
-											>(Git repo)</span
-										>
-									{/if}
-								</span>
-							{/if}
-						</div>
-
-						<div>
-							<label
-								class="mb-1 block text-[10px] font-bold tracking-wider text-brand-text-muted uppercase"
-								for="sidebar-model">Model</label
-							>
-							{#if models.length > 0}
-								<select
-									id="sidebar-model"
-									bind:value={sidebarModel}
-									class="w-full rounded border border-brand-border bg-brand-dark/60 px-2 py-1 text-xs text-brand-text focus:border-brand-blue focus:outline-none"
-								>
-									{#each models as model}
-										<option value={`${model.provider}:${model.modelId}`}>
-											{model.label}{model.isDefault ? ' (default)' : ''}
-										</option>
-									{/each}
-								</select>
-							{:else}
-								<input
-									id="sidebar-model"
-									type="text"
-									bind:value={sidebarModel}
-									placeholder="provider:model"
-									class="w-full rounded border border-brand-border bg-brand-dark/60 px-2 py-1 text-xs text-brand-text placeholder-brand-text-muted focus:border-brand-blue focus:outline-none"
-								/>
-							{/if}
-						</div>
-
-						{#if sidebarPathStatus.exists !== true && sidebarPathStatus.matchingRule}
-							<div class="space-y-1 py-0.5">
-								<div class="flex items-center gap-1.5">
-									<input
-										id="sidebar-create-remote"
-										type="checkbox"
-										bind:checked={sidebarCreateRemote}
-										class="h-3.5 w-3.5 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue focus:ring-offset-brand-surface"
-									/>
-									<label
-										for="sidebar-create-remote"
-										class="cursor-pointer text-xs text-brand-text select-none"
-									>
-										Create remote {sidebarPathStatus.matchingRule.provider} repository
-									</label>
-								</div>
-
-								{#if sidebarCreateRemote}
-									<div
-										class="flex items-center gap-3 pl-5 text-[10px] text-brand-text-muted"
-									>
-										<span>Visibility:</span>
-										<label
-											class="flex cursor-pointer items-center gap-1 transition-colors select-none hover:text-brand-text"
-										>
-											<input
-												type="radio"
-												name="sidebar-visibility"
-												value="private"
-												bind:group={sidebarRepoVisibility}
-												class="border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
-											/>
-											Private
-										</label>
-										<label
-											class="flex cursor-pointer items-center gap-1 transition-colors select-none hover:text-brand-text"
-										>
-											<input
-												type="radio"
-												name="sidebar-visibility"
-												value="public"
-												bind:group={sidebarRepoVisibility}
-												class="border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
-											/>
-											Public
-										</label>
-									</div>
-								{/if}
+										{completion}
+									</button>
+								{/each}
 							</div>
 						{/if}
-
-						{#if sidebarPathStatus.exists !== true && (!sidebarPathStatus.matchingRule || !sidebarCreateRemote)}
-							<div class="flex items-center gap-1.5 py-0.5">
-								<input
-									id="sidebar-git-init"
-									type="checkbox"
-									bind:checked={sidebarGitInit}
-									onchange={(e) => {
-										userManualSidebarGitInit = e.currentTarget.checked;
-									}}
-									class="h-3.5 w-3.5 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue focus:ring-offset-brand-surface"
-								/>
-								<label
-									for="sidebar-git-init"
-									class="cursor-pointer text-xs text-brand-text select-none"
+					</div>
+					{#if sidebarPathStatus.exists === true}
+						<span class="mt-1 block text-[10px] font-medium text-yellow-400">
+							📁 Folder already exists.
+							{#if sidebarPathStatus.isGit}
+								<span class="ml-1 font-semibold text-emerald-400"
+									>(Git repo)</span
 								>
-									Initialize Git repository
+							{/if}
+						</span>
+					{/if}
+				</div>
+
+				<div>
+					<label
+						class="mb-1 block text-[10px] font-bold tracking-wider text-brand-text-muted uppercase"
+						for="sidebar-model">Model</label
+					>
+					{#if models.length > 0}
+						<select
+							id="sidebar-model"
+							bind:value={sidebarModel}
+							class="w-full rounded border border-brand-border bg-brand-dark/60 px-2 py-1 text-xs text-brand-text focus:border-brand-blue focus:outline-none"
+						>
+							{#each models as model}
+								<option value={`${model.provider}:${model.modelId}`}>
+									{model.label}{model.isDefault ? ' (default)' : ''}
+								</option>
+							{/each}
+						</select>
+					{:else}
+						<input
+							id="sidebar-model"
+							type="text"
+							bind:value={sidebarModel}
+							placeholder="provider:model"
+							class="w-full rounded border border-brand-border bg-brand-dark/60 px-2 py-1 text-xs text-brand-text placeholder-brand-text-muted focus:border-brand-blue focus:outline-none"
+						/>
+					{/if}
+				</div>
+
+				{#if sidebarPathStatus.exists !== true && sidebarPathStatus.matchingRule}
+					<div class="space-y-1 py-0.5">
+						<div class="flex items-center gap-1.5">
+							<input
+								id="sidebar-create-remote"
+								type="checkbox"
+								bind:checked={sidebarCreateRemote}
+								class="h-3.5 w-3.5 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue focus:ring-offset-brand-surface"
+							/>
+							<label
+								for="sidebar-create-remote"
+								class="cursor-pointer text-xs text-brand-text select-none"
+							>
+								Create remote {sidebarPathStatus.matchingRule.provider} repository
+							</label>
+						</div>
+
+						{#if sidebarCreateRemote}
+							<div
+								class="flex items-center gap-3 pl-5 text-[10px] text-brand-text-muted"
+							>
+								<span>Visibility:</span>
+								<label
+									class="flex cursor-pointer items-center gap-1 transition-colors select-none hover:text-brand-text"
+								>
+									<input
+										type="radio"
+										name="sidebar-visibility"
+										value="private"
+										bind:group={sidebarRepoVisibility}
+										class="border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
+									/>
+									Private
+								</label>
+								<label
+									class="flex cursor-pointer items-center gap-1 transition-colors select-none hover:text-brand-text"
+								>
+									<input
+										type="radio"
+										name="sidebar-visibility"
+										value="public"
+										bind:group={sidebarRepoVisibility}
+										class="border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
+									/>
+									Public
 								</label>
 							</div>
 						{/if}
-
-						<button
-							type="submit"
-							disabled={!sidebarCwd.trim()}
-							class="w-full rounded bg-gradient-to-r from-brand-cyan to-brand-blue py-1.5 text-xs font-semibold text-brand-text transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-						>
-							Create Session
-						</button>
-					</form>
+					</div>
 				{/if}
-			</div>
-		{/if}
 
+				{#if sidebarPathStatus.exists !== true && (!sidebarPathStatus.matchingRule || !sidebarCreateRemote)}
+					<div class="flex items-center gap-1.5 py-0.5">
+						<input
+							id="sidebar-git-init"
+							type="checkbox"
+							bind:checked={sidebarGitInit}
+							onchange={(e) => {
+								userManualSidebarGitInit = e.currentTarget.checked;
+							}}
+							class="h-3.5 w-3.5 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue focus:ring-offset-brand-surface"
+						/>
+						<label
+							for="sidebar-git-init"
+							class="cursor-pointer text-xs text-brand-text select-none"
+						>
+							Initialize Git repository
+						</label>
+					</div>
+				{/if}
+
+				<button
+					type="submit"
+					disabled={!sidebarCwd.trim()}
+					class="w-full rounded bg-gradient-to-r from-brand-cyan to-brand-blue py-1.5 text-xs font-semibold text-brand-text transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+				>
+					Create Session
+				</button>
+			</form>
+		{/if}
 		{#if viewState.view === 'owner'}
 			{#if ownerGroups.length === 0}
 				<div class="p-4 text-center text-sm text-brand-text-muted">
-					{loading
-						? 'Loading sessions...'
-						: searchQuery
-							? 'No sessions match your filter'
-							: 'No sessions found'}
+					{loading ? 'Loading sessions...' : emptyListText}
 				</div>
 			{/if}
 			{#each ownerGroups as group (group.root.session.path)}
@@ -968,7 +1082,9 @@
 												? 'Closed'
 												: 'Closed (shown because a session under it is open)'
 											: !node.matched
-												? 'Shown because a session under it matches the filter'
+												? onlyStarred && !node.session.starred
+													? 'Shown because a session under it is starred'
+													: 'Shown because a session under it matches the filter'
 												: undefined}
 										nestKind={node.edge ?? 'fork'}
 										presence={presence.get(node.session.path)}
@@ -1021,7 +1137,7 @@
 			</div>
 		{:else if filteredFolders.length === 0}
 			<div class="p-4 text-center text-sm text-brand-text-muted">
-				{searchQuery ? 'No sessions match your filter' : 'No sessions found'}
+				{emptyListText}
 			</div>
 		{:else}
 			{#each filteredFolders as folder (folder.path)}

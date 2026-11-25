@@ -28,6 +28,7 @@ type S = {
 	name?: string;
 	firstMessage?: string;
 	isWorking?: boolean;
+	starred?: boolean;
 };
 
 const s = (
@@ -631,6 +632,69 @@ describe('ownerTree filter', () => {
 	it('keeps the summary of the whole group while filtering', () => {
 		const [g] = ownerTree(tree(), {isVisible: all, filter: 'beta'});
 		expect(g.summary.sessions).toBe(3);
+	});
+});
+
+describe('ownerTree Only starred', () => {
+	const tree = () => [
+		folder('main', [
+			s('/o', 1, {name: 'orchestrator'}),
+			s('/w1', 2, {ownerSessionPath: '/o', name: 'alpha worker'}),
+			s('/w2', 3, {ownerSessionPath: '/w1', name: 'beta', starred: true}),
+			s('/w3', 4, {ownerSessionPath: '/o', name: 'gamma'}),
+			s('/x', 5, {name: 'unrelated'}),
+		]),
+	];
+
+	it('keeps a starred session with its ancestors as dimmed context, drops the rest', () => {
+		const groups = ownerTree(tree(), {isVisible: all, onlyStarred: true});
+		expect(render(groups)).toEqual([
+			['/o', '  /w1 <spawned>', '    /w2 <spawned>'],
+		]);
+		const rows = ownerGroupRows(groups[0]).map((r) => [
+			r.node.session.path,
+			r.node.matched,
+		]);
+		expect(rows).toEqual([
+			['/o', false],
+			['/w1', false],
+			['/w2', true],
+		]);
+	});
+
+	it('does not force a group open (only the text filter does)', () => {
+		const [g] = ownerTree(tree(), {isVisible: all, onlyStarred: true});
+		expect(g.hasMatch).toBe(false);
+	});
+
+	it('keeps the summary of the whole group', () => {
+		const [g] = ownerTree(tree(), {isVisible: all, onlyStarred: true});
+		expect(g.summary.sessions).toBe(4);
+	});
+
+	it('combines with the text filter: a match must be starred too', () => {
+		expect(
+			ownerTree(tree(), {isVisible: all, onlyStarred: true, filter: 'gamma'}),
+		).toEqual([]);
+		expect(
+			render(
+				ownerTree(tree(), {isVisible: all, onlyStarred: true, filter: 'beta'}),
+			),
+		).toEqual([['/o', '  /w1 <spawned>', '    /w2 <spawned>']]);
+	});
+
+	it('drops every group when nothing is starred', () => {
+		const groups = ownerTree([folder('f', [s('/a', 1), s('/b', 2)])], {
+			isVisible: all,
+			onlyStarred: true,
+		});
+		expect(groups).toEqual([]);
+	});
+
+	it('changes nothing when off', () => {
+		expect(
+			allPaths(ownerTree(tree(), {isVisible: all, onlyStarred: false})),
+		).toEqual(allPaths(ownerTree(tree(), {isVisible: all})));
 	});
 });
 

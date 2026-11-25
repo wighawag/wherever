@@ -36,6 +36,13 @@
  *    is set and the group holds a match: it is what forces the group open
  *    (`ownerGroupExpanded`). Group order stays the rule 5 order of the whole
  *    group, so typing a filter never reshuffles the groups it keeps.
+ * 10. "Only starred" (`onlyStarred`, spec `sidebar-compact-layout` story 22)
+ *    is part of the rule 9 match: a node matches only when it is also
+ *    starred, so an unstarred ancestor of a starred session stays as dimmed
+ *    context and a group with no starred match disappears. Like rule 9 it
+ *    leaves the summary (rule 8) whole; unlike the text filter it does not set
+ *    `hasMatch`, so it never forces a group open (the folder view does not
+ *    open folders for it either).
  *
  * Siblings are ordered like the fork tree: by the most recent `modified` in
  * their (kept) subtree, then their own `modified`, then path.
@@ -52,6 +59,7 @@ export interface OwnerTreeSessionInput extends ForkTreeNodeInput {
 	name?: string;
 	firstMessage?: string;
 	isWorking?: boolean;
+	starred?: boolean;
 }
 
 /** How a nested node hangs from the node above it; null on a group's root. */
@@ -99,6 +107,8 @@ export interface OwnerTreeOptions<S> {
 	isVisible: (session: S) => boolean;
 	/** The sidebar filter text; empty (or omitted) matches everything. */
 	filter?: string;
+	/** "Only starred" (rule 10): only starred sessions match. */
+	onlyStarred?: boolean;
 	/** shipmates presence by session path, for the summary's live states. */
 	presence?: ReadonlyMap<string, Pick<ShipmatesPresence, 'state'>>;
 }
@@ -118,7 +128,7 @@ function byRecency(a: {modified: string; path: string}, b: typeof a): number {
  */
 export function ownerTree<S extends OwnerTreeSessionInput>(
 	folders: readonly {name: string; sessions: readonly S[]}[],
-	{isVisible, filter = '', presence}: OwnerTreeOptions<S>,
+	{isVisible, filter = '', onlyStarred = false, presence}: OwnerTreeOptions<S>,
 ): OwnerGroup<S>[] {
 	const byPath = new Map<string, {session: S; folderName: string}>();
 	for (const f of folders)
@@ -223,10 +233,11 @@ export function ownerTree<S extends OwnerTreeSessionInput>(
 		walk(root);
 		return sum;
 	};
-	// Rule 9: mark matches, keep their ancestors, drop the rest.
+	// Rules 9 and 10: mark matches, keep their ancestors, drop the rest.
 	const matchPrune = (node: OwnerTreeNode<S>): OwnerTreeNode<S> | null => {
 		const matched =
 			isVisible(node.session) &&
+			(!onlyStarred || !!node.session.starred) &&
 			sessionMatchesFilter(
 				{
 					name: node.session.name,

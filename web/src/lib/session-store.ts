@@ -710,6 +710,21 @@ export function getToken(): string {
 	return '';
 }
 
+/**
+ * A pending request to open the main list's new-session form (the filter
+ * row's + in `SessionBrowser.svelte`, spec `sidebar-compact-layout` story 23)
+ * from outside it, e.g. the desktop rail's +. A flag rather than a call into
+ * the component: the rail expands the sidebar first, so the browser may only
+ * be mounting when the request is made. The main-list `SessionBrowser` reads
+ * it whenever it is mounted (on mount included), opens the form and clears it.
+ */
+export const newSessionFormRequested = writable<boolean>(false);
+
+/** Open the main list's new-session form (now, or as soon as it is shown). */
+export function openNewSessionForm(): void {
+	newSessionFormRequested.set(true);
+}
+
 export const gitInitDefaultStore = writable<boolean>(false);
 export const uploadMethodStore = writable<'websocket' | 'post'>('websocket');
 export const searchFolderStore = writable<string | null>(null);

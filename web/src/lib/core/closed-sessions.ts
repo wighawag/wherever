@@ -18,10 +18,18 @@ import {
 /** The fields of a listed session (`SessionInfo`) these helpers read. */
 export interface ClosedSessionLike extends LiveSessionLike, ForkTreeNodeInput {
 	closed?: boolean;
+	starred?: boolean;
 }
 
 /** Where "Show closed" is remembered on this device (on when `'1'`). */
 export const SHOW_CLOSED_KEY = 'wherever-show-closed';
+
+/**
+ * Where "Only starred" (the ☰ view options, spec `sidebar-compact-layout`
+ * story 22) is remembered on this device (on when `'1'`). It filters the
+ * folder list and the By-owner view, never the Live strip.
+ */
+export const ONLY_STARRED_KEY = 'wherever-only-starred';
 
 /** Whether a session is listed: open ones always, closed ones only with "Show closed". */
 export function isSessionShown(
@@ -56,6 +64,11 @@ export type FolderListEntry<
  * except an empty folder with no query typed (`/sessions` keeps empty folders
  * on purpose). So a folder whose sessions are all closed disappears while
  * "Show closed" is off.
+ *
+ * `onlyStarred` ("Only starred") narrows the folder's sessions to the starred
+ * ones BEFORE the fork tree is built, exactly like the text filter: a starred
+ * fork of an unstarred session is listed on its own (no context row), and a
+ * folder with no starred shown session is dropped, an empty one included.
  */
 export function folderListView<
 	S extends ClosedSessionLike,
@@ -64,18 +77,22 @@ export function folderListView<
 	folders: readonly F[],
 	query: string,
 	showClosed: boolean,
+	onlyStarred = false,
 ): FolderListEntry<F, S>[] {
 	const out: FolderListEntry<F, S>[] = [];
 	for (const folder of folders) {
-		const matched = query
-			? folder.sessions.filter((s) =>
-					sessionMatchesFilter(s, folder.name, query),
-				)
-			: folder.sessions;
+		const matched =
+			query || onlyStarred
+				? folder.sessions.filter(
+						(s) =>
+							(!onlyStarred || !!s.starred) &&
+							(!query || sessionMatchesFilter(s, folder.name, query)),
+					)
+				: folder.sessions;
 		const shown = (s: S) => isSessionShown(s, showClosed);
 		const rows = pruneForkTree(buildForkTree(matched), shown);
 		const shownCount = rows.filter((r) => shown(r.session)).length;
-		const keepEmpty = !query && folder.sessions.length === 0;
+		const keepEmpty = !query && !onlyStarred && folder.sessions.length === 0;
 		if (shownCount === 0 && !keepEmpty) continue;
 		out.push({...folder, sessions: matched, rows, shownCount});
 	}
