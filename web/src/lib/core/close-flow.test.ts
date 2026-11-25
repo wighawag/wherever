@@ -1,8 +1,12 @@
 import {describe, it, expect} from 'vitest';
 import {
 	cascadePromptText,
+	closeBannerFor,
 	closeBannerText,
+	closeFolder,
+	closeFolderBannerText,
 	closeWithCascade,
+	folderCloseTargets,
 	undoClose,
 	type CloseApi,
 	type CloseResult,
@@ -29,6 +33,17 @@ function fakeServer(
 			const batch = `c_${++n}`;
 			const took: string[] = [];
 			for (const x of cascade ? [f, ...subtree(f)] : [f]) {
+				if (closed.has(x)) continue;
+				closed.set(x, {batch, unstarred: stars.delete(x)});
+				took.push(x);
+			}
+			return {batch, sessions: took};
+		},
+		async closeMany(files): Promise<CloseResult> {
+			calls.push(`closeMany ${files.join(',')}`);
+			const batch = `c_${++n}`;
+			const took: string[] = [];
+			for (const x of files) {
 				if (closed.has(x)) continue;
 				closed.set(x, {batch, unstarred: stars.delete(x)});
 				took.push(x);
@@ -135,6 +150,65 @@ describe('close flow', () => {
 		});
 		expect(b).toMatchObject({owned: 0});
 		expect([...s.closed.keys()]).toEqual(['/s/owner.jsonl']);
+	});
+
+	it('Close all in folder: only the open shown rows, one batch, no cascade, a folder banner, one undo', async () => {
+		const s = fakeServer(
+			// `a` owns a session elsewhere: a folder close never cascades to it.
+			{'/s/a.jsonl': ['/w/elsewhere.jsonl']},
+			['/s/a.jsonl'],
+		);
+		await closeWithCascade('/s/c.jsonl', s.api, async () => true);
+		const rows = [
+			{path: '/s/a.jsonl'},
+			{path: '/s/b.jsonl', closed: false},
+			{path: '/s/c.jsonl', closed: true},
+		];
+		const files = folderCloseTargets(rows);
+		expect(files).toEqual(['/s/a.jsonl', '/s/b.jsonl']);
+		const banner = await closeFolder(files, 'wherever', s.api);
+		expect(banner).toEqual({
+			batch: 'c_2',
+			root: '/s/a.jsonl',
+			owned: 0,
+			sessions: ['/s/a.jsonl', '/s/b.jsonl'],
+			folder: 'wherever',
+		});
+		expect(s.calls).toContain('closeMany /s/a.jsonl,/s/b.jsonl');
+		expect(s.closed.has('/w/elsewhere.jsonl')).toBe(false);
+		expect(s.stars.has('/s/a.jsonl')).toBe(false);
+		expect(closeBannerFor(banner!, () => 'unused')).toBe(
+			'Closed 2 sessions in wherever.',
+		);
+
+		await undoClose(banner!, s.api);
+		expect([...s.closed.keys()]).toEqual(['/s/c.jsonl']);
+		expect(s.stars.has('/s/a.jsonl')).toBe(true);
+	});
+
+	it('a folder close with nothing open sends nothing and shows no banner', async () => {
+		const s = fakeServer({});
+		expect(await closeFolder([], 'p', s.api)).toBeNull();
+		expect(s.calls).toEqual([]);
+	});
+
+	it('the banner text: the folder variant counts what the close took', () => {
+		expect(closeFolderBannerText('jolly-roger', 1)).toBe(
+			'Closed 1 session in jolly-roger.',
+		);
+		expect(closeFolderBannerText('jolly-roger', 47)).toBe(
+			'Closed 47 sessions in jolly-roger.',
+		);
+		const single = {batch: 'c_1', root: '/s/x', owned: 2, sessions: []};
+		expect(closeBannerFor(single, (f) => `label of ${f}`)).toBe(
+			'Closed label of /s/x (and 2 owned).',
+		);
+		expect(
+			closeBannerFor(
+				{batch: 'c_1', root: '/s/x', owned: 0, sessions: ['/s/x'], folder: 'f'},
+				() => 'x',
+			),
+		).toBe('Closed 1 session in f.');
 	});
 
 	it('no banner when the close took nothing (already closed)', async () => {

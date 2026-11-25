@@ -14,6 +14,7 @@
 		setSessionStarred,
 		setSessionClosed,
 		closeSession,
+		closeFolderSessions,
 		closeBannerStore,
 		undoLastClose,
 		dismissCloseBanner,
@@ -24,7 +25,11 @@
 	} from '$lib/session-store';
 	import {ownedChildren, presenceByFile} from '$lib/core/shipmates';
 	import {undoShipmatesDelete} from '$lib/wherever';
-	import {closeBannerText} from '$lib/core/close-flow';
+	import {closeBannerFor, folderCloseTargets} from '$lib/core/close-flow';
+	// The shared ⋯ menu (bottom sheet on phone, popover on desktop).
+	import Menu from './menu/Menu.svelte';
+	import MenuItem from './menu/MenuItem.svelte';
+	import MenuSeparator from './menu/MenuSeparator.svelte';
 	// The Live strip's rows (unit-tested in core). Closed-agnostic on purpose.
 	import {liveSessions} from '$lib/core/live-sessions';
 	import LiveStrip from './LiveStrip.svelte';
@@ -112,6 +117,7 @@
 	let expanded = $state<Record<string, boolean>>({});
 	let searchExpanded = $state<Record<string, boolean>>({});
 	let confirmingDelete = $state<string | null>(null);
+	// The folder whose ⋯ menu shows the "Delete all" confirm step, or null.
 	let confirmingDeleteFolder = $state<string | null>(null);
 	let searchQuery = $state('');
 	let filteredFolders = $state<
@@ -156,21 +162,11 @@
 			// No storage (private mode): the setting just is not remembered.
 		}
 	}
-	// The ☰ view options popover (a simple local one; the shared menu
-	// primitive may replace it). Closes on Escape or a press outside it.
+	// The ☰ view options (the shared menu: a sheet on phone, a popover on
+	// desktop; it closes on Escape, a press outside it, or Refresh).
 	let viewOptionsOpen = $state(false);
-	let viewOptionsEl = $state<HTMLDivElement | null>(null);
-	function onWindowPointerDown(e: PointerEvent) {
-		if (
-			viewOptionsOpen &&
-			viewOptionsEl &&
-			!viewOptionsEl.contains(e.target as Node)
-		)
-			viewOptionsOpen = false;
-	}
-	function onWindowKeyDown(e: KeyboardEvent) {
-		if (e.key === 'Escape') viewOptionsOpen = false;
-	}
+	// The folder whose ⋯ menu is open (one at a time), or null.
+	let folderMenu = $state<string | null>(null);
 	// A view option away from its default is on: the ☰ shows a dot, so a
 	// narrowed (or widened) list is never a surprise.
 	let emptyListText = $derived(
@@ -637,11 +633,6 @@
 	}
 </script>
 
-<svelte:window
-	onpointerdown={onWindowPointerDown}
-	onkeydown={onWindowKeyDown}
-/>
-
 <div class="flex h-full flex-col">
 	{#if !readOnly && $closeBannerStore}
 		<!-- The latest close (single or cascading), undoable as one batch (ADR 0025). -->
@@ -649,7 +640,7 @@
 		<div class="border-b border-brand-border/50 p-2">
 			<div class="flex items-center gap-2 text-[10px] text-brand-text-muted">
 				<span class="min-w-0 flex-1 truncate" title={c.sessions.join('\n')}
-					>{closeBannerText(sessionLabel(c.root), c.owned)}</span
+					>{closeBannerFor(c, sessionLabel)}</span
 				>
 				<button
 					type="button"
@@ -711,94 +702,75 @@
 				oninput={(e) => (searchQuery = e.currentTarget.value)}
 				class="min-w-0 flex-1 rounded border border-brand-border bg-brand-surface-2 px-2 py-1.5 text-xs text-brand-text placeholder-brand-text-muted focus:border-brand-blue focus:outline-none"
 			/>
-			<div class="relative shrink-0" bind:this={viewOptionsEl}>
-				<button
-					type="button"
-					onclick={() => (viewOptionsOpen = !viewOptionsOpen)}
-					class="relative flex h-full w-8 items-center justify-center rounded border text-sm transition-colors {viewOptionsOpen
-						? 'border-brand-blue bg-brand-surface-3 text-brand-text'
-						: 'border-brand-border bg-brand-surface-2 text-brand-text-muted hover:bg-brand-surface-3 hover:text-brand-text'}"
-					title="View options"
-					aria-label="View options"
-					aria-haspopup="true"
-					aria-expanded={viewOptionsOpen}
-				>
-					<span aria-hidden="true">☰</span>
-					{#if viewOptionsActive}
-						<span
-							class="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-brand-blue"
-							aria-hidden="true"
-						></span>
-					{/if}
-				</button>
-				{#if viewOptionsOpen}
-					<div
-						class="absolute top-full right-0 z-40 mt-1 w-52 overflow-hidden rounded-lg border border-brand-border bg-brand-surface-2 text-xs text-brand-text shadow-xl"
-						role="group"
+			<Menu
+				label="View options"
+				class="flex shrink-0"
+				width="w-52"
+				bind:open={viewOptionsOpen}
+			>
+				{#snippet trigger(props)}
+					<button
+						{...props}
+						type="button"
+						class="relative flex h-full w-8 items-center justify-center rounded border text-sm transition-colors {viewOptionsOpen
+							? 'border-brand-blue bg-brand-surface-3 text-brand-text'
+							: 'border-brand-border bg-brand-surface-2 text-brand-text-muted hover:bg-brand-surface-3 hover:text-brand-text'}"
+						title="View options"
 						aria-label="View options"
 					>
-						<div class="space-y-0.5 p-1.5">
-							{#if viewState.showToggle}
-								<div
-									class="mb-1 flex overflow-hidden rounded border border-brand-border"
-									role="group"
-									aria-label="Group sessions"
-								>
-									{#each [['folder', 'By folder'], ['owner', 'By owner']] as [view, label] (view)}
-										<button
-											type="button"
-											onclick={() => setView(view as SessionListView)}
-											aria-pressed={viewState.view === view}
-											class="flex-1 px-2 py-1 {viewState.view === view
-												? 'bg-brand-surface-3 text-brand-text'
-												: 'bg-brand-surface-2 text-brand-text-muted hover:text-brand-text'}"
-											title={view === 'owner'
-												? 'One tree per orchestration: spawned sessions under their owner, across folders'
-												: 'Sessions grouped by folder'}>{label}</button
-										>
-									{/each}
-								</div>
-							{/if}
-							{#if !readOnly}
-								<label
-									class="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 select-none hover:bg-brand-surface-3"
-									title="List closed sessions too (dimmed), so you can reopen them"
-								>
-									<input
-										type="checkbox"
-										checked={showClosedSetting}
-										onchange={toggleShowClosed}
-										class="h-3.5 w-3.5 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
-									/>
-									Show closed
-								</label>
-							{/if}
-							<label
-								class="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 select-none hover:bg-brand-surface-3"
-								title="List only starred sessions (the Live strip is not filtered)"
+						<span aria-hidden="true">☰</span>
+						{#if viewOptionsActive}
+							<span
+								class="absolute top-0.5 right-0.5 h-1.5 w-1.5 rounded-full bg-brand-blue"
+								aria-hidden="true"
+							></span>
+						{/if}
+					</button>
+				{/snippet}
+				{#if viewState.showToggle}
+					<div
+						class="mx-2 mb-1 flex overflow-hidden rounded border border-brand-border"
+						role="group"
+						aria-label="Group sessions"
+					>
+						{#each [['folder', 'By folder'], ['owner', 'By owner']] as [view, label] (view)}
+							<button
+								type="button"
+								data-menu-item
+								onclick={() => setView(view as SessionListView)}
+								aria-pressed={viewState.view === view}
+								class="flex-1 px-2 py-1.5 focus:outline-none focus-visible:ring-1 focus-visible:ring-brand-blue {viewState.view ===
+								view
+									? 'bg-brand-surface-3 text-brand-text'
+									: 'bg-brand-surface-2 text-brand-text-muted hover:text-brand-text'}"
+								title={view === 'owner'
+									? 'One tree per orchestration: spawned sessions under their owner, across folders'
+									: 'Sessions grouped by folder'}>{label}</button
 							>
-								<input
-									type="checkbox"
-									checked={onlyStarred}
-									onchange={toggleOnlyStarred}
-									class="h-3.5 w-3.5 rounded border-brand-border bg-brand-surface-2 text-brand-blue focus:ring-brand-blue"
-								/>
-								Only starred
-							</label>
-						</div>
-						<button
-							type="button"
-							onclick={() => refresh()}
-							class="flex w-full items-center gap-2 border-t border-brand-border/60 px-3 py-2 text-left transition-colors hover:bg-brand-surface-3"
-							title="Refresh session list"
-						>
-							<span class="inline-block {loading ? 'animate-spin' : ''}">↻</span
-							>
-							Refresh
-						</button>
+						{/each}
 					</div>
 				{/if}
-			</div>
+				{#if !readOnly}
+					<MenuItem
+						checked={showClosedSetting}
+						keepOpen
+						onselect={toggleShowClosed}
+						title="List closed sessions too (dimmed), so you can reopen them"
+						>Show closed</MenuItem
+					>
+				{/if}
+				<MenuItem
+					checked={onlyStarred}
+					keepOpen
+					onselect={toggleOnlyStarred}
+					title="List only starred sessions (the Live strip is not filtered)"
+					>Only starred</MenuItem
+				>
+				<MenuSeparator />
+				<MenuItem icon="↻" onselect={refresh} title="Refresh session list"
+					>Refresh</MenuItem
+				>
+			</Menu>
 			{#if !readOnly}
 				<button
 					type="button"
@@ -1141,100 +1113,133 @@
 			</div>
 		{:else}
 			{#each filteredFolders as folder (folder.path)}
+				{@const closeTargets = folderCloseTargets(
+					folder.rows.map((r) => r.session),
+				)}
 				<div class="border-b border-brand-border/50">
-					<button
-						onclick={() => toggleFolder(folder.path)}
-						class="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-brand-surface-3/50"
-					>
-						<span
-							class="text-xs text-brand-text-muted transition-transform {isFolderExpanded(
-								folder.path,
-							)
-								? 'rotate-90'
-								: ''}"
+					<!-- One line (spec `sidebar-compact-layout` stories 25 to 27): ▶, the
+					     name, the count, the "Missing" badge, and ⋯ (the path is in the
+					     menu and the tooltip). -->
+					<div class="flex items-center pr-1.5">
+						<button
+							type="button"
+							onclick={() => toggleFolder(folder.path)}
+							class="flex min-w-0 flex-1 items-center gap-2 py-2 pl-3 text-left transition-colors hover:bg-brand-surface-3/50"
+							title={folder.path}
+							aria-expanded={isFolderExpanded(folder.path)}
 						>
-							▶
-						</span>
-						<div class="min-w-0 flex-1">
-							<div class="flex items-center gap-1.5">
-								<div class="truncate text-sm font-medium text-brand-text">
-									{folder.name}
-								</div>
-								<!-- The folder is not on this machine (a synced transcript whose
-								     clone never travelled). Its own marker, deliberately NOT the
-								     read-only treatment: read-only is a CONFIGURED policy and
-								     lives as a whole separate page, while this is a fact about
-								     the disk and is curable by a restore. Both can be true of one
-								     folder, so they must never look like one thing. -->
-								{#if folder.missing}
-									<span
-										class="flex-shrink-0 rounded border border-brand-purple/50 bg-brand-purple/15 px-1.5 py-px text-[10px] font-semibold tracking-wide text-brand-purple uppercase"
-										title="This folder does not exist on this machine. Open a session in it to clone or create it."
-										>Missing</span
-									>
-								{/if}
-							</div>
-							<div class="truncate text-[10px] text-brand-text-muted">
+							<span
+								class="shrink-0 text-[10px] text-brand-text-muted transition-transform {isFolderExpanded(
+									folder.path,
+								)
+									? 'rotate-90'
+									: ''}"
+								aria-hidden="true"
+							>
+								▶
+							</span>
+							<span class="truncate text-sm font-semibold text-brand-text"
+								>{folder.name}</span
+							>
+							<span class="shrink-0 text-xs text-brand-text-muted"
+								>{folder.shownCount}</span
+							>
+							<!-- The folder is not on this machine (a synced transcript whose
+							     clone never travelled). Its own marker, deliberately NOT the
+							     read-only treatment: read-only is a CONFIGURED policy and
+							     lives as a whole separate page, while this is a fact about
+							     the disk and is curable by a restore. Both can be true of one
+							     folder, so they must never look like one thing. -->
+							{#if folder.missing}
+								<span
+									class="shrink-0 rounded border border-brand-purple/50 bg-brand-purple/15 px-1.5 py-px text-[10px] font-semibold tracking-wide text-brand-purple uppercase"
+									title="This folder does not exist on this machine. Open a session in it to clone or create it."
+									>Missing</span
+								>
+							{/if}
+						</button>
+						<Menu
+							label="Folder {folder.name}"
+							class="shrink-0"
+							width="w-64"
+							bind:open={
+								() => folderMenu === folder.path,
+								(v) => (folderMenu = v ? folder.path : null)
+							}
+							onclose={() => {
+								if (confirmingDeleteFolder === folder.path)
+									confirmingDeleteFolder = null;
+							}}
+						>
+							{#snippet trigger(props)}
+								<button
+									{...props}
+									type="button"
+									class="flex h-7 w-7 items-center justify-center rounded text-base leading-none text-brand-text-muted transition-colors hover:bg-brand-surface-3 hover:text-brand-text"
+									title="Folder actions"
+									aria-label="Folder actions for {folder.name}">⋯</button
+								>
+							{/snippet}
+							<div
+								class="px-4 py-2 font-mono text-xs break-all text-brand-text-muted select-text md:px-3 md:py-1.5 md:text-[11px]"
+							>
 								{folder.path}
 							</div>
-						</div>
-						<span class="text-xs text-brand-text-muted"
-							>{folder.shownCount}</span
-						>
-					</button>
+							{#if !readOnly}
+								<MenuItem
+									icon="+"
+									onselect={() => openNewSessionPicker(folder.path)}
+									>New session here</MenuItem
+								>
+								<MenuItem
+									icon="⊘"
+									disabled={closeTargets.length === 0}
+									hint={closeTargets.length > 0
+										? String(closeTargets.length)
+										: undefined}
+									title={closeTargets.length === 0
+										? 'No open session shown in this folder'
+										: `Close the ${closeTargets.length} open session${closeTargets.length === 1 ? '' : 's'} shown in this folder (one Undo)`}
+									onselect={() =>
+										void closeFolderSessions(closeTargets, folder.name)}
+									>Close all in folder</MenuItem
+								>
+								<MenuSeparator />
+								{#if confirmingDeleteFolder === folder.path}
+									<MenuItem
+										icon="🗑"
+										destructive
+										focusOnMount
+										onselect={() => handleDeleteAllFolderSessions(folder)}
+										title="Delete every session shown in this folder"
+										>Delete {folder.rows.length} session{folder.rows.length ===
+										1
+											? ''
+											: 's'}?</MenuItem
+									>
+									<MenuItem
+										icon="✕"
+										keepOpen
+										onselect={() => (confirmingDeleteFolder = null)}
+										>Cancel</MenuItem
+									>
+								{:else}
+									<MenuItem
+										icon="🗑"
+										destructive
+										keepOpen
+										hint="asks again"
+										onselect={() => (confirmingDeleteFolder = folder.path)}
+										title="Delete all sessions shown in this folder"
+										>Delete all…</MenuItem
+									>
+								{/if}
+							{/if}
+						</Menu>
+					</div>
 
 					{#if isFolderExpanded(folder.path)}
 						<div class="px-3 pb-2">
-							{#if !readOnly}
-								<div class="mb-1.5 flex items-center justify-between">
-									<button
-										onclick={() => openNewSessionPicker(folder.path)}
-										class="rounded px-2 py-1 text-left text-xs text-brand-blue transition-colors hover:bg-brand-surface-3/50 hover:opacity-90"
-									>
-										+ New Session Here
-									</button>
-									<div class="flex-shrink-0">
-										{#if confirmingDeleteFolder === folder.path}
-											<div
-												class="flex items-center gap-1 rounded border border-red-500/30 bg-brand-surface-2/80 px-1 py-0.5"
-											>
-												<button
-													onclick={(e) => {
-														e.stopPropagation();
-														handleDeleteAllFolderSessions(folder);
-													}}
-													class="px-1.5 text-xs font-bold text-rose-400 hover:text-rose-300 focus:outline-none"
-													title="Confirm Delete All"
-												>
-													Delete All?
-												</button>
-												<button
-													onclick={(e) => {
-														e.stopPropagation();
-														confirmingDeleteFolder = null;
-													}}
-													class="px-1.5 text-[10px] text-brand-text-muted hover:text-brand-text focus:outline-none"
-													title="Cancel"
-												>
-													✕
-												</button>
-											</div>
-										{:else}
-											<button
-												onclick={(e) => {
-													e.stopPropagation();
-													confirmingDeleteFolder = folder.path;
-												}}
-												class="rounded px-2 py-1 text-xs text-brand-text-muted transition-colors hover:bg-brand-surface-3/50 hover:text-rose-400 focus:outline-none"
-												title="Delete all sessions in this folder"
-											>
-												Delete All
-											</button>
-										{/if}
-									</div>
-								</div>
-							{/if}
-
 							{#each folder.rows as { session, depth } (session.path)}
 								<SessionRow
 									{session}

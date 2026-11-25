@@ -224,23 +224,50 @@ export function enforceClosedCap(
   return pruned;
 }
 
+/**
+ * Most sessions one `{sessionFiles}` close (the sidebar's "Close all in
+ * folder") may name. A folder rarely holds more than a few dozen; the cap only
+ * bounds the work (and the store write) one request can cause.
+ */
+export const MAX_CLOSE_FILES = 1000;
+
 /** A batch id as `newCloseBatch` makes it. */
 const BATCH_RE = /^c_[0-9a-f]{1,64}$/;
 
 /**
- * Validate an incoming close/reopen, returning an error message or null. Three
+ * Validate an incoming close/reopen, returning an error message or null. Four
  * shapes: `{sessionFile, closed}` (one session), `{sessionFile, closed: true,
- * cascade: true}` (it and its owned subtree, as one batch) and `{batch, closed:
- * false}` (reopen a whole batch: the undo).
+ * cascade: true}` (it and its owned subtree, as one batch), `{sessionFiles,
+ * closed: true}` (up to `MAX_CLOSE_FILES` sessions as one batch, never
+ * cascading: "Close all in folder") and `{batch, closed: false}` (reopen a
+ * whole batch: the undo).
  */
 export function validateCloseInput(input: {
   sessionFile?: unknown;
+  sessionFiles?: unknown;
   closed?: unknown;
   cascade?: unknown;
   batch?: unknown;
 }): string | null {
   if (typeof input.closed !== 'boolean') return 'closed must be a boolean';
   if (input.cascade !== undefined && typeof input.cascade !== 'boolean') return 'cascade must be a boolean';
+  if (input.sessionFiles !== undefined) {
+    if (!Array.isArray(input.sessionFiles)) return 'sessionFiles must be an array';
+    if (input.sessionFile !== undefined || input.batch !== undefined) {
+      return 'Give only one of sessionFile, sessionFiles or batch';
+    }
+    if (!input.closed) return 'sessionFiles is only for a close (closed: true)';
+    if (input.cascade) return 'sessionFiles does not cascade';
+    if (input.sessionFiles.length === 0) return 'sessionFiles is empty';
+    if (input.sessionFiles.length > MAX_CLOSE_FILES) {
+      return `sessionFiles is too long (at most ${MAX_CLOSE_FILES})`;
+    }
+    for (const f of input.sessionFiles) {
+      if (typeof f !== 'string' || f.length === 0) return 'sessionFiles must hold non-empty strings';
+      if (f.length > MAX_CLOSED_PATH_CHARS) return 'A sessionFiles entry is too long';
+    }
+    return null;
+  }
   if (input.batch !== undefined) {
     if (typeof input.batch !== 'string' || !BATCH_RE.test(input.batch)) return 'Invalid batch';
     if (input.closed) return 'batch is only for a reopen (closed: false)';

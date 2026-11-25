@@ -218,6 +218,93 @@ describe('setSessionClosed', () => {
 	});
 });
 
+describe('closeFolderSessions (Close all in folder)', () => {
+	const row = (path: string, extra: Record<string, unknown> = {}) => ({
+		path,
+		id: path,
+		created: '',
+		modified: '',
+		messageCount: 0,
+		firstMessage: '',
+		isActive: false,
+		clientCount: 0,
+		...extra,
+	});
+	const seed = async () => {
+		const store = await import('./session-store.js');
+		store.sessionFolders.set({
+			folders: [
+				{
+					path: '/p',
+					name: 'p',
+					sessions: [row('/a', {starred: true}), row('/b'), row('/c')],
+				},
+			],
+			activeSessions: [],
+			currentSession: null,
+			loading: false,
+		});
+		return store;
+	};
+
+	it('closes many optimistically in one request, shows the folder banner, and Undo reopens the batch', async () => {
+		const store = await seed();
+		const bodies: any[] = [];
+		(globalThis as any).fetch = vi.fn(async (_url: string, init: any) => {
+			const body = JSON.parse(init?.body ?? '{}');
+			bodies.push(body);
+			return {
+				ok: true,
+				json: async () =>
+					body.batch
+						? {batch: body.batch, sessions: ['/a', '/b']}
+						: body.sessionFiles
+							? {batch: 'c_9', sessions: ['/a', '/b']}
+							: {folders: [], activeSessions: []},
+			};
+		});
+		const pending = store.closeFolderSessions(['/a', '/b'], 'p');
+		const [a, b, c] = get(store.sessionFolders).folders[0].sessions;
+		expect([a.closed, a.starred, b.closed, c.closed]).toEqual([
+			true,
+			undefined,
+			true,
+			undefined,
+		]);
+		await pending;
+		expect(bodies[0]).toEqual({sessionFiles: ['/a', '/b'], closed: true});
+		expect(get(store.closeBannerStore)).toMatchObject({
+			batch: 'c_9',
+			folder: 'p',
+			sessions: ['/a', '/b'],
+		});
+
+		await store.undoLastClose();
+		expect(bodies).toContainEqual({batch: 'c_9', closed: false});
+		expect(get(store.closeBannerStore)).toBeNull();
+	});
+
+	it('rolls every row back when the server refuses, and shows no banner', async () => {
+		const store = await seed();
+		store.dismissCloseBanner();
+		(globalThis as any).fetch = vi.fn(async () => ({
+			ok: false,
+			status: 400,
+			json: async () => ({error: 'nope'}),
+		}));
+		const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+		await store.closeFolderSessions(['/a', '/b'], 'p');
+		err.mockRestore();
+		const [a, b] = get(store.sessionFolders).folders[0].sessions;
+		expect([a.closed, a.starred, b.closed]).toEqual([
+			undefined,
+			true,
+			undefined,
+		]);
+		expect(get(store.closeBannerStore)).toBeNull();
+	});
+});
+
 describe('renameSession', () => {
 	it('POSTs {sessionFile, name} to /sessions/name and resolves the stored name', async () => {
 		const {renameSession} = await import('./session-store.js');

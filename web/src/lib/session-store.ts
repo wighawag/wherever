@@ -11,6 +11,7 @@ import {
 } from '$lib/core/shipmates';
 import {
 	CLOSE_BANNER_MS,
+	closeFolder,
 	closeWithCascade,
 	undoClose,
 	type CloseApi,
@@ -358,18 +359,31 @@ function patchClosed(
 	sessionFile: string,
 	next: (prev: ClosedFlags) => ClosedFlags,
 ): ClosedFlags | undefined {
-	let previous: ClosedFlags | undefined;
+	return patchClosedMany(store, [sessionFile], (_, prev) => next(prev)).get(
+		sessionFile,
+	);
+}
+
+// The same for many sessions in ONE store write (a folder close). Returns the
+// previous flags of every patched session, by path.
+function patchClosedMany(
+	store: typeof sessionFolders,
+	sessionFiles: readonly string[],
+	next: (sessionFile: string, prev: ClosedFlags) => ClosedFlags,
+): Map<string, ClosedFlags> {
+	const wanted = new Set(sessionFiles);
+	const previous = new Map<string, ClosedFlags>();
 	store.update((s) => ({
 		...s,
 		folders: s.folders.map((f) =>
-			f.sessions.some((x) => x.path === sessionFile)
+			f.sessions.some((x) => wanted.has(x.path))
 				? {
 						...f,
 						sessions: f.sessions.map((x) => {
-							if (x.path !== sessionFile) return x;
+							if (!wanted.has(x.path)) return x;
 							const prev = {closed: !!x.closed, starred: !!x.starred};
-							previous = prev;
-							const flags = next(prev);
+							previous.set(x.path, prev);
+							const flags = next(x.path, prev);
 							return {
 								...x,
 								closed: flags.closed || undefined,
@@ -381,6 +395,51 @@ function patchClosed(
 		),
 	}));
 	return previous;
+}
+
+/**
+ * Close many sessions as ONE batch (POST /sessions/close `{sessionFiles}`, the
+ * folder's "Close all"), never cascading. OPTIMISTIC with rollback like
+ * `setSessionClosed`: every file is marked closed and unstarred locally at once,
+ * and a refusal restores each one's flags. Resolves to `{batch, sessions}`.
+ */
+export async function setSessionsClosed(
+	sessionFiles: string[],
+): Promise<{batch: string | null; sessions: string[]}> {
+	const optimistic = (): ClosedFlags => ({closed: true, starred: false});
+	const prevMain = patchClosedMany(sessionFolders, sessionFiles, optimistic);
+	const prevReadOnly = patchClosedMany(
+		readOnlySessionFolders,
+		sessionFiles,
+		optimistic,
+	);
+	try {
+		const res = await fetch(apiUrl('/sessions/close'), {
+			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
+			body: JSON.stringify({sessionFiles, closed: true}),
+		});
+		if (!res.ok) {
+			const errData = await res.json().catch(() => ({}));
+			throw new Error(
+				errData.error || `Close failed with status ${res.status}`,
+			);
+		}
+		return (await res.json()) as {batch: string | null; sessions: string[]};
+	} catch (err) {
+		const restore =
+			(prev: Map<string, ClosedFlags>) =>
+			(file: string, current: ClosedFlags): ClosedFlags =>
+				prev.get(file) ?? current;
+		patchClosedMany(sessionFolders, [...prevMain.keys()], restore(prevMain));
+		patchClosedMany(
+			readOnlySessionFolders,
+			[...prevReadOnly.keys()],
+			restore(prevReadOnly),
+		);
+		console.error('Failed to close the sessions:', err);
+		throw err;
+	}
 }
 
 /**
@@ -459,6 +518,7 @@ const closeApi: CloseApi = {
 		return Array.isArray(body.sessions) ? (body.sessions as string[]) : [];
 	},
 	close: (sessionFile, cascade) => setSessionClosed(sessionFile, true, cascade),
+	closeMany: (sessionFiles) => setSessionsClosed(sessionFiles),
 	async reopenBatch(batch): Promise<CloseResult> {
 		const res = await fetch(apiUrl('/sessions/close'), {
 			method: 'POST',
@@ -532,6 +592,24 @@ export async function closeSession(sessionFile: string): Promise<void> {
 		if (banner) showBanner(banner);
 	} catch (err) {
 		console.error('Failed to close session:', err);
+	}
+}
+
+/**
+ * "Close all in folder": close the given open sessions of `folder` (its shown
+ * rows, see `folderCloseTargets`) as one batch, then show the folder banner.
+ * No owned-session question: a folder close never cascades.
+ */
+export async function closeFolderSessions(
+	sessionFiles: string[],
+	folder: string,
+): Promise<void> {
+	answerClosePrompt(null);
+	try {
+		const banner = await closeFolder(sessionFiles, folder, closeApi);
+		if (banner) showBanner(banner);
+	} catch (err) {
+		console.error('Failed to close the folder:', err);
 	}
 }
 
