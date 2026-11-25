@@ -1,5 +1,4 @@
 <script lang="ts">
-	import Notifications from '$lib/core/notifications/Notifications.svelte';
 	import VersionAndInstallNotfications from '$lib/core/service-worker/VersionAndInstallNotfications.svelte';
 	import {afterNavigate} from '$app/navigation';
 	import {applyAppearance} from '$lib/theme';
@@ -32,7 +31,5 @@
 </script>
 
 {@render children()}
-
-<Notifications />
 
 <VersionAndInstallNotfications src="" alt="" />

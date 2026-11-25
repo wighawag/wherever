@@ -3,7 +3,7 @@ import {get, writable} from 'svelte/store';
 import type {Logger} from 'named-logs';
 import {logs} from 'named-logs';
 import {handleAutomaticUpdate, listenForWaitingServiceWorker} from './utils';
-import {notifications} from '$lib/core/notifications';
+import {receivePushNotification} from '$lib/core/notifications';
 import {resolve} from '$app/paths';
 
 const logger = logs('service-worker') as Logger & {
@@ -172,11 +172,7 @@ export function createServiceWorker() {
 			//listen to messages
 			navigator.serviceWorker.onmessage = (event) => {
 				if (event.data && event.data.type === 'notification') {
-					console.log(event);
-					notifications.add({
-						type: 'push-notification',
-						data: event.data.notification,
-					});
+					receivePushNotification(event.data.notification);
 				}
 			};
 
