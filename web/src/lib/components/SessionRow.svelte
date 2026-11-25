@@ -1,3 +1,9 @@
+<script module lang="ts">
+	// Which row has "⊘ Close" revealed by a swipe: one at a time across every
+	// row (a new reveal snaps the previous one back).
+	const swipeReveal = $state<{row: symbol | null}>({row: null});
+</script>
+
 <script lang="ts">
 	// One sidebar session row: link, state dot (core/state-dot.ts), name / preview,
 	// "age · msgs · owns N · ★", "spawned by" hint, presence line, the owned-
@@ -12,6 +18,10 @@
 	// in the store, which every close entry point goes through), and which rows /
 	// chips are shown (core/closed-sessions.ts). The row stays a real link
 	// (`<a href="#<id>">`), so modifier clicks and long-press stay native.
+	// On touch, an open row of the main list swipes left to reveal "⊘ Close"
+	// (core/row-swipe.ts decides the gesture; `touch-action: pan-y` keeps the
+	// vertical scroll native, and any gesture that is not a row swipe is left
+	// to the browser).
 	import {copyText} from '$lib/core/clipboard';
 	import {sessionListLabel} from '$lib/core/live-sessions';
 	import {MENU_SHEET_QUERY} from '$lib/core/menu-nav';
@@ -26,6 +36,15 @@
 		sessionLinkUrl,
 		type RowNestKind,
 	} from '$lib/core/session-row';
+	import {
+		SWIPE_ACTION_WIDTH_PX,
+		SWIPE_SETTLE_MS,
+		nextSwipeDecision,
+		rowCanSwipe,
+		swipeOffset,
+		swipeRelease,
+		type SwipeDecision,
+	} from '$lib/core/row-swipe';
 	import {presenceLine, type ShipmatesPresence} from '$lib/core/shipmates';
 	import {sessionDotState} from '$lib/core/state-dot';
 	import type {SessionInfo} from '$lib/session-store';
@@ -171,6 +190,133 @@
 			}, 900);
 	}
 
+	// The touch swipe to close (stories 37 and 38).
+	const rowKey = Symbol('session-row');
+	let canSwipe = $derived(rowCanSwipe({readOnly, closed}));
+	let revealed = $derived(canSwipe && swipeReveal.row === rowKey);
+	let dragging = $state(false);
+	let dragOffset = $state(0);
+	let settling = $state(false);
+	let settleTimer: ReturnType<typeof setTimeout> | undefined;
+	let swipeEl = $state<HTMLDivElement | undefined>();
+	let gesture:
+		| {id: number; x: number; y: number; decision: SwipeDecision}
+		| undefined;
+	// The click that ends a swipe (or the tap that hides a reveal) must not
+	// open the row.
+	let swallowClick = false;
+
+	let translate = $derived(
+		dragging ? dragOffset : revealed ? -SWIPE_ACTION_WIDTH_PX : 0,
+	);
+	// Transform, clip and opaque background only while a swipe shows: a
+	// transform makes the row the containing block of the ⋯ sheet (`fixed`)
+	// and a clip would cut its popover.
+	let swipeShown = $derived(dragging || revealed || settling);
+
+	function settle() {
+		settling = true;
+		clearTimeout(settleTimer);
+		settleTimer = setTimeout(() => (settling = false), SWIPE_SETTLE_MS);
+	}
+
+	function hideReveal() {
+		if (swipeReveal.row === rowKey) {
+			swipeReveal.row = null;
+			settle();
+		}
+	}
+
+	function onSwipeDown(e: PointerEvent) {
+		swallowClick = false;
+		gesture = undefined;
+		if (e.pointerType !== 'touch' || !e.isPrimary || !canSwipe || menuOpen)
+			return;
+		if (revealed) {
+			// A tap on the revealed row (not its button) only hides the button.
+			hideReveal();
+			swallowClick = true;
+			return;
+		}
+		if (swipeReveal.row) swipeReveal.row = null;
+		gesture = {
+			id: e.pointerId,
+			x: e.clientX,
+			y: e.clientY,
+			decision: 'pending',
+		};
+	}
+
+	function onSwipeMove(e: PointerEvent) {
+		if (!gesture || e.pointerId !== gesture.id) return;
+		const dx = e.clientX - gesture.x;
+		const dy = e.clientY - gesture.y;
+		const was = gesture.decision;
+		gesture.decision = nextSwipeDecision(was, dx, dy);
+		if (gesture.decision === 'pass') {
+			gesture = undefined;
+			return;
+		}
+		if (gesture.decision !== 'swipe') return;
+		if (was !== 'swipe') {
+			dragging = true;
+			swallowClick = true;
+			try {
+				swipeEl?.setPointerCapture(e.pointerId);
+			} catch {
+				// The pointer may already be gone; the move still applies.
+			}
+		}
+		dragOffset = swipeOffset(dx, swipeEl?.clientWidth ?? 0);
+	}
+
+	function onSwipeEnd(e: PointerEvent) {
+		if (!gesture || e.pointerId !== gesture.id) return;
+		gesture = undefined;
+		if (!dragging) return;
+		const outcome =
+			e.type === 'pointercancel' ? 'snap-back' : swipeRelease(dragOffset);
+		dragging = false;
+		dragOffset = 0;
+		settle();
+		if (outcome === 'reveal') {
+			swipeReveal.row = rowKey;
+			return;
+		}
+		if (swipeReveal.row === rowKey) swipeReveal.row = null;
+		if (outcome === 'close') onToggleClosed(session.path, true);
+	}
+
+	function onSwipeClickCapture(e: MouseEvent) {
+		if (!swallowClick) return;
+		swallowClick = false;
+		e.preventDefault();
+		e.stopPropagation();
+	}
+
+	// While revealed, a touch anywhere outside this row hides the button.
+	$effect(() => {
+		if (!revealed) return;
+		const outside = (e: PointerEvent) => {
+			const target = e.target as Node | null;
+			if (target && swipeEl?.parentElement?.contains(target)) return;
+			hideReveal();
+		};
+		document.addEventListener('pointerdown', outside, true);
+		return () => document.removeEventListener('pointerdown', outside, true);
+	});
+
+	// A row that stops being swipeable (closed, or the page went read-only)
+	// gives the reveal up.
+	$effect(() => {
+		if (!canSwipe && swipeReveal.row === rowKey) swipeReveal.row = null;
+	});
+
+	$effect(() => () => {
+		clearTimeout(settleTimer);
+		if (swipeReveal.row === rowKey) swipeReveal.row = null;
+	});
+
 	function onMenuClose() {
 		clearTimeout(copyTimer);
 		copyState = 'idle';
@@ -182,226 +328,267 @@
 
 <div
 	style={depth > 0 ? `margin-left: ${depth * 0.85}rem` : ''}
-	class="group flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-brand-surface-3/30 {depth >
-	0
-		? 'border-l border-brand-border/60 pl-2'
-		: ''} {current ? 'bg-brand-surface-3' : ''} {menuOpen && !current
-		? 'bg-brand-surface-3/30'
-		: ''}"
+	class="relative {swipeShown ? 'overflow-hidden rounded' : ''}"
 >
-	<!-- Dimming is on the row's content, not this wrapper: an opacity here
-	     would also fade the ⋯ menu's sheet / popover inside it. -->
-	{#if depth > 0}
-		<span
-			class="flex-shrink-0 text-brand-text-muted {faded}"
-			title={marker.title}
-			aria-label={marker.ariaLabel}>↳</span
+	{#if canSwipe && swipeShown}
+		<!-- Behind the row: revealed by a touch swipe left (the mockup's
+		     "⊘ Close"). A tap closes, like a release past it. -->
+		<button
+			type="button"
+			onclick={(e) => {
+				e.stopPropagation();
+				hideReveal();
+				onToggleClosed(session.path, true);
+			}}
+			style="width: {SWIPE_ACTION_WIDTH_PX}px"
+			class="absolute inset-y-0 right-0 flex items-center justify-center gap-1 bg-brand-blue/60 text-xs text-white focus:outline-none"
+			title="Close: done with it (hidden, not deleted)"
+			aria-label="Close session"
+			tabindex={revealed ? 0 : -1}>⊘ Close</button
 		>
 	{/if}
-	<a
-		href="#{encodeURIComponent(session.id)}"
-		onclick={(e) => {
-			if (
-				e.button === 0 &&
-				!e.ctrlKey &&
-				!e.metaKey &&
-				!e.altKey &&
-				!e.shiftKey
-			) {
-				e.preventDefault();
-				onOpen(session.path);
-			}
-		}}
-		class="flex min-w-0 flex-1 items-center gap-2 text-left no-underline {faded}"
-		title={rowTitle}
+	<div
+		bind:this={swipeEl}
+		onpointerdown={onSwipeDown}
+		onpointermove={onSwipeMove}
+		onpointerup={onSwipeEnd}
+		onpointercancel={onSwipeEnd}
+		onclickcapture={onSwipeClickCapture}
+		style="{canSwipe ? 'touch-action: pan-y pinch-zoom;' : ''}{swipeShown
+			? `transform: translateX(${translate}px);`
+			: ''}{swipeShown && !dragging
+			? `transition: transform ${SWIPE_SETTLE_MS}ms ease-out;`
+			: ''}"
+		class="relative {swipeShown ? 'bg-brand-surface' : ''}"
+		role="presentation"
 	>
-		<StateDot dot={dotState} />
-		<div class="min-w-0 flex-1">
-			<div class="truncate text-xs text-brand-text">
-				{#if closed}
-					<span
-						class="mr-1 rounded border border-brand-border px-1 text-[9px] tracking-wide text-brand-text-muted uppercase"
-						>Closed</span
-					>
-				{/if}
-				{label}
-			</div>
-			<div class="truncate text-xs text-brand-text-muted">
-				{rowMetaLine(session, owns)}{#if session.starred}{' · '}<span
-						class="text-amber-400"
-						title="Starred"
-						aria-label="Starred">★</span
-					>{/if}
-				{#if folderTag}
-					<span
-						class="ml-1 rounded bg-brand-surface-3/60 px-1 text-[10px] text-brand-text-muted"
-						title="Folder: {folderTag}">{folderTag}</span
-					>
-				{/if}
-			</div>
-			{#if ownerHint}
-				<div
-					class="truncate text-[10px] text-brand-text-muted"
-					title="Spawned by {session.ownerSessionPath}"
+		<div
+			class="group flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-brand-surface-3/30 {depth >
+			0
+				? 'border-l border-brand-border/60 pl-2'
+				: ''} {current ? 'bg-brand-surface-3' : ''} {menuOpen && !current
+				? 'bg-brand-surface-3/30'
+				: ''}"
+		>
+			<!-- Dimming is on the row's content, not this wrapper: an opacity here
+	     would also fade the ⋯ menu's sheet / popover inside it. -->
+			{#if depth > 0}
+				<span
+					class="flex-shrink-0 text-brand-text-muted {faded}"
+					title={marker.title}
+					aria-label={marker.ariaLabel}>↳</span
 				>
-					↳ spawned by {ownerHint}
-				</div>
 			{/if}
-			{#if line}
-				<div
-					class="truncate text-[10px] {presence?.state === 'waiting-for-human'
-						? 'text-amber-400'
-						: 'text-brand-blue'}"
-					title={line}
-				>
-					{line}
-				</div>
-			{/if}
-		</div>
-		{#if session.clientCount > 0}
-			<span
-				class="rounded bg-brand-surface-3 px-1.5 py-0.5 text-xs text-brand-text"
-				>{session.clientCount}</span
+			<a
+				href="#{encodeURIComponent(session.id)}"
+				onclick={(e) => {
+					if (
+						e.button === 0 &&
+						!e.ctrlKey &&
+						!e.metaKey &&
+						!e.altKey &&
+						!e.shiftKey
+					) {
+						e.preventDefault();
+						onOpen(session.path);
+					}
+				}}
+				class="flex min-w-0 flex-1 items-center gap-2 text-left no-underline {faded}"
+				title={rowTitle}
 			>
-		{/if}
-	</a>
+				<StateDot dot={dotState} />
+				<div class="min-w-0 flex-1">
+					<div class="truncate text-xs text-brand-text">
+						{#if closed}
+							<span
+								class="mr-1 rounded border border-brand-border px-1 text-[9px] tracking-wide text-brand-text-muted uppercase"
+								>Closed</span
+							>
+						{/if}
+						{label}
+					</div>
+					<div class="truncate text-xs text-brand-text-muted">
+						{rowMetaLine(session, owns)}{#if session.starred}{' · '}<span
+								class="text-amber-400"
+								title="Starred"
+								aria-label="Starred">★</span
+							>{/if}
+						{#if folderTag}
+							<span
+								class="ml-1 rounded bg-brand-surface-3/60 px-1 text-[10px] text-brand-text-muted"
+								title="Folder: {folderTag}">{folderTag}</span
+							>
+						{/if}
+					</div>
+					{#if ownerHint}
+						<div
+							class="truncate text-[10px] text-brand-text-muted"
+							title="Spawned by {session.ownerSessionPath}"
+						>
+							↳ spawned by {ownerHint}
+						</div>
+					{/if}
+					{#if line}
+						<div
+							class="truncate text-[10px] {presence?.state ===
+							'waiting-for-human'
+								? 'text-amber-400'
+								: 'text-brand-blue'}"
+							title={line}
+						>
+							{line}
+						</div>
+					{/if}
+				</div>
+				{#if session.clientCount > 0}
+					<span
+						class="rounded bg-brand-surface-3 px-1.5 py-0.5 text-xs text-brand-text"
+						>{session.clientCount}</span
+					>
+				{/if}
+			</a>
 
-	<!-- The row's actions. Touch (below md): ⋯ always shown. Desktop: shown
+			<!-- The row's actions. Touch (below md): ⋯ always shown. Desktop: shown
 	     on hover / keyboard focus and while its menu is open (out of the
 	     layout otherwise, so the title takes the full width), with the
 	     one-click ⊘ Close (↺ Reopen on a closed row) beside ⋯. -->
-	<div
-		class="flex flex-shrink-0 items-center gap-0.5 md:group-focus-within:flex md:group-hover:flex {menuOpen
-			? ''
-			: 'md:hidden'}"
-	>
-		{#if hoverAction}
-			<!-- Desktop only (hidden below md): touch closes through ⋯. -->
-			<button
-				type="button"
-				onclick={(e) => {
-					e.stopPropagation();
-					onToggleClosed(session.path, !closed);
-				}}
-				class="hidden h-6 w-6 items-center justify-center rounded text-xs text-brand-text-muted hover:bg-brand-surface-3 hover:text-brand-text focus:outline-none md:flex"
-				title={closed
-					? 'Reopen: list it again'
-					: 'Close: done with it (hidden, not deleted)'}
-				aria-label={closed ? 'Reopen session' : 'Close session'}
+			<div
+				class="flex flex-shrink-0 items-center gap-0.5 md:group-focus-within:flex md:group-hover:flex {menuOpen
+					? ''
+					: 'md:hidden'}"
 			>
-				{closed ? '↺' : '⊘'}
-			</button>
-		{/if}
-
-		<Menu
-			label="Session {label}"
-			class="flex-shrink-0"
-			header={desktop ? undefined : sheetHeader}
-			bind:open={menuOpen}
-			onclose={onMenuClose}
-		>
-			{#snippet trigger(props)}
-				<button
-					{...props}
-					onclick={(e) => {
-						desktop = isWide();
-						props.onclick(e);
-					}}
-					type="button"
-					class="flex h-6 w-6 items-center justify-center rounded text-base leading-none text-brand-text-muted hover:bg-brand-surface-3 hover:text-brand-text focus:outline-none {menuOpen
-						? 'bg-brand-surface-3 text-brand-text'
-						: ''}"
-					title="Session actions"
-					aria-label="Session actions for {label}">⋯</button
-				>
-			{/snippet}
-			{#each items as item (item)}
-				{#if item === 'close'}
-					<MenuItem
-						icon="⊘"
-						hint={closeOwnedHint(ownedN)}
-						title="Close: done with it (hidden, not deleted)"
-						onselect={() => onToggleClosed(session.path, true)}>Close</MenuItem
+				{#if hoverAction}
+					<!-- Desktop only (hidden below md): touch closes through ⋯. -->
+					<button
+						type="button"
+						onclick={(e) => {
+							e.stopPropagation();
+							onToggleClosed(session.path, !closed);
+						}}
+						class="hidden h-6 w-6 items-center justify-center rounded text-xs text-brand-text-muted hover:bg-brand-surface-3 hover:text-brand-text focus:outline-none md:flex"
+						title={closed
+							? 'Reopen: list it again'
+							: 'Close: done with it (hidden, not deleted)'}
+						aria-label={closed ? 'Reopen session' : 'Close session'}
 					>
-				{:else if item === 'reopen'}
-					<MenuItem
-						icon="↺"
-						title="Reopen: list it again"
-						onselect={() => onToggleClosed(session.path, false)}
-						>Reopen</MenuItem
-					>
-				{:else if item === 'star'}
-					<MenuItem
-						icon={session.starred ? '★' : '☆'}
-						title={session.starred ? 'Unstar' : 'Star to come back to it later'}
-						onselect={() => onStar(session.path, !session.starred)}
-						>{session.starred ? 'Unstar' : 'Star'}</MenuItem
-					>
-				{:else if item === 'rename'}
-					<MenuItem
-						icon="✎"
-						title="Give this session a name"
-						onselect={() => (renaming = true)}>Rename</MenuItem
-					>
-				{:else if item === 'copy-link'}
-					<MenuItem
-						icon="⧉"
-						keepOpen
-						hint={copyState === 'copied'
-							? '✓'
-							: copyState === 'failed'
-								? 'copy it by hand'
-								: undefined}
-						title="Copy the link that opens this session"
-						onselect={copyLink}
-						>{copyState === 'copied'
-							? 'Copied'
-							: copyState === 'failed'
-								? 'Could not copy'
-								: 'Copy link'}</MenuItem
-					>
-					{#if copyState === 'failed'}
-						<div
-							class="px-4 py-1 font-mono text-[11px] break-all text-brand-text-muted select-text md:px-3"
-						>
-							{link()}
-						</div>
-					{/if}
-				{:else if item === 'open-new-tab'}
-					<MenuItem
-						icon="↗"
-						title="Open this session in a new browser tab"
-						onselect={() => window.open(link(), '_blank', 'noopener')}
-						>Open in new tab</MenuItem
-					>
-				{:else if item === 'separator'}
-					<MenuSeparator />
-				{:else if item === 'delete'}
-					{#if confirmingDelete}
-						<MenuItem
-							icon="🗑"
-							destructive
-							focusOnMount
-							title="Delete this session's file"
-							onselect={() => onDelete(session.path)}
-							>Delete this session?</MenuItem
-						>
-						<MenuItem icon="✕" keepOpen onselect={onCancelDelete}
-							>Cancel</MenuItem
-						>
-					{:else}
-						<MenuItem
-							icon="🗑"
-							destructive
-							keepOpen
-							hint="asks again"
-							title="Delete session"
-							onselect={() => onAskDelete(session.path)}>Delete…</MenuItem
-						>
-					{/if}
+						{closed ? '↺' : '⊘'}
+					</button>
 				{/if}
-			{/each}
-		</Menu>
+
+				<Menu
+					label="Session {label}"
+					class="flex-shrink-0"
+					header={desktop ? undefined : sheetHeader}
+					bind:open={menuOpen}
+					onclose={onMenuClose}
+				>
+					{#snippet trigger(props)}
+						<button
+							{...props}
+							onclick={(e) => {
+								desktop = isWide();
+								props.onclick(e);
+							}}
+							type="button"
+							class="flex h-6 w-6 items-center justify-center rounded text-base leading-none text-brand-text-muted hover:bg-brand-surface-3 hover:text-brand-text focus:outline-none {menuOpen
+								? 'bg-brand-surface-3 text-brand-text'
+								: ''}"
+							title="Session actions"
+							aria-label="Session actions for {label}">⋯</button
+						>
+					{/snippet}
+					{#each items as item (item)}
+						{#if item === 'close'}
+							<MenuItem
+								icon="⊘"
+								hint={closeOwnedHint(ownedN)}
+								title="Close: done with it (hidden, not deleted)"
+								onselect={() => onToggleClosed(session.path, true)}
+								>Close</MenuItem
+							>
+						{:else if item === 'reopen'}
+							<MenuItem
+								icon="↺"
+								title="Reopen: list it again"
+								onselect={() => onToggleClosed(session.path, false)}
+								>Reopen</MenuItem
+							>
+						{:else if item === 'star'}
+							<MenuItem
+								icon={session.starred ? '★' : '☆'}
+								title={session.starred
+									? 'Unstar'
+									: 'Star to come back to it later'}
+								onselect={() => onStar(session.path, !session.starred)}
+								>{session.starred ? 'Unstar' : 'Star'}</MenuItem
+							>
+						{:else if item === 'rename'}
+							<MenuItem
+								icon="✎"
+								title="Give this session a name"
+								onselect={() => (renaming = true)}>Rename</MenuItem
+							>
+						{:else if item === 'copy-link'}
+							<MenuItem
+								icon="⧉"
+								keepOpen
+								hint={copyState === 'copied'
+									? '✓'
+									: copyState === 'failed'
+										? 'copy it by hand'
+										: undefined}
+								title="Copy the link that opens this session"
+								onselect={copyLink}
+								>{copyState === 'copied'
+									? 'Copied'
+									: copyState === 'failed'
+										? 'Could not copy'
+										: 'Copy link'}</MenuItem
+							>
+							{#if copyState === 'failed'}
+								<div
+									class="px-4 py-1 font-mono text-[11px] break-all text-brand-text-muted select-text md:px-3"
+								>
+									{link()}
+								</div>
+							{/if}
+						{:else if item === 'open-new-tab'}
+							<MenuItem
+								icon="↗"
+								title="Open this session in a new browser tab"
+								onselect={() => window.open(link(), '_blank', 'noopener')}
+								>Open in new tab</MenuItem
+							>
+						{:else if item === 'separator'}
+							<MenuSeparator />
+						{:else if item === 'delete'}
+							{#if confirmingDelete}
+								<MenuItem
+									icon="🗑"
+									destructive
+									focusOnMount
+									title="Delete this session's file"
+									onselect={() => onDelete(session.path)}
+									>Delete this session?</MenuItem
+								>
+								<MenuItem icon="✕" keepOpen onselect={onCancelDelete}
+									>Cancel</MenuItem
+								>
+							{:else}
+								<MenuItem
+									icon="🗑"
+									destructive
+									keepOpen
+									hint="asks again"
+									title="Delete session"
+									onselect={() => onAskDelete(session.path)}>Delete…</MenuItem
+								>
+							{/if}
+						{/if}
+					{/each}
+				</Menu>
+			</div>
+		</div>
 	</div>
 </div>
 {#if onRename}
