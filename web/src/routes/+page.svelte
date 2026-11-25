@@ -14,6 +14,7 @@
 	import StateDot from '$lib/components/StateDot.svelte';
 	import ChatSessionMenu from '$lib/components/ChatSessionMenu.svelte';
 	import NotificationToasts from '$lib/components/NotificationToasts.svelte';
+	import UpdateToast from '$lib/components/UpdateToast.svelte';
 	import {
 		activeTab,
 		openSessionDot,
@@ -1409,6 +1410,11 @@
 
 		<!-- Chat area -->
 		<ChatMessageList bind:this={chatList} onMessageSent={() => {}} />
+
+		<!-- The update toast (spec notifications-compact, story 12): it hangs
+		     above this point, over the conversation and just above the composer
+		     (or whatever ends the column when there is none). -->
+		<UpdateToast />
 
 		<!-- Input: one composer, mode-switched. Search mode when connected, a
 		     search folder is configured, and no session is active; chat mode

@@ -1,17 +1,11 @@
-import {get, writable} from 'svelte/store';
 import {createQuestionToasts, readQuestionPush} from './question-toasts';
+import {createUpdateToasts, readUpdatePush} from './update-toasts';
+
+/** What the service worker posts to the page: the push as `{title, options}`. */
 export type JSONNotification = {
 	title: string;
 	options: NotificationOptions;
 };
-
-export type PushNotification = {
-	type: 'push-notification';
-	data: JSONNotification;
-};
-export type NotificationToAdd = PushNotification;
-
-export type Notification = NotificationToAdd & {id: number};
 
 /** The slice of `window.location` a notification click drives (faked in tests). */
 export interface NavigationTarget {
@@ -29,7 +23,10 @@ export interface NavigationTarget {
  * (server/src/web-push.ts), and the page opens a session on `hashchange`, so a
  * target on THIS page sets `location.hash`, which fires it. (It used SvelteKit's
  * `pushState`, which changes the URL without firing `hashchange`, so the session
- * never opened.) Any other target is a real navigation.
+ * never opened.) `/#` (no session id: a test notification sent with no
+ * session open) is the main screen, so it clears the hash, which fires
+ * `hashchange` and leaves the open session. Any other target is a real
+ * navigation.
  */
 export function openNotificationTarget(
 	navigate: string,
@@ -44,7 +41,8 @@ export function openNotificationTarget(
 	const samePage =
 		target.origin === loc.origin &&
 		(target.pathname === loc.pathname || target.pathname === '/');
-	if (samePage && target.hash) {
+	// `URL.hash` is '' both for no fragment and for an empty one (`/#`).
+	if (samePage && (target.hash || navigate.endsWith('#'))) {
 		loc.hash = target.hash;
 		return;
 	}
@@ -52,40 +50,6 @@ export function openNotificationTarget(
 }
 
 const browserLocation = (): NavigationTarget => window.location;
-
-export function createNotificationsService(
-	location: () => NavigationTarget = browserLocation,
-) {
-	let lastId = 1;
-	const store = writable<Notification[]>([]);
-
-	function add(notification: NotificationToAdd) {
-		store.update((notifications) => [
-			...notifications,
-			{...notification, id: ++lastId},
-		]);
-	}
-
-	function remove(id: number) {
-		store.update((notifications) =>
-			notifications.filter((notification) => notification.id !== id),
-		);
-	}
-
-	function onClick(id: number) {
-		const notification = get(store).find((v) => v.id == id);
-		remove(id);
-		if (notification?.type === 'push-notification') {
-			const navigate = notification.data.options.data?.navigate;
-			if (typeof navigate === 'string' && navigate) {
-				openNotificationTarget(navigate, location());
-			}
-		}
-	}
-	return {subscribe: store.subscribe, add, remove, onClick};
-}
-
-export const notifications = createNotificationsService();
 
 /**
  * The foreground question toasts and slim bar (`question-toasts.ts`), kept on
@@ -97,13 +61,24 @@ export const questionToasts = createQuestionToasts({
 });
 
 /**
+ * The foreground update toasts and the updates list (`update-toasts.ts`), kept
+ * on this device in localStorage. `UpdateToast.svelte` shows the toast above
+ * the composer; the slim bar (`NotificationToasts.svelte`) counts and lists
+ * the folded ones.
+ */
+export const updateToasts = createUpdateToasts({
+	storage: typeof localStorage !== 'undefined' ? localStorage : undefined,
+	openTarget: (navigate) => openNotificationTarget(navigate, browserLocation()),
+});
+
+/**
  * A notification the service worker posted to this (visible, focused) page:
  * a question (`data.kind: 'question'`) goes to the question toasts, anything
- * else is an update, shown by the interim update toast until
- * `update-toasts-and-list` lands.
+ * else (`kind: 'update'`, or no kind from an older server) to the update
+ * toasts.
  */
 export function receivePushNotification(notification: JSONNotification): void {
 	const question = readQuestionPush(notification);
 	if (question) questionToasts.push(question);
-	else notifications.add({type: 'push-notification', data: notification});
+	else updateToasts.push(readUpdatePush(notification));
 }
