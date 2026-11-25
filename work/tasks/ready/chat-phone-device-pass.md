@@ -21,4 +21,4 @@ A short check by the human on a real phone after the chat tasks land: the growin
 
 ## Prompt
 
-> This task needs a human with a phone. Checklist: type a long message (pill grows to about 40%, then scrolls); attach a photo and watch the chip; save and load a draft; dictate with 🎤; toggle conversation mode in ⋯; send while the agent runs (steer) and stop it; open ⋯ and every item in it; tap an assistant message to reveal Copy; expand a tool chip. Record findings in `work/notes/observations/chat-phone-device-pass.md`.
+> This task needs a human with a phone. Checklist: type a long message (pill grows to about 40%, then scrolls; the context ring stays visible with the keyboard up); attach a photo and watch the chip; save and load a draft; dictate with 🎤; toggle conversation mode in ⋯; send while the agent runs (steer) and stop it; open ⋯ and every item in it; tap an assistant message to reveal Copy; expand a tool chip. Record findings in `work/notes/observations/chat-phone-device-pass.md`.
