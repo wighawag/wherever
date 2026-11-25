@@ -5,6 +5,8 @@ import {
 	ownerRowHint,
 	ownerGroupExpanded,
 	ownerGroupSummaryText,
+	ownerGroupSummaryDots,
+	ownerGroupSessionsText,
 	parseCollapsedGroups,
 	serializeCollapsedGroups,
 	toggleCollapsedGroup,
@@ -543,6 +545,25 @@ describe('ownerTree summary and attention', () => {
 				idle: 1,
 			}),
 		).toBe('1 session');
+	});
+
+	it('gives the collapsed summary as a session count and live-state count dots', () => {
+		const summary = {
+			sessions: 5,
+			running: 2,
+			waitingForHuman: 1,
+			waitingForSession: 0,
+			idle: 2,
+		};
+		expect(ownerGroupSessionsText(summary)).toBe('5 sessions');
+		expect(ownerGroupSessionsText({...summary, sessions: 1})).toBe('1 session');
+		expect(ownerGroupSummaryDots(summary)).toEqual([
+			{state: 'waiting-for-human', count: 1},
+			{state: 'running', count: 2},
+		]);
+		expect(
+			ownerGroupSummaryDots({...summary, running: 0, waitingForHuman: 0}),
+		).toEqual([]);
 	});
 });
 

@@ -43,6 +43,7 @@
 import type {ForkTreeNodeInput} from './fork-tree';
 import {sessionLiveState, sessionMatchesFilter} from './live-sessions';
 import {stateLabel, type ShipmatesPresence} from './shipmates';
+import {liveCountDots} from './state-dot';
 
 /** The fields of a listed session (`SessionInfo`) the tree reads. */
 export interface OwnerTreeSessionInput extends ForkTreeNodeInput {
@@ -271,9 +272,7 @@ export function ownerTree<S extends OwnerTreeSessionInput>(
  * rest of the sessions).
  */
 export function ownerGroupSummaryText(summary: OwnerGroupSummary): string {
-	const parts = [
-		`${summary.sessions} ${summary.sessions === 1 ? 'session' : 'sessions'}`,
-	];
+	const parts = [ownerGroupSessionsText(summary)];
 	if (summary.running)
 		parts.push(`${summary.running} ${stateLabel('running')}`);
 	if (summary.waitingForHuman)
@@ -283,6 +282,24 @@ export function ownerGroupSummaryText(summary: OwnerGroupSummary): string {
 			`${summary.waitingForSession} ${stateLabel('waiting-for-session')}`,
 		);
 	return parts.join(' · ');
+}
+
+/** The session count of a collapsed group's summary: "5 sessions". */
+export function ownerGroupSessionsText(summary: OwnerGroupSummary): string {
+	return `${summary.sessions} ${summary.sessions === 1 ? 'session' : 'sessions'}`;
+}
+
+/**
+ * A collapsed group's live-state counts as state dots (spec
+ * `sidebar-compact-layout` story 4): the non-zero live counts in need order,
+ * like the collapsed Live strip. Idle is left out, as in the text.
+ */
+export function ownerGroupSummaryDots(summary: OwnerGroupSummary) {
+	return liveCountDots({
+		'waiting-for-human': summary.waitingForHuman,
+		'waiting-for-session': summary.waitingForSession,
+		running: summary.running,
+	});
 }
 
 /**

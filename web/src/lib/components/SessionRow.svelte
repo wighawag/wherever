@@ -1,5 +1,5 @@
 <script lang="ts">
-	// One sidebar session row: link, working dot, name / preview, "spawned by"
+	// One sidebar session row: link, state dot (core/state-dot.ts), name / preview, "spawned by"
 	// hint, presence line, star / close / delete, and the owned-children chips
 	// under it. Rendered by the folder view, and meant for the By-owner view
 	// (spec `session-list-by-owner-view`). It only renders: text comes from pure
@@ -15,7 +15,9 @@
 		type RowNestKind,
 	} from '$lib/core/session-row';
 	import {presenceLine, type ShipmatesPresence} from '$lib/core/shipmates';
+	import {sessionDotState} from '$lib/core/state-dot';
 	import type {SessionInfo} from '$lib/session-store';
+	import StateDot from './StateDot.svelte';
 
 	let {
 		session,
@@ -78,6 +80,7 @@
 
 	let marker = $derived(rowNestMarker(nestKind));
 	let line = $derived(presenceLine(presence));
+	let dotState = $derived(sessionDotState(session, presence, closed));
 </script>
 
 <div
@@ -113,19 +116,7 @@
 		}}
 		class="flex min-w-0 flex-1 items-center gap-2 text-left no-underline"
 	>
-		{#if session.isWorking}
-			<span
-				class="h-2 w-2 flex-shrink-0 animate-pulse rounded-full bg-amber-400"
-				role="img"
-				title="Agent is working"
-				aria-label="Agent is working"
-			></span>
-		{:else if session.isActive}
-			<span class="h-2 w-2 flex-shrink-0 rounded-full bg-emerald-500"></span>
-		{:else}
-			<span class="h-2 w-2 flex-shrink-0 rounded-full bg-brand-surface-3"
-			></span>
-		{/if}
+		<StateDot dot={dotState} />
 		<div class="min-w-0 flex-1">
 			<div class="truncate text-xs text-brand-text">
 				{#if closed}
