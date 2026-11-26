@@ -518,6 +518,24 @@
 		}
 	});
 
+	// Keep the bottom pinned when the list's viewport resizes. The list shares a
+	// column with the input, so when the textarea grows a line (typing on its
+	// last line), the list gets shorter while its scrollTop stays put: the last
+	// message slides behind the input, and since no scroll event fires,
+	// isScrolledToBottom then reads false and the next message stays hidden too.
+	// shouldAutoScroll still holds the state from before the resize, so if we
+	// were at the bottom, go back there. (The keyboard opening on mobile is the
+	// same case.)
+	$effect(() => {
+		const el = messageList;
+		if (!el || typeof ResizeObserver === 'undefined') return;
+		const ro = new ResizeObserver(() => {
+			if (shouldAutoScroll) scrollToBottom();
+		});
+		ro.observe(el);
+		return () => ro.disconnect();
+	});
+
 	let lastSessionFile = $state<string | null>(null);
 	let wasLoadingSession = $state(false);
 
