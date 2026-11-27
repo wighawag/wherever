@@ -1489,6 +1489,9 @@ async function main(): Promise<void> {
     onSpawned: () => broadcastSessionsUpdated(),
   });
   const unregisterShipmatesHost = shipmatesEnabled ? registerShipmatesHost(shipmatesHost) : () => {};
+  // An unloaded session is loaded again when a message waits for it
+  // (shipmates-host.ts): what its delivery would hold back is read as it goes.
+  if (shipmatesEnabled) sessionPool.setServerSessionUnloadingHook((file) => shipmatesHost.noteUnloaded(file));
   // A closed session reopens itself on new activity (session-auto-reopen.ts,
   // ADR 0025): agent events through `subscribeEvents` (below, beside
   // `onEvent`), inbox items on every shipmates change. Every reopen re-lists.

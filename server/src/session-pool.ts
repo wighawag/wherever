@@ -1302,6 +1302,18 @@ export class SessionPool {
     this.assistantHooks = hooks;
   }
 
+  /**
+   * Called as a SERVER session leaves the pool (idle eviction, delete, server
+   * shutdown), before its extensions get `session_shutdown`: the shipmates host
+   * records what the session's presence said (shipmates-host.ts `noteUnloaded`).
+   * A throwing hook is logged and never stops the teardown.
+   */
+  private serverSessionUnloading: ((sessionFile: string) => void) | undefined;
+
+  setServerSessionUnloadingHook(fn: ((sessionFile: string) => void) | undefined): void {
+    this.serverSessionUnloading = fn;
+  }
+
   constructor(
     idleTimeoutMs = 300_000,
     options: {
@@ -3242,6 +3254,13 @@ export class SessionPool {
     const tracked = this.getSession(sessionFileOrId);
     if (!tracked) return Promise.resolve();
     let teardown: Promise<void> = Promise.resolve();
+    if (tracked.type === 'server') {
+      try {
+        this.serverSessionUnloading?.(tracked.sessionFile);
+      } catch (err) {
+        console.error(`[wherever] the unloading hook failed for ${tracked.sessionFile}:`, err);
+      }
+    }
     if (tracked.type === 'server' && tracked.reloading) {
       // reloadSession owns the agent mid-rebuild: it is already shutting the old
       // one down, and it releases the new one once it sees the entry is gone.

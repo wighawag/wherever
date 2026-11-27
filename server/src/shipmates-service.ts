@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AttentionItem, Shipmates, Presence, Question } from 'shipmates';
+import { sessionSettings } from './shipmates-settings.js';
 
 /**
  * wherever as a shipmates HOST (shipmates' spec "Architecture", D20; wherever ADR
@@ -392,6 +393,44 @@ export class ShipmatesService {
     this.shipmates = null;
   }
 
+  /**
+   * Sessions that declared `waiting-for-human` and are not loaded anywhere
+   * (shipmates D40 keeps the declaration by file; presence went with the
+   * unload). Shown as waiting, or a session waiting on the human with no open
+   * inbox item (a bare `session_register`) would vanish from view once wherever
+   * unloads it. Not for a transcript that is gone or archived. Each session is
+   * read on its own: a failure drops that one, never the snapshot. Nothing on a
+   * shipmates without the settings read.
+   */
+  private unloadedWaiting(k: Shipmates, live: ReadonlyMap<string, Presence>): ShipmatesPresenceView[] {
+    let settings;
+    try {
+      settings = sessionSettings(k);
+    } catch (err) {
+      this.log.warn(`[wherever] shipmates: reading session settings failed: ${(err as Error).message}`);
+      return [];
+    }
+    const out: ShipmatesPresenceView[] = [];
+    for (const s of settings ?? []) {
+      if (!s.declaredWaiting || live.has(s.sessionFile)) continue;
+      try {
+        if (!fs.existsSync(s.sessionFile) || k.archiveMark(s.sessionFile) || k.isLive(s.sessionFile)) continue;
+      } catch {
+        continue;
+      }
+      out.push({
+        sessionFile: normalizeSessionFile(s.sessionFile),
+        sessionId: null,
+        roles: [],
+        state: 'waiting-for-human',
+        status: null,
+        waitingOn: null,
+        waitingOnSession: null,
+      });
+    }
+    return out;
+  }
+
   /** The current snapshot (sent to a dashboard as it connects). */
   snapshot(): ShipmatesSnapshot {
     const k = this.shipmates;
@@ -400,7 +439,9 @@ export class ShipmatesService {
       const live = k.list();
       const bySession = new Map(live.map((p) => [p.sessionFile, p]));
       const inbox = k.inbox().map((item) => inboxItemView(item, bySession.get(item.session) ?? k.presence(item.session)));
-      return { available: true, inbox, presence: live.map((p) => presenceView(p, waitingOnSessionOf(k, p))), archives: this.archiveViews() };
+      const presence = live.map((p) => presenceView(p, waitingOnSessionOf(k, p)));
+      presence.push(...this.unloadedWaiting(k, bySession));
+      return { available: true, inbox, presence, archives: this.archiveViews() };
     } catch (err) {
       this.log.warn(`[wherever] shipmates: reading the inbox failed: ${(err as Error).message}`);
       return { available: true, inbox: [], presence: [], archives: this.archiveViews(), inboxError: true };

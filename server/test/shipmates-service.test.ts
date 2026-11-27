@@ -612,6 +612,51 @@ describe('ShipmatesService', () => {
     expect(n).toEqual({ itemId: 'h_1', options: ['a', 'b'], title: 'Question for you', body: 'Which?\nOptions: a / b\nThis blocks other until you answer.\nAnswer in the wherever inbox.', question: 'Which?', source: 'other', navigate: '' });
   });
 
+  it('a session that declared waiting for the human and is not loaded still shows as waiting (shipmates D40 settings)', async () => {
+    const d = dirs();
+    const k = db(d);
+    const live = SESSION(d.root);
+    k.register({ sessionFile: live, cwd: '/home/u/lane' });
+    const unloaded = path.join(d.root, 'sessions', 'unloaded.jsonl');
+    const gone = path.join(d.root, 'sessions', 'gone.jsonl');
+    const noDecl = path.join(d.root, 'sessions', 'wake-off.jsonl');
+    fs.mkdirSync(path.dirname(unloaded), { recursive: true });
+    for (const f of [unloaded, noDecl]) fs.writeFileSync(f, '');
+    const rows = [
+      { sessionFile: unloaded, wake: true, declaredWaiting: true, updatedAt: 1 },
+      { sessionFile: gone, wake: true, declaredWaiting: true, updatedAt: 1 }, // its transcript is gone
+      { sessionFile: noDecl, wake: false, declaredWaiting: false, updatedAt: 1 }, // waking off only
+      { sessionFile: live, wake: true, declaredWaiting: true, updatedAt: 1 }, // live: its own presence says it
+    ];
+    const { svc } = service(d);
+    svc.start();
+    await svc.ready();
+    // An older shipmates has no settings read: nothing extra.
+    expect(svc.snapshot().presence.map((p) => p.sessionFile)).toEqual([path.resolve(live)]);
+
+    const core = (svc as unknown as { shipmates: Record<string, unknown> }).shipmates;
+    core.settings = () => rows;
+    core.setting = (f: string) => rows.find((r) => r.sessionFile === f) ?? { sessionFile: f, wake: true, declaredWaiting: false, updatedAt: null };
+    const snap = svc.snapshot();
+    expect(snap.presence.map((p) => p.sessionFile).sort()).toEqual([path.resolve(live), path.resolve(unloaded)].sort());
+    expect(snap.presence.find((p) => p.sessionFile === path.resolve(unloaded))).toEqual({
+      sessionFile: path.resolve(unloaded),
+      sessionId: null,
+      roles: [],
+      state: 'waiting-for-human',
+      status: null,
+      waitingOn: null,
+      waitingOnSession: null,
+    });
+
+    // A failing settings read drops only the extra rows.
+    core.settings = () => {
+      throw new Error('no such table: session_setting');
+    };
+    expect(svc.snapshot()).toMatchObject({ available: true, presence: [{ sessionFile: path.resolve(live) }] });
+    expect(svc.snapshot()).not.toHaveProperty('inboxError');
+  });
+
   it('a failed inbox read says so (`inboxError`), so a page can tell it from "everything answered"', async () => {
     const d = dirs();
     const k = db(d);

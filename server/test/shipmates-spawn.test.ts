@@ -74,8 +74,23 @@ function setup(extra: InlineExtension[] = []) {
   const pool = new SessionPool(300_000, { extraExtensionFactories: [...extra, shipmatesExtension] });
   const host = new WhereverShipmatesHost({ pool, stateDir: freshDir('host-state'), shipmates: () => shipmates, log: { log() {}, warn() {}, error() {} } });
   const off = registerShipmatesHost(host);
+  pool.setServerSessionUnloadingHook((file) => host.noteUnloaded(file));
   cleanups.push(() => pool.disposeAll(), off);
   return { pool, host };
+}
+
+/** A session with a transcript on disk and one finished turn, settled idle. */
+async function settledSession(pool: SessionPool): Promise<string> {
+  const s = await newSession(pool);
+  await pool.sendUserMessage(s.sessionFile, 'hello');
+  await until(() => fs.existsSync(s.sessionFile) && !pool.isStreaming(s.sessionFile) && shipmates.presence(s.sessionFile)?.state === 'idle');
+  return s.sessionFile;
+}
+
+/** Give a wake that should NOT happen the time it would have taken. */
+async function stillUnloaded(pool: SessionPool, file: string): Promise<void> {
+  await new Promise((r) => setTimeout(r, 400));
+  expect(pool.getSession(file)).toBeNull();
 }
 
 function freshDir(name: string): string {
@@ -175,6 +190,107 @@ describe('shipmates spawn and stop through the session pool', () => {
     host.wakeEvicted();
     await until(() => pool.getSession(file));
     await until(() => sentToModel().includes('second job: rebase onto main'));
+  }, 60_000);
+
+  it('any session the pool unloaded is loaded again when a message waits for it, not only a spawned child', async () => {
+    const { pool, host } = setup();
+    const sender = await newSession(pool);
+    const file = await settledSession(pool);
+    await pool.destroySession(file, 'idle timeout');
+    expect(pool.getSession(file)).toBeNull();
+
+    shipmates.send({ from: sender.sessionFile, to: file, text: 'please review PR 12' });
+    host.wakeEvicted();
+    await until(() => pool.getSession(file));
+    await until(() => sentToModel().includes('please review PR 12'));
+  }, 60_000);
+
+  it('what was already pending at unload, held on purpose, does not wake it; a newer message does', async () => {
+    const { pool, host } = setup();
+    const sender = await newSession(pool);
+    const file = await settledSession(pool);
+    shipmates.update(file, { wake: false });
+    shipmates.send({ from: sender.sessionFile, to: file, text: 'held while waking was off' });
+    await new Promise((r) => setTimeout(r, 200)); // its own poller holds it
+    shipmates.update(file, { wake: true });
+    await pool.destroySession(file, 'idle timeout');
+    host.wakeEvicted();
+    await stillUnloaded(pool, file);
+
+    shipmates.send({ from: sender.sessionFile, to: file, text: 'a newer one' });
+    host.wakeEvicted();
+    await until(() => pool.getSession(file));
+    await until(() => sentToModel().includes('a newer one'));
+  }, 60_000);
+
+  it('waking off, recorded as it left, keeps it unloaded', async () => {
+    const { pool, host } = setup();
+    const sender = await newSession(pool);
+    const file = await settledSession(pool);
+    shipmates.update(file, { wake: false });
+    await pool.destroySession(file, 'idle timeout');
+    shipmates.send({ from: sender.sessionFile, to: file, text: 'not now' });
+    host.wakeEvicted();
+    await stillUnloaded(pool, file);
+  }, 60_000);
+
+  it('a session waiting for the human wakes only for a human-origin message, and the record survives a restart', async () => {
+    const { pool, host } = setup();
+    const sender = await newSession(pool);
+    const file = await settledSession(pool);
+    shipmates.update(file, { state: 'waiting-for-human' });
+    await pool.destroySession(file, 'idle timeout');
+    shipmates.send({ from: sender.sessionFile, to: file, text: 'an agent ping' });
+    host.wakeEvicted();
+    await stillUnloaded(pool, file);
+
+    // A new host on the same state dir (a server restart) knows what it said.
+    const again = new WhereverShipmatesHost({ pool, stateDir: (host as any).opts.stateDir, shipmates: () => shipmates, log: { log() {}, warn() {}, error() {} } });
+    shipmates.send({ from: null, to: file, text: 'the human answers: yes, go ahead' });
+    again.wakeEvicted();
+    await until(() => pool.getSession(file));
+    await until(() => sentToModel().includes('the human answers: yes, go ahead'));
+  }, 60_000);
+
+  it("shipmates' own per-session settings (D40) decide when it keeps them, for a child too", async () => {
+    const { pool, host } = setup();
+    const owner = await newSession(pool);
+    const childDir = freshDir('lane');
+    fake.queue({ kind: 'tool-call', toolName: 'session_spawn', input: { folder: childDir, prompt: 'first job' } });
+    await pool.sendUserMessage(owner.sessionFile, 'spawn it');
+    const file = await until(() => host.spawned()[0]);
+    await until(() => fs.existsSync(file) && !pool.isStreaming(file) && shipmates.presence(file)?.state === 'idle');
+    await pool.destroySession(file, 'idle');
+
+    // A shipmates with the settings read says: it declared waiting for the human.
+    const core = shipmates as unknown as Record<string, unknown>;
+    core.setting = (f: string) => ({ sessionFile: f, wake: true, declaredWaiting: f === file, updatedAt: f === file ? 1 : null });
+    core.settings = () => [];
+    cleanups.push(() => {
+      delete core.setting;
+      delete core.settings;
+    });
+    shipmates.send({ from: owner.sessionFile, to: file, text: 'an agent ping for the child' });
+    host.wakeEvicted();
+    await stillUnloaded(pool, file);
+
+    shipmates.send({ from: null, to: file, text: 'the human says go' });
+    host.wakeEvicted();
+    await until(() => pool.getSession(file));
+    await until(() => sentToModel().includes('the human says go'));
+  }, 60_000);
+
+  it('a session open in another process is never loaded here', async () => {
+    const { pool, host } = setup();
+    const sender = await newSession(pool);
+    const file = await settledSession(pool);
+    await pool.destroySession(file, 'idle timeout');
+    // Registered by a live process (this one stands in for a terminal pi).
+    shipmates.register({ sessionFile: file });
+    cleanups.push(() => shipmates.unregister(file));
+    shipmates.send({ from: sender.sessionFile, to: file, text: 'for the terminal' });
+    host.wakeEvicted();
+    await stillUnloaded(pool, file);
   }, 60_000);
 
   it('a human send another extension swallows leaves no mark: an identical scheduled send right after is not the human\'s', async () => {
