@@ -1052,7 +1052,8 @@
 						onclick={(e) => revealActions(e, msg.id)}
 					>
 						<div
-							class="min-w-0 {layout === 'document' || layout === 'chip'
+							class="max-w-full min-w-0 {layout === 'document' ||
+							layout === 'chip'
 								? 'text-brand-text'
 								: layout === 'bubble'
 									? `rounded-2xl px-3.5 py-2 text-brand-text ${
@@ -1776,8 +1777,12 @@
 											<div
 												class="flex items-center gap-1.5 rounded bg-brand-blue/20 px-2 py-1 font-mono text-xs text-brand-text select-all"
 											>
-												<span>📎</span>
-												<span class="truncate" title={filePath}>{filePath}</span
+												<span class="shrink-0">📎</span>
+												<!-- min-w-0: a flex item will not shrink below its content
+												     otherwise, so truncate never kicks in and a long path
+												     widens the bubble past the screen's left edge. -->
+												<span class="min-w-0 truncate" title={filePath}
+													>{filePath}</span
 												>
 											</div>
 										{/each}
