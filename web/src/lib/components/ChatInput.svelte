@@ -1476,10 +1476,7 @@
 		     sits at the box's right edge rather than left of the mic. Its side
 		     padding reserves the buttons' measured widths, so text never runs
 		     under them. -->
-		<div
-			class="absolute bottom-1 left-1"
-			bind:clientWidth={leftButtonsWidth}
-		>
+		<div class="absolute bottom-1 left-1" bind:clientWidth={leftButtonsWidth}>
 			<button
 				type="button"
 				onclick={() => (plusMenuOpen = !plusMenuOpen)}
