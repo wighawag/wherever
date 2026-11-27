@@ -25,6 +25,7 @@
 	import {shipmatesStore} from '$lib/session-store';
 	import {answerShipmatesItem} from '$lib/wherever';
 	import {questionToasts, updateToasts} from '$lib/core/notifications';
+	import {openReader} from '$lib/core/shipmates-reader';
 	import type {QuestionToast} from '$lib/core/notifications/question-toasts';
 	import {
 		splitUpdateTitle,
@@ -88,6 +89,8 @@
 	function answerInNeedsYou(t: QuestionToast) {
 		questionToasts.fold(t.id);
 		onOpenNeedsYou();
+		// Straight to the question, large (ShipmatesReader.svelte).
+		openReader(t.id);
 	}
 
 	// Swipe up to dismiss. The pointer is captured only once the gesture moves

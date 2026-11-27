@@ -10,6 +10,7 @@
 	import CloseCascadePrompt from '$lib/components/CloseCascadePrompt.svelte';
 	import ConversationSearch from '$lib/components/ConversationSearch.svelte';
 	import ShipmatesInbox from '$lib/components/ShipmatesInbox.svelte';
+	import ShipmatesReader from '$lib/components/ShipmatesReader.svelte';
 	import SidebarTab from '$lib/components/SidebarTab.svelte';
 	import StateDot from '$lib/components/StateDot.svelte';
 	import ChatSessionMenu from '$lib/components/ChatSessionMenu.svelte';
@@ -1351,6 +1352,10 @@
 			openSessionId={currentSessionId ?? null}
 			onOpenNeedsYou={openNeedsYou}
 		/>
+
+		<!-- The Needs you reader: one question shown large (a modal on desktop,
+		     a full-screen sheet on the phone), opened from the list or a toast. -->
+		<ShipmatesReader onOpenedSession={() => (sidebarOpen = false)} />
 
 		<!-- Interruption notification -->
 		{#if interrupted}
