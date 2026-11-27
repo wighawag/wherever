@@ -1,5 +1,5 @@
 <script lang="ts">
-	import {onDestroy, onMount, untrack} from 'svelte';
+	import {onDestroy, onMount, tick, untrack} from 'svelte';
 	import {
 		sendMessage,
 		piState,
@@ -655,13 +655,56 @@
 		});
 	});
 
+	// Grow/shrink the textarea to fit its content.
+	//
+	// Measuring needs height:auto first, which briefly collapses the box to one
+	// row. Firefox clamps the message list's scrollTop during that forced layout
+	// (the list momentarily gets taller), and the restored height then leaves the
+	// last message behind the input. Pinning the parent row's min-height for the
+	// duration keeps the surrounding layout still, so nothing else reflows.
+	// Measured widths of the button groups floating over the textarea (see the
+	// markup). Defaults match one 36px button on the left and two plus a gap on
+	// the right, so the first paint is already close.
+	let leftButtonsWidth = $state(36);
+	let rightButtonsWidth = $state(76);
+
+	function resizeTextarea() {
+		const el = textarea;
+		if (!el) return;
+		const parent = el.parentElement;
+		const prevMin = parent?.style.minHeight ?? '';
+		if (parent) parent.style.minHeight = `${parent.offsetHeight}px`;
+		el.style.height = 'auto';
+		el.style.height = `${el.scrollHeight}px`;
+		if (parent) parent.style.minHeight = prevMin;
+	}
+
 	$effect(() => {
-		if (textarea) {
-			// Trigger reactive updates when text changes
-			text;
-			textarea.style.height = 'auto';
-			textarea.style.height = `${textarea.scrollHeight}px`;
-		}
+		if (!textarea) return;
+		// Trigger on text changes. This user effect runs BEFORE the template's
+		// bind:value writes the new text into the DOM, so a programmatic change
+		// (fork prefill, draft load, speech) would be measured with the OLD value.
+		// Typing worked only because the DOM already held it. Wait for the DOM.
+		text;
+		// The padding that reserves room for the buttons changes the wrap width.
+		leftButtonsWidth;
+		rightButtonsWidth;
+		void tick().then(resizeTextarea);
+	});
+
+	// Re-fit when the box's width changes (window resize, rotation, or the box
+	// becoming visible after text was set while it had no layout).
+	$effect(() => {
+		const el = textarea;
+		if (!el || typeof ResizeObserver === 'undefined') return;
+		let lastWidth = el.clientWidth;
+		const ro = new ResizeObserver(() => {
+			if (el.clientWidth === lastWidth) return;
+			lastWidth = el.clientWidth;
+			resizeTextarea();
+		});
+		ro.observe(el);
+		return () => ro.disconnect();
 	});
 
 	// Automatically focus/refocus the textarea whenever it becomes active/enabled
@@ -1390,7 +1433,7 @@
 			e.preventDefault();
 			handleSend();
 		}}
-		class="relative flex items-end gap-1 rounded-3xl border border-brand-border bg-brand-surface-2 py-1 pr-1 pl-1 transition-colors focus-within:border-brand-blue"
+		class="relative flex rounded-3xl border border-brand-border bg-brand-surface-2 py-1 pr-1 pl-1 transition-colors focus-within:border-brand-blue"
 	>
 		{#if skillMenuOpen && skillMatches.length > 0}
 			<!-- Skill-command autocomplete. Floats above the composer. Selecting an
@@ -1428,7 +1471,15 @@
 				{/each}
 			</ul>
 		{/if}
-		<div class="relative shrink-0">
+		<!-- The buttons float over the textarea's bottom corners instead of being
+		     flex siblings, so the textarea spans the whole box and its scrollbar
+		     sits at the box's right edge rather than left of the mic. Its side
+		     padding reserves the buttons' measured widths, so text never runs
+		     under them. -->
+		<div
+			class="absolute bottom-1 left-1"
+			bind:clientWidth={leftButtonsWidth}
+		>
 			<button
 				type="button"
 				onclick={() => (plusMenuOpen = !plusMenuOpen)}
@@ -1521,44 +1572,51 @@
 			rows={1}
 			placeholder={placeholderText}
 			aria-label={searchMode ? 'Search query' : 'Message'}
-			class="max-h-[40vh] min-h-9 min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent px-1 py-1.5 leading-relaxed text-brand-text placeholder-brand-text-muted focus:ring-0 focus:outline-none disabled:opacity-50"
+			style:padding-left="{leftButtonsWidth + 8}px"
+			style:padding-right="{rightButtonsWidth}px"
+			class="mr-2 max-h-[25dvh] min-h-9 min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent py-1.5 leading-relaxed text-brand-text placeholder-brand-text-muted focus:ring-0 focus:outline-none disabled:opacity-50"
 		></textarea>
-		<SpeechButton
-			bind:this={speechButton}
-			bind:text
-			bind:activeEngine={speechEngine}
-			disabled={effectivelyDisabled}
-			onSend={handleSend}
-			compact
-		/>
-		{#if buttons.primary === 'search'}
-			<button
-				type="submit"
-				disabled={buttons.primaryDisabled}
-				class="flex h-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-r from-brand-cyan to-brand-blue px-4 text-xs font-medium text-brand-text transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:from-brand-surface-3 disabled:to-brand-surface-3 disabled:opacity-50"
-			>
-				{submitLabel ?? 'Search'}
-			</button>
-		{:else}
-			<button
-				type="submit"
-				disabled={buttons.primaryDisabled}
-				title={buttons.primary === 'steer'
-					? 'Steer the agent now (injected at the next step, before the next model call)'
-					: 'Send'}
-				aria-label={buttons.primary === 'steer' ? 'Steer' : 'Send'}
-				class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-blue text-brand-text transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:bg-brand-surface-3 disabled:opacity-50"
-			>
-				<svg
-					viewBox="0 0 24 24"
-					class="h-4 w-4"
-					fill="currentColor"
-					aria-hidden="true"
-					><path
-						d="M3.4 20.4 21 12 3.4 3.6 3.39 10.13 15 12 3.39 13.87z"
-					/></svg
+		<div
+			class="absolute right-1 bottom-1 flex items-end gap-1"
+			bind:clientWidth={rightButtonsWidth}
+		>
+			<SpeechButton
+				bind:this={speechButton}
+				bind:text
+				bind:activeEngine={speechEngine}
+				disabled={effectivelyDisabled}
+				onSend={handleSend}
+				compact
+			/>
+			{#if buttons.primary === 'search'}
+				<button
+					type="submit"
+					disabled={buttons.primaryDisabled}
+					class="flex h-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-r from-brand-cyan to-brand-blue px-4 text-xs font-medium text-brand-text transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:from-brand-surface-3 disabled:to-brand-surface-3 disabled:opacity-50"
 				>
-			</button>
-		{/if}
+					{submitLabel ?? 'Search'}
+				</button>
+			{:else}
+				<button
+					type="submit"
+					disabled={buttons.primaryDisabled}
+					title={buttons.primary === 'steer'
+						? 'Steer the agent now (injected at the next step, before the next model call)'
+						: 'Send'}
+					aria-label={buttons.primary === 'steer' ? 'Steer' : 'Send'}
+					class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-blue text-brand-text transition-all hover:opacity-90 disabled:cursor-not-allowed disabled:bg-brand-surface-3 disabled:opacity-50"
+				>
+					<svg
+						viewBox="0 0 24 24"
+						class="h-4 w-4"
+						fill="currentColor"
+						aria-hidden="true"
+						><path
+							d="M3.4 20.4 21 12 3.4 3.6 3.39 10.13 15 12 3.39 13.87z"
+						/></svg
+					>
+				</button>
+			{/if}
+		</div>
 	</form>
 </div>
