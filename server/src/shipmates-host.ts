@@ -1,7 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Shipmates, ShipmatesHost, SpawnRequest, SpawnResult, StopOutcome } from 'shipmates';
-import { sessionSetting } from './shipmates-settings.js';
 
 /**
  * wherever as shipmates' HOST for spawn and stop (shipmates D20, D26, D28, D30;
@@ -28,10 +27,7 @@ import { sessionSetting } from './shipmates-settings.js';
  *     Esc included) or older than its last stop. What was pending is recorded
  *     as the session leaves the pool (`noteUnloaded`).
  *   Waking off and the declaration come from shipmates' per-session settings
- *   (its D40, shipmates-settings.ts), for children too. On a shipmates without
- *   them, from what the presence said as the session left (`noteUnloaded`
- *   records it, since shipmates then drops the presence on unregister), and
- *   children follow D29 alone.
+ *   (its D40: `setting(file)`, kept across the unload), for children too.
  *   Never a session another process has open (a terminal pi), and at most
  *   `MAX_CONCURRENT_WAKES` loads at a time (a restart with a full mailbox).
  */
@@ -81,17 +77,9 @@ export const MAX_CONCURRENT_WAKES = 3;
 /** How long a session whose load failed is left alone before the next try. */
 export const WAKE_RETRY_MS = 60_000;
 
-/**
- * What a session's delivery would hold back, read from its presence as it left
- * the pool: `off` (waking off: nothing wakes it), `human` (it declared
- * `waiting-for-human`: only a human-origin message wakes it), `none`.
- */
-export type UnloadHold = 'none' | 'human' | 'off';
-
 interface UnloadedRecord {
   /** shipmates' clock when it left the pool. */
   at: number;
-  hold: UnloadHold;
   /** The messages pending as it left: held on purpose, so they wake nothing. */
   held: string[];
   folder?: string;
@@ -159,8 +147,8 @@ export class WhereverShipmatesHost implements ShipmatesHost {
 
   /**
    * A server session is leaving the pool (idle eviction, delete, shutdown),
-   * its extensions not yet shut down: record when, and what its presence says
-   * its delivery would hold back, before @shipmates/pi's unregister drops it.
+   * its extensions not yet shut down: record when, and which messages are
+   * pending then (held on purpose: they must not wake it later).
    * Never throws (it runs inside the pool's teardown).
    */
   noteUnloaded(sessionFile: string): void {
@@ -168,9 +156,8 @@ export class WhereverShipmatesHost implements ShipmatesHost {
     if (!k) return;
     try {
       const p = k.presence(sessionFile);
-      const hold: UnloadHold = p && !p.wake ? 'off' : p?.state === 'waiting-for-human' ? 'human' : 'none';
       const held = k.pendingFor(sessionFile).map((m) => m.id);
-      this.unloaded.set(sessionFile, { at: k.now(), hold, held, ...(p?.cwd ? { folder: p.cwd } : {}) });
+      this.unloaded.set(sessionFile, { at: k.now(), held, ...(p?.cwd ? { folder: p.cwd } : {}) });
       this.saveUnloaded();
     } catch (err) {
       this.log.warn(`[wherever] shipmates: could not record the unload of ${sessionFile}: ${(err as Error).message}`);
@@ -247,13 +234,11 @@ export class WhereverShipmatesHost implements ShipmatesHost {
    */
   private hasWakingMessage(k: Shipmates, file: string, record: UnloadedRecord | null): boolean {
     const stop = k.lastStopAt(file) ?? -1;
-    // shipmates' own record of the session's settings (D40) when it keeps one;
-    // otherwise what its presence said as it left (children: no hold, as D29 had it).
-    const setting = sessionSetting(k, file);
-    const hold: UnloadHold = setting ? (!setting.wake ? 'off' : setting.declaredWaiting ? 'human' : 'none') : (record?.hold ?? 'none');
-    if (hold === 'off') return false;
+    // The session's own settings, kept by shipmates across the unload (D40).
+    const setting = k.setting(file);
+    if (!setting.wake) return false;
     const held = record?.held ?? [];
-    return k.pendingFor(file).some((m) => m.createdAt > stop && !held.includes(m.id) && (hold !== 'human' || m.origin === 'human'));
+    return k.pendingFor(file).some((m) => m.createdAt > stop && !held.includes(m.id) && (!setting.declaredWaiting || m.origin === 'human'));
   }
 
   /** Forget a session whose transcript is gone for good (deleted after its undo window). */
@@ -299,9 +284,8 @@ export class WhereverShipmatesHost implements ShipmatesHost {
       const raw = JSON.parse(fs.readFileSync(this.unloadedFile(), 'utf8')) as { sessions?: Record<string, Partial<UnloadedRecord>> };
       for (const [f, r] of Object.entries(raw.sessions ?? {})) {
         if (!r || typeof r.at !== 'number') continue;
-        const hold: UnloadHold = r.hold === 'off' || r.hold === 'human' ? r.hold : 'none';
         const held = Array.isArray(r.held) ? r.held.filter((x): x is string => typeof x === 'string') : [];
-        this.unloaded.set(f, { at: r.at, hold, held, ...(typeof r.folder === 'string' ? { folder: r.folder } : {}) });
+        this.unloaded.set(f, { at: r.at, held, ...(typeof r.folder === 'string' ? { folder: r.folder } : {}) });
       }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') this.log.warn(`[wherever] shipmates: ignoring an unreadable ${SHIPMATES_UNLOADED_FILE}: ${(err as Error).message}`);

@@ -29,7 +29,7 @@
   pnpm ? pkgs.pnpm_10,
   # The dependency-set hash. Overridable so a consumer tracking an unreleased
   # rev can supply its own without patching this file.
-  pnpmDepsHash ? "sha256-hStXDxhcXacDUwYKvoXUuTPEUQYIW4/68Cv+4PAaB6I=",
+  pnpmDepsHash ? "sha256-nzW4z28Tq8hzLTuj7FHFUTi1sM0HCGZcIYX9ni6hYUY=",
   # Build id surfaced by the dashboard and the `connected` WS message. A flake
   # passes the git rev; a bare `import` gets the package version.
   buildVersion ? null,

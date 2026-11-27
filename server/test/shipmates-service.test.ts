@@ -616,27 +616,21 @@ describe('ShipmatesService', () => {
     const d = dirs();
     const k = db(d);
     const live = SESSION(d.root);
-    k.register({ sessionFile: live, cwd: '/home/u/lane' });
     const unloaded = path.join(d.root, 'sessions', 'unloaded.jsonl');
     const gone = path.join(d.root, 'sessions', 'gone.jsonl');
-    const noDecl = path.join(d.root, 'sessions', 'wake-off.jsonl');
+    const wakeOff = path.join(d.root, 'sessions', 'wake-off.jsonl');
     fs.mkdirSync(path.dirname(unloaded), { recursive: true });
-    for (const f of [unloaded, noDecl]) fs.writeFileSync(f, '');
-    const rows = [
-      { sessionFile: unloaded, wake: true, declaredWaiting: true, updatedAt: 1 },
-      { sessionFile: gone, wake: true, declaredWaiting: true, updatedAt: 1 }, // its transcript is gone
-      { sessionFile: noDecl, wake: false, declaredWaiting: false, updatedAt: 1 }, // waking off only
-      { sessionFile: live, wake: true, declaredWaiting: true, updatedAt: 1 }, // live: its own presence says it
-    ];
+    for (const f of [unloaded, wakeOff]) fs.writeFileSync(f, '');
+    // Each declares, then is unloaded (presence gone, the settings kept); `live` stays.
+    for (const f of [live, unloaded, gone, wakeOff]) k.register({ sessionFile: f, cwd: '/home/u/lane' });
+    for (const f of [live, unloaded, gone]) k.update(f, { state: 'waiting-for-human', declaredWaiting: true });
+    k.update(wakeOff, { wake: false });
+    for (const f of [unloaded, gone, wakeOff]) k.unregister(f);
+    // `gone`'s transcript was never written.
+
     const { svc } = service(d);
     svc.start();
     await svc.ready();
-    // An older shipmates has no settings read: nothing extra.
-    expect(svc.snapshot().presence.map((p) => p.sessionFile)).toEqual([path.resolve(live)]);
-
-    const core = (svc as unknown as { shipmates: Record<string, unknown> }).shipmates;
-    core.settings = () => rows;
-    core.setting = (f: string) => rows.find((r) => r.sessionFile === f) ?? { sessionFile: f, wake: true, declaredWaiting: false, updatedAt: null };
     const snap = svc.snapshot();
     expect(snap.presence.map((p) => p.sessionFile).sort()).toEqual([path.resolve(live), path.resolve(unloaded)].sort());
     expect(snap.presence.find((p) => p.sessionFile === path.resolve(unloaded))).toEqual({
@@ -650,8 +644,9 @@ describe('ShipmatesService', () => {
     });
 
     // A failing settings read drops only the extra rows.
+    const core = (svc as unknown as { shipmates: Record<string, unknown> }).shipmates;
     core.settings = () => {
-      throw new Error('no such table: session_setting');
+      throw new Error('database is locked');
     };
     expect(svc.snapshot()).toMatchObject({ available: true, presence: [{ sessionFile: path.resolve(live) }] });
     expect(svc.snapshot()).not.toHaveProperty('inboxError');

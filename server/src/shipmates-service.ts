@@ -2,7 +2,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AttentionItem, Shipmates, Presence, Question } from 'shipmates';
-import { sessionSettings } from './shipmates-settings.js';
 
 /**
  * wherever as a shipmates HOST (shipmates' spec "Architecture", D20; wherever ADR
@@ -399,19 +398,18 @@ export class ShipmatesService {
    * unload). Shown as waiting, or a session waiting on the human with no open
    * inbox item (a bare `session_register`) would vanish from view once wherever
    * unloads it. Not for a transcript that is gone or archived. Each session is
-   * read on its own: a failure drops that one, never the snapshot. Nothing on a
-   * shipmates without the settings read.
+   * read on its own: a failure drops that one, never the snapshot.
    */
   private unloadedWaiting(k: Shipmates, live: ReadonlyMap<string, Presence>): ShipmatesPresenceView[] {
     let settings;
     try {
-      settings = sessionSettings(k);
+      settings = k.settings();
     } catch (err) {
       this.log.warn(`[wherever] shipmates: reading session settings failed: ${(err as Error).message}`);
       return [];
     }
     const out: ShipmatesPresenceView[] = [];
-    for (const s of settings ?? []) {
+    for (const s of settings) {
       if (!s.declaredWaiting || live.has(s.sessionFile)) continue;
       try {
         if (!fs.existsSync(s.sessionFile) || k.archiveMark(s.sessionFile) || k.isLive(s.sessionFile)) continue;

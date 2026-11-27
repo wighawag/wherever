@@ -90,7 +90,9 @@ async function settledSession(pool: SessionPool): Promise<string> {
 /** Give a wake that should NOT happen the time it would have taken. */
 async function stillUnloaded(pool: SessionPool, file: string): Promise<void> {
   await new Promise((r) => setTimeout(r, 400));
-  expect(pool.getSession(file)).toBeNull();
+  // A boolean, not the session: vitest's diff of a live session walks into pi's
+  // uninitialised theme proxy and fails the whole suite instead of this test.
+  expect(pool.getSession(file) !== null, 'the session was loaded').toBe(false);
 }
 
 function freshDir(name: string): string {
@@ -238,7 +240,11 @@ describe('shipmates spawn and stop through the session pool', () => {
     const { pool, host } = setup();
     const sender = await newSession(pool);
     const file = await settledSession(pool);
-    shipmates.update(file, { state: 'waiting-for-human' });
+    // It declares through the real tool, as an agent does (@shipmates/pi writes it through, D40).
+    fake.queue({ kind: 'tool-call', toolName: 'session_register', input: { state: 'waiting-for-human' } });
+    await pool.sendUserMessage(file, 'wait for the human');
+    await until(() => !pool.isStreaming(file) && shipmates.presence(file)?.state === 'waiting-for-human');
+    expect(shipmates.setting(file).declaredWaiting).toBe(true);
     await pool.destroySession(file, 'idle timeout');
     shipmates.send({ from: sender.sessionFile, to: file, text: 'an agent ping' });
     host.wakeEvicted();
@@ -252,7 +258,7 @@ describe('shipmates spawn and stop through the session pool', () => {
     await until(() => sentToModel().includes('the human answers: yes, go ahead'));
   }, 60_000);
 
-  it("shipmates' own per-session settings (D40) decide when it keeps them, for a child too", async () => {
+  it("shipmates' own per-session settings (D40) decide, for a child too", async () => {
     const { pool, host } = setup();
     const owner = await newSession(pool);
     const childDir = freshDir('lane');
@@ -262,14 +268,8 @@ describe('shipmates spawn and stop through the session pool', () => {
     await until(() => fs.existsSync(file) && !pool.isStreaming(file) && shipmates.presence(file)?.state === 'idle');
     await pool.destroySession(file, 'idle');
 
-    // A shipmates with the settings read says: it declared waiting for the human.
-    const core = shipmates as unknown as Record<string, unknown>;
-    core.setting = (f: string) => ({ sessionFile: f, wake: true, declaredWaiting: f === file, updatedAt: f === file ? 1 : null });
-    core.settings = () => [];
-    cleanups.push(() => {
-      delete core.setting;
-      delete core.settings;
-    });
+    // It declared waiting for the human as it went (kept by shipmates, D40).
+    shipmates.update(file, { declaredWaiting: true });
     shipmates.send({ from: owner.sessionFile, to: file, text: 'an agent ping for the child' });
     host.wakeEvicted();
     await stillUnloaded(pool, file);
