@@ -10,6 +10,7 @@
 import {renderMarkdown, linkifyText} from '$lib/core/utils/markdown';
 import {extractDownloadablePath} from '$lib/core/media-kind';
 import {extractSayText} from '$lib/core/speak';
+import {extractHumanAskArgs} from '$lib/core/human-ask-card';
 import {parseSkillInvocation, type ChatMessage} from '$lib/wherever';
 
 // The piState slice that drives message filtering. Kept structural (no import of
@@ -115,20 +116,27 @@ function parseArgsObject(
 		} catch (e) {}
 	}
 
-	// If it's k1="v1" k2="v2" format, parse it
+	// The k=v format: the client's live `tool_start` writes each value as
+	// `k=${JSON.stringify(v)}`, so a value is scanned as ONE JSON value (a string
+	// with its escapes, an array or object with spaces inside) and decoded. A
+	// 'single-quoted' or bare value that is not JSON is kept as its text.
 	const obj: Record<string, any> = {};
-	const regex =
-		/([a-zA-Z0-9_-]+)\s*=\s*(?:"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'|(\S+))/g;
-	let match;
-	while ((match = regex.exec(trimmed)) !== null) {
-		const key = match[1];
-		const val =
-			match[2] !== undefined
-				? match[2]
-				: match[3] !== undefined
-					? match[3]
-					: match[4];
-		obj[key] = val;
+	const keyRe = /([a-zA-Z0-9_-]+)\s*=\s*/y;
+	let i = 0;
+	while (i < trimmed.length) {
+		while (i < trimmed.length && /\s/.test(trimmed[i])) i++;
+		keyRe.lastIndex = i;
+		const m = keyRe.exec(trimmed);
+		if (!m) {
+			// Not a key: skip one token.
+			while (i < trimmed.length && !/\s/.test(trimmed[i])) i++;
+			continue;
+		}
+		i = keyRe.lastIndex;
+		const end = scanArgValue(trimmed, i);
+		const raw = trimmed.slice(i, end);
+		obj[m[1]] = decodeArgValue(raw);
+		i = end;
 	}
 
 	if (Object.keys(obj).length > 0) {
@@ -136,6 +144,55 @@ function parseArgsObject(
 	}
 
 	return null;
+}
+
+// The end (exclusive) of one k=v value starting at `start`: a quoted string
+// (escapes honoured), a bracketed JSON value (strings and nesting honoured),
+// or a bare token up to the next whitespace.
+function scanArgValue(s: string, start: number): number {
+	const c = s[start];
+	if (c === '"' || c === "'") {
+		let i = start + 1;
+		while (i < s.length && s[i] !== c) i += s[i] === '\\' ? 2 : 1;
+		return Math.min(i + 1, s.length);
+	}
+	if (c === '[' || c === '{') {
+		let depth = 0;
+		let inStr = false;
+		for (let i = start; i < s.length; i++) {
+			const ch = s[i];
+			if (inStr) {
+				if (ch === '\\') i++;
+				else if (ch === '"') inStr = false;
+			} else if (ch === '"') inStr = true;
+			else if (ch === '[' || ch === '{') depth++;
+			else if (ch === ']' || ch === '}') {
+				depth--;
+				if (depth === 0) return i + 1;
+			}
+		}
+		return s.length;
+	}
+	let i = start;
+	while (i < s.length && !/\s/.test(s[i])) i++;
+	return i;
+}
+
+function decodeArgValue(raw: string): any {
+	if (raw.startsWith("'"))
+		return raw.slice(1, raw.endsWith("'") ? -1 : undefined);
+	if (raw.startsWith('"') || raw.startsWith('[') || raw.startsWith('{')) {
+		try {
+			return JSON.parse(raw);
+		} catch {
+			// A quoted value that is not valid JSON: its text without the quotes.
+			if (raw.startsWith('"'))
+				return raw.slice(1, raw.endsWith('"') ? -1 : undefined);
+			return raw;
+		}
+	}
+	// A bare token stays text (a number or boolean keeps its old string form).
+	return raw;
 }
 
 function getSmartTitleArgs(
@@ -217,8 +274,12 @@ function getFullArgsFormatted(
 //   - say: the agent's SHORT spoken-form reply, shown as a distinct "spoken:"
 //     card so its divergence from the full written reply is spottable. The
 //     full reply always stays in the transcript; the say card is additive.
+//   - human_ask: a question for the human, shown with its options as buttons
+//     that answer it (HumanAskCard.svelte), like the Needs you inbox does.
 export function isFirstClassTool(toolName: string | undefined): boolean {
-	return toolName === 'attach_file' || toolName === 'say';
+	return (
+		toolName === 'attach_file' || toolName === 'say' || toolName === 'human_ask'
+	);
 }
 
 // True when `msg` is a bash tool call produced by a user `!command` /
@@ -341,6 +402,9 @@ export function parseToolMessage(msg: ChatMessage) {
 		// extracted text (see core/speak.ts), so what is shown and what is
 		// spoken cannot diverge. Null for non-say tools or a blank/missing text.
 		sayText: toolName === 'say' ? extractSayText(argsObj) : null,
+		// The question, options and blocking flag of a `human_ask` call: drives
+		// the first-class question card. Null for other tools or no question.
+		humanAsk: toolName === 'human_ask' ? extractHumanAskArgs(argsObj) : null,
 	};
 }
 

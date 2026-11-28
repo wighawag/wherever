@@ -40,6 +40,7 @@
 	} from '$lib/session-store';
 	import {onMount} from 'svelte';
 	import ShipmatesCard from './ShipmatesCard.svelte';
+	import HumanAskCard from './HumanAskCard.svelte';
 	import {url} from '$lib/core/utils/web/path';
 	import {
 		renderAssistant,
@@ -1220,7 +1221,18 @@
 									{@const dlKind = dlPath ? mediaKind(dlPath) : null}
 									{@const isAttachTool = parsed.toolName === 'attach_file'}
 									{@const isSayTool = parsed.toolName === 'say'}
-									{#if isAttachTool}
+									{#if parsed.humanAsk}
+										<!-- human_ask rendered as a first-class QUESTION card: the
+									     question for the human, its options as buttons that answer
+									     it (as the Needs you inbox does), then the answer. -->
+										<HumanAskCard
+											args={parsed.humanAsk}
+											isStreaming={!!msg.isStreaming}
+											isError={parsed.isError}
+											output={parsed.toolOutput}
+											interrupted={parsed.interrupted}
+										/>
+									{:else if isAttachTool}
 										<!-- attach_file rendered as a first-class ATTACHMENT, not a
 									     generic tool card: the agent explicitly offered this file
 									     for the (remote) user to download. Three states: streaming

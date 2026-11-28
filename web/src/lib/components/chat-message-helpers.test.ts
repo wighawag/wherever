@@ -3,6 +3,7 @@ import type {ChatMessage} from '$lib/wherever';
 import {
 	isFirstClassTool,
 	messageLayout,
+	parseToolMessage,
 	shouldAutoExpand,
 	toolChipStatus,
 	toolDuration,
@@ -90,9 +91,10 @@ describe('toolChipStatus', () => {
 });
 
 describe('existing tool helpers', () => {
-	it('isFirstClassTool is only attach_file and say', () => {
+	it('isFirstClassTool is only attach_file, say and human_ask', () => {
 		expect(isFirstClassTool('attach_file')).toBe(true);
 		expect(isFirstClassTool('say')).toBe(true);
+		expect(isFirstClassTool('human_ask')).toBe(true);
 		expect(isFirstClassTool('bash')).toBe(false);
 		expect(isFirstClassTool(undefined)).toBe(false);
 	});
@@ -109,5 +111,45 @@ describe('existing tool helpers', () => {
 			toolDuration(msg({role: 'tool', startedAt: 1000, endedAt: 2500}), 0),
 		).toBe('1.5s');
 		expect(toolDuration(msg({role: 'tool'}), 0)).toBe(null);
+	});
+});
+
+describe('parseToolMessage args', () => {
+	// Exactly how the client builds a live `tool_start`'s toolArgs.
+	const liveArgs = (args: Record<string, unknown>) =>
+		Object.entries(args)
+			.filter(([, v]) => v !== undefined && v !== '')
+			.map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+			.join(' ');
+
+	it('decodes a live human_ask: escaped question, options with spaces, blocking', () => {
+		const args = {
+			question: 'Line 1\n"two" and a=b',
+			options: ['yes, publish', 'no'],
+			blocking: false,
+		};
+		const parsed = parseToolMessage(
+			msg({role: 'tool', toolName: 'human_ask', toolArgs: liveArgs(args)}),
+		);
+		expect(parsed.humanAsk).toEqual(args);
+	});
+
+	it('reads the same human_ask from JSON args (history)', () => {
+		const args = {question: 'Q?', options: ['a'], blocking: true};
+		const parsed = parseToolMessage(
+			msg({
+				role: 'tool',
+				toolName: 'human_ask',
+				toolArgs: JSON.stringify(args),
+			}),
+		);
+		expect(parsed.humanAsk).toEqual(args);
+	});
+
+	it('keeps bare and single-quoted k=v values as text', () => {
+		const parsed = parseToolMessage(
+			msg({role: 'tool', toolName: 'say', toolArgs: "text='hi there' n=3"}),
+		);
+		expect(parsed.sayText).toBe('hi there');
 	});
 });
