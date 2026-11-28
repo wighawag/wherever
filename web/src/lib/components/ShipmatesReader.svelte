@@ -221,7 +221,7 @@
 			<div
 				class="flex max-h-[40dvh] flex-shrink-0 flex-col gap-2 overflow-y-auto px-4 pb-2 md:px-6"
 			>
-				{#each item.options as option, i (option)}
+				{#each item.options as option, i (i)}
 					<button
 						type="button"
 						disabled={sending[item.id]}

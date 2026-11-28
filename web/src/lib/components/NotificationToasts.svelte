@@ -293,7 +293,7 @@
 				</div>
 				<div class="mt-2 flex flex-wrap items-center gap-1.5">
 					{#if toast.item?.options?.length}
-						{#each toast.item.options as option (option)}
+						{#each toast.item.options as option, i (i)}
 							<button
 								type="button"
 								disabled={toast.sending}

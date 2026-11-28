@@ -113,7 +113,7 @@
 				{:else}
 					{#if item.options?.length}
 						<div class="mt-1.5 flex flex-wrap gap-1">
-							{#each item.options as option (option)}
+							{#each item.options as option, i (i)}
 								<button
 									type="button"
 									disabled={sending[item.id]}
